@@ -151,10 +151,43 @@ starting it restores it; connected hosts reconnect by themselves. With
 and the next instance adopts it without disturbing hosts, which allows upgrades
 with no interruption. Objects created outside this service are left alone.
 
+## Installing from a release
+
+[Releases](https://github.com/xphyr/nvweaver/releases) include a tarball with the binary and units,
+which needs nothing built. Check it, then install it:
+
+```sh
+sha256sum -c SHA256SUMS
+tar xzf nvweaver-*-linux-amd64.tar.gz
+cd nvweaver-*-linux-amd64
+
+sudo install -m 0755 nvweaverd /usr/local/bin/nvweaverd
+sudo install -m 0644 nvweaver.service /etc/systemd/system/
+sudo install -d -m 0755 /etc/nvweaver
+sudo install -m 0600 nvweaver.env /etc/nvweaver/
+sudo systemctl daemon-reload
+sudo systemctl enable --now nvweaver
+```
+
+Use `install` rather than `mv`. On a system with SELinux enforcing, a file moved from your home
+directory keeps its label, and the service fails to start with status `203/EXEC`.
+
+For SPDK on a host without `nvmet-tcp`, install the Quadlet instead, which pulls the matching image:
+
+```sh
+sudo install -d -m 0755 /etc/nvweaver /etc/containers/systemd
+sudo install -m 0600 nvweaver.env /etc/nvweaver/
+sudo install -m 0644 nvweaver-spdk.container /etc/containers/systemd/
+sudo systemctl daemon-reload
+sudo systemctl start nvweaver-spdk
+```
+
+The images are `ghcr.io/xphyr/nvweaver:<version>` and `:<version>-spdk`, or `latest` and `latest-spdk`.
+
 ## Running under systemd
 
-For the kernel target, run the binary directly: the container adds nothing there.
-This needs Go to build, and enables nothing until you ask:
+To build from source for the kernel target, run the binary directly: the container adds nothing
+there. This needs Go to build, and enables nothing until you ask:
 
 ```sh
 make
@@ -271,6 +304,7 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
 - [docs/decisions.md](docs/decisions.md): design decisions, and what was rejected
 - [docs/testing.md](docs/testing.md): coverage, latest results and known pitfalls
 - [docs/releasing.md](docs/releasing.md): CI, and how releases are made and verified
+- [docs/pools.md](docs/pools.md): creating LVM thin and reflink pools, in preparation for that feature
 
 ## License
 

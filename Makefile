@@ -49,8 +49,13 @@ package: nvweaverd nvweaver.service
 	rm -rf build
 	install -d build/$(PACKAGE)
 	install -m 0755 nvweaverd build/$(PACKAGE)/
-	install -m 0644 nvweaver.service dist/systemd/nvweaver.env dist/systemd/nvweaver-spdk.container \
-		README.md LICENSE THIRD_PARTY_NOTICES.md build/$(PACKAGE)/
+	install -m 0644 nvweaver.service dist/systemd/nvweaver.env README.md LICENSE THIRD_PARTY_NOTICES.md \
+		build/$(PACKAGE)/
+	# A release has a published image to use, unlike a build from source.
+	sed -e 's|^# Build the image first:.*|# Uses the published image for this release.|' \
+		-e 's|^Image=.*|Image=ghcr.io/xphyr/nvweaver:$(VERSION)-spdk|' \
+		-e '/^# Built locally, so there is no registry/d' -e '/^Pull=never/d' \
+		dist/systemd/nvweaver-spdk.container > build/$(PACKAGE)/nvweaver-spdk.container
 	tar --sort=name --owner=0 --group=0 --numeric-owner -C build -czf build/$(PACKAGE).tar.gz $(PACKAGE)
 	rm -rf build/$(PACKAGE)
 	cd build && sha256sum $(PACKAGE).tar.gz > SHA256SUMS

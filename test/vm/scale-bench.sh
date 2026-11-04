@@ -32,17 +32,20 @@ run_backend() { # BACKEND IMAGE
 
 	echo '# --- with this many volumes:'
 	if [ "$SHAPE" = node ]; then
-		local host=$NQN:h0 sub=$NQN:node0 want=50
+		local host=$NQN:h0 sub=$NQN:node0
 	else
-		local host=$NQN:every sub=$NQN:v0 want=1
+		local host=$NQN:every sub=$NQN:v0
 	fi
+	# Ask rather than assume: moving volumes changes how many each node has.
+	local want
+	want=$(t "curl -s -m 300 $API/v1/subsystems/$sub/namespaces | jq length")
 	t "sudo modprobe nvme-tcp; \
 		s=\$(date +%s.%N); n=\$(sudo nvme discover -t tcp -a 127.0.0.1 -s 14500 --hostnqn=$host 2>&1 | grep -c '^subnqn.*$NQN:'); e=\$(date +%s.%N); \
 		echo \"# discovery for one host: \$n entries in \$(awk -v a=\$s -v b=\$e 'BEGIN{printf \"%.2f\", b-a}')s\"; \
 		s=\$(date +%s.%N); sudo nvme connect -t tcp -a 127.0.0.1 -s 14500 -n $sub --hostnqn=$host >/dev/null 2>/tmp/c.err && r=ok || r=\"failed: \$(cat /tmp/c.err)\"; e=\$(date +%s.%N); \
 		echo \"# connect to one subsystem: \$r in \$(awk -v a=\$s -v b=\$e 'BEGIN{printf \"%.2f\", b-a}')s\"; \
 		for i in \$(seq 1 600); do c=\$(ls /sys/class/nvme-subsystem/*/ 2>/dev/null | grep -cE '^nvme[0-9]+n[0-9]+\$'); [ \"\$c\" -ge $want ] && break; sleep 0.1; done; e=\$(date +%s.%N); \
-		echo \"# namespaces visible to the host: \$c in \$(awk -v a=\$s -v b=\$e 'BEGIN{printf \"%.2f\", b-a}')s\"; sudo nvme disconnect -n $sub >/dev/null 2>&1"
+		echo \"# namespaces visible to the host: \$c of $want in \$(awk -v a=\$s -v b=\$e 'BEGIN{printf \"%.2f\", b-a}')s\"; sudo nvme disconnect -n $sub >/dev/null 2>&1"
 	t "sudo podman exec $C sh -c 'cat /proc/1/limits | grep -i \"open files\"; ls /proc/1/fd | wc -l'" | tr '\n' ' ' | sed 's/^/# /; s/$/\n/'
 	t "s=\$(date +%s.%N); timeout 600 sudo podman stop -t 500 $C >/dev/null; e=\$(date +%s.%N); \
 		echo \"# stop, removing everything from the target: \$(awk -v a=\$s -v b=\$e 'BEGIN{printf \"%.1f\", b-a}')s\"; sudo podman rm -f $C >/dev/null"

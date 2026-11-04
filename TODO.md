@@ -17,12 +17,16 @@ Work through these in order: each phase depends on the ones before it.
 - [x] Prove the release workflow, with the `v0.1.0-rc1` and `v0.1.0-rc2` pre-releases
 - [ ] Prove CI on a pull request, including one from a fork: it reads the SPDK cache without logging in
 - [x] Make the first release: `v0.1.0`, on x86-64
-- [ ] Install from a release tarball on a clean machine. The suites install from source
+- [x] Install from a release tarball on a clean machine, using `v0.1.0` on fresh VMs
+- [ ] Prove the Quadlet in the release tarball against a published image, at the next release. The
+      `v0.1.0` tarball's Quadlet needs the image tagged by hand, or its `Image=` line changed
 - [ ] Publish cross-platform releases for x86-64 and arm64. This is a goal, but not started: x86-64
       comes first. Keep new work portable until then
-  - [ ] Go binary and kernel image, tested on Arm before publishing
-  - [ ] SPDK image: choose an Arm baseline for `SPDK_ARCH`
-  - [ ] VM lab, or direct runner tests if Arm runners have no KVM
+  - [x] Probe it: `e2e.sh` passes on both targets on a real Arm kernel. See `docs/testing.md`
+  - [ ] Build and publish multi-arch images and an arm64 tarball, with an Arm job in CI. The SPDK
+        image defaults `SPDK_ARCH` to x86, so it needs choosing by architecture
+  - [ ] Check that `armv8-a+crc` runs on older Arm CPUs. So far it has only run on a Neoverse-N2
+  - [ ] Arm runners have no KVM, so CI runs `e2e.sh` directly. Decide whether Arm needs the VM suites
 - [ ] Pin base images in the Containerfiles by digest, with automated updates
 - [x] Add a `LICENSE` (MIT)
 - [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)
@@ -37,7 +41,7 @@ and CLI once, against the result.
 
 - [x] Write an OpenAPI spec for the API as it stands today (`api/openapi.yaml`)
 - [ ] Design pools, volumes, snapshots and clones in the spec, as in `docs/decisions.md` 19 to 24
-- [ ] Write `docs/pools.md`: how to create a suitable pool of each type
+- [x] Write `docs/pools.md`: how to create a suitable pool of each type
 - [x] Check automatically that the spec and the implementation stay in sync. Routes and field names
       are checked, not types or status codes
 - [ ] Add an endpoint listing available block devices, for choosing what goes in a pool

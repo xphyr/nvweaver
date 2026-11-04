@@ -46,6 +46,42 @@ CI run 41887410583 on commit `391e438`, with 2-vCPU VMs and Ubuntu's QEMU 8.2.
 Earlier versions of the first three also passed on Docker, with 101, 107 and 67 checks. Docker
 hasn't been tested since Podman became the default.
 
+`v0.1.0` was also installed from its published tarball and images on fresh VMs, with a second VM as
+the host: native unit, SATA and file namespaces, data, a real reboot with no SELinux denials, and both
+images. Its tarball's Quadlet can't start, because it names a local image. Fixed for later releases.
+
+### Storage pools
+
+Run directly on a Fedora 44 VM with LVM 2.03, before any nvweaver code uses them. On LVM thin, snapshots
+and clones survived deleting their origin, read-only snapshots refused writes, and thin snapshots needed
+`lvchange -ay -K`. XFS and btrfs reflink worked, and ext4 refused it.
+
+| Thin volumes | `lvcreate` | `lvs` | Metadata area free | Thin metadata used |
+|---|---|---|---|---|
+| 1,000 | 0.14 s | 0.09 s | 8.4 MB | 2.0% |
+| 5,000 | 0.45 s | 0.29 s | 7.3 MB | 3.5% |
+
+With `--metadatasize 16m`, a 1 GB metadata volume and `--config backup/archive=0`. The volumes were empty,
+so thin metadata use is a minimum. With default settings, the 507 KB area fell to 221 KB at 1,000 volumes,
+and `/etc/lvm/archive` reached 375 MB.
+
+### Arm
+
+A probe on GitHub's `ubuntu-24.04-arm` runner (Neoverse-N2, 4 vCPUs, Azure kernel 7.0), at the `v0.1.0`
+code, in run 41906823419:
+
+| Check | Result |
+|---|---|
+| Unit tests, with the race detector | Pass |
+| `e2e.sh`, kernel target, on a real Arm kernel | 106 of 106 |
+| `e2e.sh`, SPDK target | 117 of 117 |
+| SPDK image, `SPDK_ARCH=armv8-a+crc` | Built in 126 seconds |
+| `/dev/kvm` | **Absent**, so the VM suites can't run there |
+| `nvmet-tcp`, `nvme-tcp` | Present, compressed with zstd, which the image's `modprobe` handled |
+
+Not covered on Arm: emulated disks, a separate initiator, a real install and reboot, SELinux, other
+kernels or distributions, physical Arm hardware, and CPUs older than this one.
+
 ## Not tested
 
 Deferred until hardware is available, as tracked in `TODO.md`:
@@ -164,6 +200,8 @@ Checks that passed while proving nothing. Watch for these patterns:
   devices has no `/dev/nvme-fabrics` until it is.
 - **Scripts piped over SSH:** with `ssh host bash -s < script`, the first command that reads stdin
   eats the rest of the script, and it stops silently. Copy the script over instead.
+- **`mv` from a home directory under SELinux:** the file keeps its `user_home_t` label, and the
+  service fails with status `203/EXEC`. Use `install`.
 - **`rsync --exclude nvweaverd`** also skips `cmd/nvweaverd`, and everything still looks fine at
   first. Anchor it, as in `--exclude /nvweaverd`.
 - **`podman --device` with a `/dev/disk/by-id` path:** the symlink doesn't exist in the container.
