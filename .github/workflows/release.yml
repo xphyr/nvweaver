@@ -64,38 +64,49 @@ jobs:
         env:
           TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
-        run: printf '%s' "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin
+        # The attestation steps read Docker's credential file, so log in for them there too.
+        run: |
+          printf '%s' "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin
+          mkdir -p ~/.docker
+          printf '%s' "$TOKEN" | podman login --authfile ~/.docker/config.json ghcr.io -u "$ACTOR" --password-stdin
       - name: Push the kernel image
         id: kernel
         run: |
           podman push --digestfile digest localhost/nvweaver:dev "docker://$IMAGE:$VERSION"
           echo "digest=$(cat digest)" >>"$GITHUB_OUTPUT"
-          case "$VERSION" in
-          *-*) ;; # A pre-release doesn't move latest.
-          *) podman push localhost/nvweaver:dev "docker://$IMAGE:latest" ;;
-          esac
       - name: Push the SPDK image
         id: spdk
         run: |
           podman push --digestfile digest localhost/nvweaver:spdk "docker://$IMAGE:$VERSION-spdk"
           echo "digest=$(cat digest)" >>"$GITHUB_OUTPUT"
-          case "$VERSION" in
-          *-*) ;;
-          *) podman push localhost/nvweaver:spdk "docker://$IMAGE:latest-spdk" ;;
-          esac
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.kernel.outputs.digest }}
           push-to-registry: true
+          # Storage records are an organization feature.
+          create-storage-record: false
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.spdk.outputs.digest }}
           push-to-registry: true
+          # Storage records are an organization feature.
+          create-storage-record: false
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: build/nvweaver-*.tar.gz
+          create-storage-record: false
+      # Last, so that a failed release leaves latest pointing at the previous good one.
+      - name: Move latest
+        run: |
+          case "$VERSION" in
+          *-*) ;; # A pre-release doesn't move latest.
+          *)
+            podman push localhost/nvweaver:dev "docker://$IMAGE:latest"
+            podman push localhost/nvweaver:spdk "docker://$IMAGE:latest-spdk"
+            ;;
+          esac
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

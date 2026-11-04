@@ -13,8 +13,9 @@ Work through these in order: each phase depends on the ones before it.
   - [x] End-to-end suites in VMs on every push
   - [x] Publish binaries, the kernel and SPDK images, checksums and provenance
   - [x] Cache the SPDK build
-- [ ] Prove the workflows on GitHub: they have only been linted so far. Push, check CI, then tag a
-      pre-release such as `v0.1.0-rc1`
+- [x] Prove CI on GitHub
+- [ ] Prove the release workflow, by tagging a pre-release such as `v0.1.0-rc1`
+- [ ] Prove CI on a pull request, including one from a fork: it reads the SPDK cache without logging in
 - [ ] Make the first release
 - [ ] Publish cross-platform releases for x86-64 and arm64. This is a goal, but not started: x86-64
       comes first. Keep new work portable until then

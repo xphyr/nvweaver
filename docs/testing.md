@@ -36,8 +36,8 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | `systemd-e2e.sh` | Loopback in one VM | 67 of 67 |
 | `vm/vm-e2e.sh` | Between two VMs | 129 of 129 |
 
-`make lint` and `go test -race` also pass. These ran locally with `test/vm/run-all.sh`, not on
-GitHub: the workflows have only been linted so far.
+`make lint` and `go test -race` also pass. The same counts passed on GitHub's hosted runners, in
+CI run 41887410583 on commit `391e438`, with 2-vCPU VMs and Ubuntu's QEMU 8.2.
 
 Earlier versions of the first three also passed on Docker, with 101, 107 and 67 checks. Docker
 hasn't been tested since Podman became the default.
