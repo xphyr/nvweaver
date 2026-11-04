@@ -346,3 +346,23 @@ func TestTeardownKeepsSavedState(t *testing.T) {
 		t.Error("configuration not restored after teardown and restart")
 	}
 }
+
+func TestSystemReportsVersion(t *testing.T) {
+	m, err := NewManager(&target.Target{FS: targettest.New(), Root: "/nvmet"}, t.TempDir(), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(m, "")
+	srv.Version = "1.2.3"
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/system", nil))
+	var got struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != "1.2.3" {
+		t.Errorf("version = %q", got.Version)
+	}
+}

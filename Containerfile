@@ -3,7 +3,8 @@ WORKDIR /src
 COPY go.mod ./
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /nvweaverd ./cmd/nvweaverd
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /nvweaverd ./cmd/nvweaverd
 
 FROM docker.io/library/alpine:3.22
 # kmod: nvmet-tcp is loaded from the host's /lib/modules. Its modprobe handles
@@ -12,5 +13,11 @@ RUN apk add --no-cache kmod
 COPY --from=build /nvweaverd /usr/local/bin/nvweaverd
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/licenses/nvweaver/
 COPY --from=build /usr/local/go/LICENSE /usr/local/go/PATENTS /usr/share/licenses/nvweaver/go/
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="nvweaver" \
+      org.opencontainers.image.description="NVMe over TCP target with a REST API" \
+      org.opencontainers.image.source="https://github.com/xphyr/nvweaver" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}"
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/nvweaverd"]

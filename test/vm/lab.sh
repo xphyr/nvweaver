@@ -125,8 +125,7 @@ EOF
 		-drive "file=$building,if=virtio,format=qcow2" \
 		-drive "file=$LAB_DIR/base-seed.iso,if=virtio,format=raw,readonly=on" \
 		-device virtio-rng-pci -nic user,model=virtio-net-pci || die "cannot start QEMU"
-	local i
-	for i in $(seq 1 240); do
+	for _ in $(seq 1 240); do
 		running "$LAB_DIR/base.pid" || break
 		sleep 5
 	done
@@ -225,9 +224,9 @@ cmd_up() {
 		-drive "file=$RUN/virtio0.qcow2,if=none,id=scratchv,format=qcow2,cache=unsafe" \
 		-device "virtio-blk-pci,drive=scratchv,serial=NVWEAVERVIRTIO"
 	start_vm ini 2222 52:54:00:99:00:02 10.99.0.2 server=off,reconnect-ms=1000
-	local vm i
+	local vm
 	for vm in tgt ini; do
-		for i in $(seq 1 90); do
+		for _ in $(seq 1 90); do
 			timeout 20 ssh "${SSH_OPTS[@]}" -p "$(ssh_port "$vm")" lab@127.0.0.1 'test -s /etc/nvme/hostnqn' 2>/dev/null && break
 			sleep 2
 		done
@@ -238,12 +237,12 @@ cmd_up() {
 }
 
 cmd_down() {
-	local vm pid i
+	local vm pid
 	for vm in tgt ini; do
 		running "$RUN/$vm.pid" || continue
 		pid=$(cat "$RUN/$vm.pid")
 		timeout 10 ssh "${SSH_OPTS[@]}" -p "$(ssh_port "$vm")" lab@127.0.0.1 'sudo systemctl poweroff' 2>/dev/null
-		for i in $(seq 1 30); do
+		for _ in $(seq 1 30); do
 			running "$RUN/$vm.pid" || break
 			sleep 1
 		done

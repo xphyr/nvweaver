@@ -1,5 +1,6 @@
 # "make install" puts files in place and enables nothing. Set DESTDIR to stage
 # them somewhere else.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 PREFIX ?= /usr/local
 SYSCONFDIR ?= /etc
 BINDIR = $(PREFIX)/bin
@@ -8,13 +9,13 @@ UNITDIR = $(SYSCONFDIR)/systemd/system
 QUADLETDIR = $(SYSCONFDIR)/containers/systemd
 ENVFILE = $(SYSCONFDIR)/nvweaver/nvweaver.env
 
-.PHONY: all build test install install-quadlet uninstall clean
+.PHONY: all build test lint images package install install-quadlet uninstall clean
 all: build
 
 build: nvweaverd
 
 nvweaverd: go.mod $(shell find cmd internal -name '*.go')
-	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o $@ ./cmd/nvweaverd
+	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -X main.version=$(VERSION)' -o $@ ./cmd/nvweaverd
 
 nvweaver.service: dist/systemd/nvweaver.service.in
 	sed -e 's|@BINDIR@|$(BINDIR)|g' -e 's|@DOCDIR@|$(DOCDIR)|g' $< > $@
@@ -22,6 +23,34 @@ nvweaver.service: dist/systemd/nvweaver.service.in
 test:
 	go vet ./...
 	go test ./...
+
+SHELLCHECK_IMAGE = docker.io/koalaman/shellcheck:v0.10.0
+ACTIONLINT_IMAGE = docker.io/rhysd/actionlint:1.7.7
+
+# Formatting, then shell scripts and workflows, using pinned tools in rootless Podman.
+lint:
+	@files=$$(gofmt -l .); if [ -n "$$files" ]; then echo "Not gofmt-formatted: $$files"; exit 1; fi
+	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(SHELLCHECK_IMAGE) -S warning \
+		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/vm-e2e.sh test/vm/run-all.sh
+	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(ACTIONLINT_IMAGE)
+
+# BUILD_FLAGS can add layer caching, as CI does.
+images:
+	podman build $(BUILD_FLAGS) -t nvweaver:dev --build-arg VERSION=$(VERSION) -f Containerfile .
+	podman build $(BUILD_FLAGS) -t nvweaver:spdk --build-arg VERSION=$(VERSION) -f Containerfile.spdk .
+	podman build $(BUILD_FLAGS) -t nvweaver:systemd-test -f test/systemd/Containerfile .
+
+# The release tarball and its checksum, in build/.
+PACKAGE = nvweaver-$(VERSION)-linux-amd64
+package: nvweaverd nvweaver.service
+	rm -rf build
+	install -d build/$(PACKAGE)
+	install -m 0755 nvweaverd build/$(PACKAGE)/
+	install -m 0644 nvweaver.service dist/systemd/nvweaver.env dist/systemd/nvweaver-spdk.container \
+		README.md LICENSE THIRD_PARTY_NOTICES.md build/$(PACKAGE)/
+	tar --sort=name --owner=0 --group=0 --numeric-owner -C build -czf build/$(PACKAGE).tar.gz $(PACKAGE)
+	rm -rf build/$(PACKAGE)
+	cd build && sha256sum $(PACKAGE).tar.gz > SHA256SUMS
 
 # The environment file is only created if missing: it may hold a real token.
 define install-envfile
@@ -54,4 +83,4 @@ uninstall:
 		$(DESTDIR)$(DOCDIR)/LICENSE $(DESTDIR)$(DOCDIR)/THIRD_PARTY_NOTICES.md
 
 clean:
-	rm -f nvweaverd nvweaver.service
+	rm -rf nvweaverd nvweaver.service build

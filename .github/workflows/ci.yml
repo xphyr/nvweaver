@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # The release workflow runs all of this first, then publishes what it built.
+  workflow_call:
+    inputs:
+      version:
+        description: Version to build into the images and binaries
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow_ref }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CACHE_REPO: ghcr.io/${{ github.repository }}-buildcache
+
+jobs:
+  lint-and-unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: make lint
+      - run: make test
+      - run: go test -race ./...
+
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # The SPDK build takes many minutes on these runners, so main keeps a layer cache.
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Log in to the registry
+        if: github.event_name != 'pull_request'
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin
+      - name: Build images
+        env:
+          # Pull requests read the cache, and only main and releases write to it.
+          BUILD_FLAGS: >-
+            --layers --cache-from ${{ env.CACHE_REPO }}
+            ${{ github.event_name != 'pull_request' && format('--cache-to {0}', env.CACHE_REPO) || '' }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: make images VERSION="${INPUT_VERSION:-$(git describe --tags --always --dirty)}"
+      - name: Build the release tarball
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: make package VERSION="${INPUT_VERSION:-$(git describe --tags --always --dirty)}"
+      - name: Save images
+        run: podman save -m -o images.tar localhost/nvweaver:dev localhost/nvweaver:spdk localhost/nvweaver:systemd-test
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: images
+          path: images.tar
+          retention-days: 3
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package
+          path: build/*
+          retention-days: 3
+
+  end-to-end:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # Hosted runners have 4 vCPUs and 16 GB, shared between the two VMs.
+      LAB_CPUS: 2
+      LAB_MEM_MB: 4096
+      LAB_DIR: ${{ github.workspace }}/.lab
+      RESULTS: ${{ github.workspace }}/.results
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Let this user use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -w /dev/kvm
+      - name: Install QEMU
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils genisoimage
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: images
+      - name: Load images
+        run: podman load -q -i images.tar
+      - name: Work out the base image cache key
+        id: base
+        # Refreshed weekly, so that the VMs keep up with Fedora updates.
+        run: echo "key=lab-base-$(date +%G-%V)-${{ hashFiles('test/vm/lab.sh') }}" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.base.outputs.key }}
+          path: |
+            .lab/golden.qcow2
+            .lab/id_ed25519
+            .lab/id_ed25519.pub
+      - name: Build the VM base image
+        run: |
+          if [ ! -f "$LAB_DIR/golden.qcow2" ]; then
+            ./test/vm/lab.sh base
+          fi
+      - name: Run all end-to-end suites
+        run: ./test/vm/run-all.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: test-logs
+          path: .results/
+          retention-days: 14
+          include-hidden-files: true

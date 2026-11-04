@@ -34,8 +34,7 @@ expect_lacks() { case "$3" in *"$2"*) bad "$1" "[$2] unexpectedly in [$3]" ;; *)
 prop() { sd "systemctl show -p $1 --value $UNIT"; }
 state() { sd "systemctl is-active $UNIT" 2>/dev/null; }
 wait_active() { # SECONDS
-	local i
-	for i in $(seq 1 "$1"); do
+	for _ in $(seq 1 "$1"); do
 		[ "$(state)" = active ] && return 0
 		sleep 1
 	done
@@ -51,8 +50,7 @@ ctrl() { ini "for c in /sys/class/nvme/*; do [ \"\$(cat \$c/subsysnqn 2>/dev/nul
 live() { ini "c=\$(for c in /sys/class/nvme/*; do [ \"\$(cat \$c/subsysnqn 2>/dev/null)\" = '$SUB' ] && echo \$c; done | head -1); [ -n \"\$c\" ] && cat \$c/state"; }
 cntlid() { ini "cat /sys/class/nvme/$(ctrl)/cntlid"; }
 wait_live() {
-	local i
-	for i in $(seq 1 60); do
+	for _ in $(seq 1 60); do
 		[ "$(live)" = live ] && return 0
 		sleep 0.5
 	done
@@ -61,8 +59,8 @@ wait_live() {
 dev_of() { ini "for s in /sys/class/nvme-subsystem/*; do [ \"\$(cat \$s/subsysnqn 2>/dev/null)\" = '$SUB' ] && basename \$s/nvme*n1 && exit 0; done"; }
 # A fresh connection's namespace appears shortly after its controller goes live.
 wait_dev() {
-	local i d
-	for i in $(seq 1 60); do
+	local d
+	for _ in $(seq 1 60); do
 		d=$(dev_of)
 		if [ -n "$d" ] && ini "[ -b /dev/$d ]"; then
 			echo "$d"
@@ -81,8 +79,8 @@ boot() {
 	wait_boot
 }
 wait_boot() {
-	local i s
-	for i in $(seq 1 60); do
+	local s
+	for _ in $(seq 1 60); do
 		s=$($ENGINE exec "$TGT" systemctl is-system-running 2>/dev/null)
 		case "$s" in running | degraded) return 0 ;; esac
 		sleep 1
@@ -124,8 +122,7 @@ LOOP=$(ini "losetup -f --show /tmp/loop.img")
 # Every namespace of the subsystem that a host can actually use.
 usable() { ini "for s in /sys/class/nvme-subsystem/*; do [ \"\$(cat \$s/subsysnqn 2>/dev/null)\" = '$SUB' ] || continue; for n in \$s/nvme*n*; do [ -b /dev/\$(basename \$n) ] && basename \$n; done; done"; }
 wait_usable() { # COUNT
-	local i
-	for i in $(seq 1 40); do
+	for _ in $(seq 1 40); do
 		[ "$(usable | wc -l)" = "$1" ] && return 0
 		sleep 0.25
 	done

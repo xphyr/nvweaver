@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+', 'v[0-9]+.[0-9]+.[0-9]+-*']
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: echo "version=${TAG#v}" >>"$GITHUB_OUTPUT"
+
+  # Everything CI does, including all end-to-end suites. Nothing below runs unless it passes.
+  test:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  publish:
+    needs: [version, test]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ github.ref_name }}
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # These are the images and files that the test job just tested, not a rebuild.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: images
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package
+          path: build
+      - name: Load images
+        run: podman load -q -i images.tar
+      - name: Check they report this version
+        run: |
+          got=$(podman run --rm --pull=never localhost/nvweaver:dev --version)
+          echo "$got"
+          [ "$got" = "nvweaverd $VERSION" ]
+          got=$(podman run --rm --pull=never localhost/nvweaver:spdk --version)
+          [ "$got" = "nvweaverd $VERSION" ]
+      - name: Log in to the registry
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin
+      - name: Push the kernel image
+        id: kernel
+        run: |
+          podman push --digestfile digest localhost/nvweaver:dev "docker://$IMAGE:$VERSION"
+          echo "digest=$(cat digest)" >>"$GITHUB_OUTPUT"
+          case "$VERSION" in
+          *-*) ;; # A pre-release doesn't move latest.
+          *) podman push localhost/nvweaver:dev "docker://$IMAGE:latest" ;;
+          esac
+      - name: Push the SPDK image
+        id: spdk
+        run: |
+          podman push --digestfile digest localhost/nvweaver:spdk "docker://$IMAGE:$VERSION-spdk"
+          echo "digest=$(cat digest)" >>"$GITHUB_OUTPUT"
+          case "$VERSION" in
+          *-*) ;;
+          *) podman push localhost/nvweaver:spdk "docker://$IMAGE:latest-spdk" ;;
+          esac
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.kernel.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.spdk.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: build/nvweaver-*.tar.gz
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          case "$VERSION" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" build/* --verify-tag --generate-notes "${flags[@]}"

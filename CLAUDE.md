@@ -9,12 +9,15 @@ Read these before changing related code:
 - [docs/architecture.md](docs/architecture.md): how the pieces fit together
 - [docs/decisions.md](docs/decisions.md): what was chosen, what was rejected and why
 - [docs/testing.md](docs/testing.md): coverage, latest results, untested areas, pitfalls
+- [docs/releasing.md](docs/releasing.md): CI, releases and what they publish
 - [TODO.md](TODO.md): the roadmap, in dependency order
 
 ## Commands
 
 ```sh
-make test                         # go vet and unit tests; no privileges needed
+make lint test                    # gofmt, shellcheck, actionlint; go vet and unit tests
+make images                       # all images, with rootless Podman
+./test/vm/run-all.sh              # every end-to-end suite, in fresh VMs
 ./test/e2e.sh                     # kernel target, end to end
 BACKEND=spdk ./test/e2e.sh        # SPDK target, end to end
 ./test/systemd-e2e.sh             # make install, the unit and the Quadlet, under systemd

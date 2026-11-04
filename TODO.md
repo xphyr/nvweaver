@@ -8,12 +8,16 @@ Work through these in order: each phase depends on the ones before it.
 
 ## 1. Build and release
 
-- [ ] Create a GitHub workflow for building and releasing code
-  - [ ] Unit tests on every push
-  - [ ] Publish binaries, and the kernel and SPDK images
-  - [ ] Cache the SPDK build, which takes several minutes
-  - [ ] Find out whether hosted runners have `nvmet-tcp` and `nvme-tcp`, or whether the
-        end-to-end suites need a self-hosted runner
+- [x] Create a GitHub workflow for building and releasing code (`docs/releasing.md`)
+  - [x] Lint and unit tests on every push
+  - [x] End-to-end suites in VMs on every push
+  - [x] Publish binaries, the kernel and SPDK images, checksums and provenance
+  - [x] Cache the SPDK build
+- [ ] Prove the workflows on GitHub: they have only been linted so far. Push, check CI, then tag a
+      pre-release such as `v0.1.0-rc1`
+- [ ] Make the first release
+- [ ] Build and test arm64 images and binaries
+- [ ] Pin base images in the Containerfiles by digest, with automated updates
 - [x] Add a `LICENSE` (MIT)
 - [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)
 

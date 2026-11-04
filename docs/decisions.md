@@ -139,7 +139,17 @@ there, not as absolute numbers.
 - **Constraint:** the kernel target and the Linux initiator need real root, so a full
   end-to-end run needs rootful Podman, and rootless can't replace it.
 
-## 17. Roadmap order
+## 17. Publish exactly what was tested
+
+- **Chosen:** a release runs the whole CI pipeline, then publishes its images and files, rather
+  than rebuilding them. Actions are pinned by commit, with attestations on what is published.
+- **Why:** a rebuild would pull newer base images, and so wouldn't be what passed. Pinning matters
+  because a workflow on this public repo can publish images.
+- **Rejected:** self-hosted runners as the default. They need a trusted machine and are unsafe with
+  pull requests on a public repo. Hosted runners have KVM, so the VM suites should run there.
+- **Limit:** `linux/amd64` only, until arm64 is tested.
+
+## 18. Roadmap order
 
 - **Chosen:** the order in `TODO.md`.
 - **Why:**

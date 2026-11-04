@@ -97,8 +97,8 @@ live_paths() {
 	done; echo \$n"
 }
 wait_dev() {
-	local d i
-	for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+	local d
+	for _ in $(seq 1 20); do
 		d=$(blockdev_of "$1")
 		if [ -n "$d" ] && ini "[ -b $d ]"; then
 			echo "$d"
@@ -115,8 +115,7 @@ start_target() { # [keep-on-exit]
 		-e NVWEAVER_LISTEN=127.0.0.1:18420 -e NVWEAVER_KEEP_ON_EXIT="${1:-false}" \
 		-e NVWEAVER_BACKEND="$BACKEND" \
 		"$IMAGE" >/dev/null || return 1
-	local i
-	for i in $(seq 1 40); do
+	for _ in $(seq 1 40); do
 		[ "$(ini "curl -s -o /dev/null -w '%{http_code}' $API/healthz")" = 200 ] && return 0
 		sleep 0.25
 	done
@@ -156,6 +155,7 @@ start_target false || { bad "target starts"; exit 1; }
 ok "target starts and loads nvmet-tcp"
 api "system reports nvmet ready" 200 GET /v1/system
 expect_has "target_ready is true" '"target_ready": true' "$BODY"
+expect_has "reports a version" '"version": "' "$BODY"
 expect_has "running the requested backend" "\"backend\": \"$BACKEND\"" "$BODY"
 
 section "License notices"
@@ -357,7 +357,7 @@ $ENGINE stop -t 20 "$TGT" >/dev/null
 KEEP=true
 [ "$BACKEND" = spdk ] && KEEP=false
 start_target $KEEP || bad "restart"
-for i in $(seq 1 60); do [ "$(live_paths "$SA")" = 1 ] && break; sleep 0.5; done
+for _ in $(seq 1 60); do [ "$(live_paths "$SA")" = 1 ] && break; sleep 0.5; done
 expect_eq "host reconnected by itself" 1 "$(live_paths "$SA")"
 expect_eq "data survived" "$SUM" "$(ini "dd if=$DA bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
 expect_eq "serial, UUID and NGUID unchanged" "$ID_BEFORE" "$(call GET "/v1/subsystems/$SA" | tail -n +2)"
@@ -394,7 +394,7 @@ else
 	expect_has "refused on SPDK, whose data path stops with the container" "cannot work with the spdk backend" "$(cat /tmp/nvweaver-e2e.$$)"
 	rm -f /tmp/nvweaver-e2e.$$
 	start_target false || bad "restart"
-	for i in $(seq 1 60); do [ "$(live_paths "$SA")" = 1 ] && break; sleep 0.5; done
+	for _ in $(seq 1 60); do [ "$(live_paths "$SA")" = 1 ] && break; sleep 0.5; done
 fi
 
 section "Teardown"
@@ -420,26 +420,27 @@ else
 	section "SPDK process failure"
 	start_target false || bad "start"
 	$ENGINE exec "$TGT" sh -c 'kill -9 $(cat /proc/1/task/1/children)' >/dev/null 2>&1
-	for i in $(seq 1 40); do [ "$($ENGINE inspect "$TGT" --format '{{.State.Running}}')" = false ] && break; sleep 0.25; done
+	for _ in $(seq 1 40); do [ "$($ENGINE inspect "$TGT" --format '{{.State.Running}}')" = false ] && break; sleep 0.25; done
 	expect_eq "service exits so a restart policy can recover" false "$($ENGINE inspect "$TGT" --format '{{.State.Running}}')"
 	expect_eq "with a failure status" 1 "$($ENGINE inspect "$TGT" --format '{{.State.ExitCode}}')"
 
 	section "Automatic fallback, and moving between backends"
 	if [ "$MODULES_WERE_LOADED" = 0 ]; then
 		run_target() { # BACKEND [extra run args]
-			local backend=$1 i
+			local backend=$1
 			shift
 			$ENGINE rm -f "$TGT" >/dev/null 2>&1
 			$ENGINE run -d --name "$TGT" --privileged --network host -v /dev:/dev -v "$VOL:/var/lib/nvweaver" \
 				-e NVWEAVER_LISTEN=127.0.0.1:18420 -e NVWEAVER_BACKEND="$backend" "$@" "$IMAGE" >/dev/null || return 1
-			for i in $(seq 1 40); do
+			for _ in $(seq 1 40); do
 				[ "$(ini "curl -s -o /dev/null -w '%{http_code}' $API/healthz")" = 200 ] && return 0
 				sleep 0.25
 			done
 			return 1
 		}
 		identity() { # DEVICE: what a host uses to recognise a namespace
-			local n=/sys/block/$(basename "$1")
+			local n
+			n=/sys/block/$(basename "$1")
 			ini "cat $n/uuid $n/nguid $n/queue/logical_block_size" | tr '\n' ' '
 		}
 		# With no /lib/modules the kernel target cannot load, as on a host without it.

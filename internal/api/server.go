@@ -21,8 +21,10 @@ const defaultModel = "nvweaver"
 
 // Server is the HTTP API.
 type Server struct {
-	m     *Manager
-	token string
+	// Version is reported by /v1/system.
+	Version string
+	m       *Manager
+	token   string
 }
 
 // NewServer returns an API handler. A non-empty token is required as a bearer
@@ -178,6 +180,7 @@ func (s *Server) getSystem(w http.ResponseWriter, _ *http.Request) error {
 	}
 	return s.m.view(func(st *target.State) error {
 		writeJSON(w, http.StatusOK, map[string]any{
+			"version":      s.Version,
 			"backend":      s.m.backend.Name(),
 			"capabilities": s.m.backend.Capabilities(),
 			"kernel":       b.String(),

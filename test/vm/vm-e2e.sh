@@ -41,8 +41,7 @@ api() { # NAME WANT METHOD PATH [JSON]
 }
 
 wait_api() {
-	local n
-	for n in $(seq 1 120); do
+	for _ in $(seq 1 120); do
 		[ "$(t "curl -s -m 2 -o /dev/null -w '%{http_code}' $API/healthz" 2>/dev/null)" = 200 ] && return 0
 		sleep 0.5
 	done
@@ -51,8 +50,8 @@ wait_api() {
 
 # The namespace's block device on the initiator, once it can be opened.
 ini_dev() { # SUBNQN
-	local n d
-	for n in $(seq 1 60); do
+	local d
+	for _ in $(seq 1 60); do
 		d=$(i "for s in /sys/class/nvme-subsystem/*; do [ \"\$(cat \$s/subsysnqn 2>/dev/null)\" = '$1' ] || continue; for n in \$s/nvme*n*; do [ -b /dev/\$(basename \$n) ] && echo /dev/\$(basename \$n) && exit 0; done; done")
 		if [ -n "$d" ]; then
 			echo "$d"
@@ -72,8 +71,7 @@ sum_of() { # RUNNER DEVICE
 	"$1" "sudo dd if=$2 bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1"
 }
 wait_active() { # UNIT SECONDS
-	local n
-	for n in $(seq 1 "$2"); do
+	for _ in $(seq 1 "$2"); do
 		[ "$(t "systemctl is-active $1" 2>/dev/null)" = active ] && return 0
 		sleep 1
 	done
@@ -82,8 +80,7 @@ wait_active() { # UNIT SECONDS
 reboot_target() {
 	t 'sudo systemctl reboot' 2>/dev/null
 	sleep 5
-	local n
-	for n in $(seq 1 90); do
+	for _ in $(seq 1 90); do
 		t true 2>/dev/null && return 0
 		sleep 2
 	done
@@ -247,7 +244,7 @@ t 'systemd-analyze critical-chain nvweaver.service 2>/dev/null | tail -n +3 | he
 expect_has "nvmet-tcp was loaded from inside the sandbox" nvmet_tcp "$(t 'lsmod')"
 expect_has "port is listening on the link address" "$TARGET_IP:$PORT" "$(t 'ss -ltn')"
 LIVE=
-for n in $(seq 1 60); do
+for _ in $(seq 1 60); do
 	LIVE=$(i "for c in /sys/class/nvme/*; do [ \"\$(cat \$c/subsysnqn 2>/dev/null)\" = '$SSUB' ] && cat \$c/state; done")
 	[ "$LIVE" = live ] && break
 	sleep 2
@@ -293,7 +290,7 @@ reboot_target && ok "VM reboots" || bad "VM reboots"
 wait_active nvweaver-spdk 90 && ok "service started at boot" || bad "service started at boot" "$(t 'sudo journalctl -b -u nvweaver-spdk --no-pager -n 15')"
 expect_eq "first time, without any retries" 0 "$(t 'systemctl show -p NRestarts --value nvweaver-spdk')"
 LIVE=
-for n in $(seq 1 60); do
+for _ in $(seq 1 60); do
 	LIVE=$(i "for c in /sys/class/nvme/*; do [ \"\$(cat \$c/subsysnqn 2>/dev/null)\" = '$QSUB' ] && cat \$c/state; done")
 	[ "$LIVE" = live ] && break
 	sleep 2

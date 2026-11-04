@@ -27,7 +27,14 @@ import (
 
 const configfsMount = "/sys/kernel/config"
 
+// version is set at build time, with -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Println("nvweaverd " + version)
+		return
+	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(log); err != nil {
 		log.Error("fatal", "error", err)
@@ -64,15 +71,17 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("NVWEAVER_KEEP_ON_EXIT cannot work with the %s backend, "+
 			"whose data path stops with the container", backend.Name())
 	}
-	log.Info("target backend ready", "backend", backend.Name())
+	log.Info("target backend ready", "backend", backend.Name(), "version", version)
 	mgr, err := api.NewManager(backend, dataDir, log)
 	if err != nil {
 		return err
 	}
 
+	apiServer := api.NewServer(mgr, token)
+	apiServer.Version = version
 	srv := &http.Server{
 		Addr:              listen,
-		Handler:           api.NewServer(mgr, token).Handler(),
+		Handler:           apiServer.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

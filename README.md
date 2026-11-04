@@ -265,6 +265,7 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
 - [docs/architecture.md](docs/architecture.md): how the pieces fit together
 - [docs/decisions.md](docs/decisions.md): design decisions, and what was rejected
 - [docs/testing.md](docs/testing.md): coverage, latest results and known pitfalls
+- [docs/releasing.md](docs/releasing.md): CI, and how releases are made and verified
 
 ## License
 
