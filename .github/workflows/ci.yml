@@ -91,11 +91,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Let this user use KVM
+        # The runner is disposable, so this is simpler than a udev rule, whose trigger is
+        # asynchronous. Without KVM the VMs would be far too slow, so fail here if it's missing.
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
-            sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          sudo chmod 666 /dev/kvm
           test -w /dev/kvm
       - name: Install QEMU
         run: |

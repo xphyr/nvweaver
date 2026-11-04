@@ -55,6 +55,8 @@ no leftover containers, volumes, loop devices, NVMe controllers or modules.
 ## Project requirements
 
 - **Production-like scale is a requirement** for the CSI driver, not just lab volumes.
+- **Releases will be cross-platform, x86-64 and arm64.** Not started, but don't add x86 assumptions
+  to new code without saying so.
 - **No physical NVMe hardware is available right now.** Build and test on emulation, and
   keep the deferred hardware tests in `TODO.md` up to date.
 - **Both backends share the API and test suite.** A difference between them is either

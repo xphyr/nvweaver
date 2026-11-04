@@ -16,7 +16,11 @@ Work through these in order: each phase depends on the ones before it.
 - [ ] Prove the workflows on GitHub: they have only been linted so far. Push, check CI, then tag a
       pre-release such as `v0.1.0-rc1`
 - [ ] Make the first release
-- [ ] Build and test arm64 images and binaries
+- [ ] Publish cross-platform releases for x86-64 and arm64. This is a goal, but not started: x86-64
+      comes first. Keep new work portable until then
+  - [ ] Go binary and kernel image, tested on Arm before publishing
+  - [ ] SPDK image: choose an Arm baseline for `SPDK_ARCH`
+  - [ ] VM lab, or direct runner tests if Arm runners have no KVM
 - [ ] Pin base images in the Containerfiles by digest, with automated updates
 - [x] Add a `LICENSE` (MIT)
 - [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)

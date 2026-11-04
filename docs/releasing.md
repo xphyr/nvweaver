@@ -47,9 +47,10 @@ still change. `nvweaverd --version` and `GET /v1/system` report the version.
 
 ## What's built
 
-Only `linux/amd64`, because that's all that has been tested. The Go binary and kernel image
-should build for arm64, but the SPDK image needs an `SPDK_ARCH` baseline chosen, and all of it
-needs testing. See `TODO.md`.
+Only `linux/amd64` for now, because that's all that has been tested. Releases are meant to become
+cross-platform, for x86-64 and arm64, and nothing is published for Arm until the suites pass there.
+The Go binary already builds for arm64, the SPDK image needs an `SPDK_ARCH` baseline chosen, and the
+VM lab is x86 only. See `TODO.md`.
 
 ## Running the same checks locally
 

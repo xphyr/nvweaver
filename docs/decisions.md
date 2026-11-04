@@ -147,7 +147,10 @@ there, not as absolute numbers.
   because a workflow on this public repo can publish images.
 - **Rejected:** self-hosted runners as the default. They need a trusted machine and are unsafe with
   pull requests on a public repo. Hosted runners have KVM, so the VM suites should run there.
-- **Limit:** `linux/amd64` only, until arm64 is tested.
+- **Limit:** `linux/amd64` only for now. Cross-platform releases for x86-64 and arm64 are the goal,
+  so avoid adding x86 assumptions, but nothing is published for Arm until it has been tested.
+- **Fallback:** if hosted runners can't run the VM suites, a self-hosted runner on the lab host. On
+  a public repo, it must not run pull requests from forks.
 
 ## 18. Roadmap order
 
