@@ -1,7 +1,8 @@
 # Storage API design
 
-**Status: agreed, and not built yet.** It moves into `api/openapi.yaml` as it's built, where the sync tests
-hold the code to it. The reasoning behind the model is in
+**Status: agreed, and being built.** What's built is in `api/openapi.yaml`, where the sync tests hold the code
+to it: so far, pools and volumes, on reflink. Still to come: snapshots and clones, LVM thin, and the behaviour under
+load described here. The reasoning behind the model is in
 [decisions.md](decisions.md), entries 19 to 24.
 
 ## The model
@@ -53,7 +54,7 @@ A pool's state and capacity come back with it:
 ## Volumes
 
 ```
-GET    /v1/volumes              optional ?pool=
+GET    /v1/volumes              a page at a time: optional ?pool=, ?limit= and ?after=
 POST   /v1/volumes              create, or clone with "source"
 GET    /v1/volumes/{name}
 PATCH  /v1/volumes/{name}       grow it, or change labels
@@ -74,6 +75,8 @@ DELETE /v1/volumes/{name}       refused while it is mapped
  "mapped_to": {"subsystem": "nqn.2026-11.lab:node1", "nsid": 3}, "created_at": "2026-11-04T20:00:00Z"}
 ```
 
+- **Lists come in pages:** `{"items": [...], "next_after": "name"}`. Pass `next_after` as `?after=` to continue. It's
+  absent on the last page.
 - **Create is idempotent by name.** The same request again returns the existing volume with `200`, and
   a new one returns `201`. The same name with different settings is `409`, because CSI retries.
 - **A clone gets a new UUID and NGUID,** and defaults to the source's size. It may be larger.

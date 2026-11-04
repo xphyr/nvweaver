@@ -126,7 +126,7 @@ start_target() { # [keep-on-exit]
 cleanup() {
 	section "Cleaning up"
 	ini "touch /tmp/io.stop"
-	for s in "$NQN:overlay" "$SE" "$SF" "$SA" "$SB" "$SC" "$SD"; do disconnect "$s"; done
+	for s in "$NQN:node1" "$NQN:node2" "$NQN:overlay" "$SE" "$SF" "$SA" "$SB" "$SC" "$SD"; do disconnect "$s"; done
 	$ENGINE stop -t 20 "$TGT" >/dev/null 2>&1
 	$ENGINE rm -f "$TGT" >/dev/null 2>&1
 	[ -n "$LOOP" ] && ini "losetup -d $LOOP"
@@ -290,6 +290,81 @@ else
 	disconnect "$OV"
 fi
 api "remove it" 204 DELETE "/v1/subsystems/$OV"
+
+section "Pools and volumes"
+POOL_DIR=/var/lib/nvweaver/pool1
+$ENGINE exec "$TGT" mkdir -p "$POOL_DIR" /overlay-pool
+api "a pool on overlayfs is refused" 422 POST /v1/pools '{"name":"bad","type":"reflink","path":"/overlay-pool"}'
+expect_has "and says why" overlayfs "$BODY"
+api "a pool type that isn't available is refused" 422 POST /v1/pools '{"name":"bad","type":"lvm-thin","path":"/x"}'
+out=$(call POST /v1/pools "{\"name\":\"p1\",\"type\":\"reflink\",\"path\":\"$POOL_DIR\",\"labels\":{\"media\":\"test\"}}")
+if [ "${out%%$'\n'*}" != 201 ] && echo "$out" | grep -q "doesn't support reflink"; then
+	echo "  skip  this machine's filesystem has no reflink"
+else
+	expect_eq "adopt a reflink pool" 201 "${out%%$'\n'*}"
+	api "adopting it again succeeds" 200 POST /v1/pools "{\"name\":\"p1\",\"type\":\"reflink\",\"path\":\"$POOL_DIR\"}"
+	api "the pool reports its state and capacity" 200 GET /v1/pools/p1
+	expect_eq "online" online "$(ini "jq -r .state /tmp/body")"
+	expect_eq "with a real capacity" true "$(ini "jq '.capacity.total_bytes > 0' /tmp/body")"
+	api "create a volume, in the only pool" 201 POST /v1/volumes '{"name":"v1","size_bytes":67108864}'
+	VOL_NGUID=$(ini "jq -r .nguid /tmp/body")
+	VOL_UUID=$(ini "jq -r .uuid /tmp/body")
+	VOL_FILE=$(ini "jq -r .device_path /tmp/body")
+	expect_has "its file is real" "$VOL_FILE" "$($ENGINE exec "$TGT" sh -c "ls $POOL_DIR/*.img")"
+	api "creating it again succeeds" 200 POST /v1/volumes '{"name":"v1","size_bytes":67108864}'
+	expect_eq "with the same identity" "$VOL_NGUID" "$(ini "jq -r .nguid /tmp/body")"
+	api "the same name with another size is a conflict" 409 POST /v1/volumes '{"name":"v1","size_bytes":134217728}'
+	N1=$NQN:node1
+	N2=$NQN:node2
+	api "subsystem for node 1" 201 POST /v1/subsystems "{\"nqn\":\"$N1\",\"allowed_hosts\":[\"$H1\"],\"ports\":[1]}"
+	api "subsystem for node 2" 201 POST /v1/subsystems "{\"nqn\":\"$N2\",\"allowed_hosts\":[\"$H2\"],\"ports\":[2]}"
+	api "map the volume to node 1" 201 POST "/v1/subsystems/$N1/namespaces" '{"volume":"v1"}'
+	api "a volume is in one subsystem at a time" 409 POST "/v1/subsystems/$N2/namespaces" '{"volume":"v1"}'
+	api "its identity can't be overridden" 422 POST "/v1/subsystems/$N2/namespaces" '{"volume":"v1","uuid":"11111111-1111-4111-8111-111111111111"}'
+	api "a mapped volume can't be deleted" 409 DELETE /v1/volumes/v1
+	api "the volume shows where it's mapped" 200 GET /v1/volumes/v1
+	expect_eq "mapped to node 1" "$N1" "$(ini "jq -r .mapped_to.subsystem /tmp/body")"
+	out=$(connect "$H1" "$HID1" "$N1" $P1) && ok "node 1 connects" || bad "node 1 connects" "$out"
+	DV=$(wait_dev "$N1")
+	expect_has "the volume appears" /dev/nvme "$DV"
+	expect_eq "with the volume's NGUID" "$(echo "$VOL_NGUID" | tr -d -)" "$(ini "cat /sys/block/$(basename "$DV")/nguid" | tr -d -)"
+	ini "dd if=/tmp/pat of=$DV bs=1M oflag=direct status=none"
+	expect_eq "data round trip" "$SUM" "$(ini "dd if=$DV bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
+	expect_eq "data is in the volume's file" "$SUM" "$($ENGINE exec "$TGT" sh -c "dd if=$VOL_FILE bs=1048576 count=16 2>/dev/null | md5sum | cut -d' ' -f1")"
+	api "grow it" 200 PATCH /v1/volumes/v1 '{"size_bytes":134217728}'
+	sleep 2
+	expect_eq "the host sees the new size" 134217728 "$(ini "blockdev --getsize64 $DV")"
+	api "it can't shrink" 422 PATCH /v1/volumes/v1 '{"size_bytes":67108864}'
+	disconnect "$N1"
+	api "unmap it from node 1" 204 DELETE "/v1/subsystems/$N1/namespaces/1"
+	api "it survives being unmapped" 200 GET /v1/volumes/v1
+	expect_eq "and is no longer mapped" null "$(ini "jq -r .mapped_to /tmp/body")"
+	api "map it to node 2" 201 POST "/v1/subsystems/$N2/namespaces" '{"volume":"v1"}'
+	out=$(connect "$H2" "$HID2" "$N2" $P2) && ok "node 2 connects" || bad "node 2 connects" "$out"
+	DV=$(wait_dev "$N2")
+	expect_eq "same NGUID on another node" "$(echo "$VOL_NGUID" | tr -d -)" "$(ini "cat /sys/block/$(basename "$DV")/nguid" | tr -d -)"
+	expect_eq "same UUID on another node" "$VOL_UUID" "$(ini "cat /sys/block/$(basename "$DV")/uuid")"
+	expect_eq "same data on another node" "$SUM" "$(ini "dd if=$DV bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
+	disconnect "$N2"
+	api "a pool with volumes can't be forgotten" 409 DELETE /v1/pools/p1
+	api "a second volume, for paging" 201 POST /v1/volumes '{"name":"v2","pool":"p1","size_bytes":4096}'
+	api "first page" 200 GET '/v1/volumes?limit=1'
+	expect_eq "one volume, and where to continue" "1 v1" "$(ini "jq -r '\"\(.items | length) \(.next_after)\"' /tmp/body")"
+	api "second page" 200 GET '/v1/volumes?limit=1&after=v1'
+	expect_eq "the other volume, and no more" "v2 null" "$(ini "jq -r '\"\(.items[0].name) \(.next_after)\"' /tmp/body")"
+	$ENGINE exec "$TGT" sh -c "touch $POOL_DIR/nvw-stray.img; touch $POOL_DIR/someone-elses.img"
+	api "pool status" 200 GET /v1/pools/p1
+	expect_has "reports a file nothing refers to" nvw-stray "$BODY"
+	expect_lacks "but ignores what isn't ours" someone-elses "$BODY"
+	$ENGINE exec "$TGT" rm -f "$POOL_DIR/nvw-stray.img" "$POOL_DIR/someone-elses.img"
+	api "delete a namespace on node 2" 204 DELETE "/v1/subsystems/$N2/namespaces/1"
+	api "delete the volume" 204 DELETE /v1/volumes/v1
+	api "delete the other volume" 204 DELETE /v1/volumes/v2
+	expect_eq "their files are gone" 0 "$($ENGINE exec "$TGT" sh -c "ls $POOL_DIR | grep -c img")"
+	api "remove node 1" 204 DELETE "/v1/subsystems/$N1"
+	api "remove node 2" 204 DELETE "/v1/subsystems/$N2"
+	api "forget the pool" 204 DELETE /v1/pools/p1
+fi
 
 section "Multi-host and multipath"
 api "shared subsystem" 201 POST /v1/subsystems "{\"nqn\":\"$SC\",\"allowed_hosts\":[\"$H1\",\"$H2\"],\"ports\":[1,2]}"

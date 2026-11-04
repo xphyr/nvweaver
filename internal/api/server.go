@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 
+	"nvweaver/internal/storage"
 	"nvweaver/internal/target"
 )
 
@@ -134,6 +135,18 @@ func (s *Server) Handler() http.Handler {
 	route("PUT /v1/subsystems/{nqn}/hosts/{host}", s.allowHost)
 	route("DELETE /v1/subsystems/{nqn}/hosts/{host}", s.denyHost)
 
+	route("GET /v1/pools", s.listPools)
+	route("POST /v1/pools", s.createPool)
+	route("GET /v1/pools/{pool}", s.getPool)
+	route("PATCH /v1/pools/{pool}", s.updatePool)
+	route("DELETE /v1/pools/{pool}", s.deletePool)
+
+	route("GET /v1/volumes", s.listVolumes)
+	route("POST /v1/volumes", s.createVolume)
+	route("GET /v1/volumes/{volume}", s.getVolume)
+	route("PATCH /v1/volumes/{volume}", s.updateVolume)
+	route("DELETE /v1/volumes/{volume}", s.deleteVolume)
+
 	route("GET /v1/subsystems/{nqn}/namespaces", s.listNamespaces)
 	route("POST /v1/subsystems/{nqn}/namespaces", s.createNamespace)
 	route("GET /v1/subsystems/{nqn}/namespaces/{nsid}", s.getNamespace)
@@ -189,6 +202,9 @@ func (s *Server) getSystem(w http.ResponseWriter, _ *http.Request) error {
 			"version":      s.Version,
 			"backend":      s.m.backend.Name(),
 			"capabilities": s.m.backend.Capabilities(),
+			"pool_types":   storage.Types(),
+			"pools":        len(st.Pools),
+			"volumes":      len(st.Volumes),
 			"kernel":       b.String(),
 			"modules":      modules,
 			"target_ready": s.m.backend.Available(),
@@ -696,6 +712,7 @@ func (s *Server) createNamespace(w http.ResponseWriter, r *http.Request) error {
 	var req struct {
 		NSID       uint32 `json:"nsid"`
 		DevicePath string `json:"device_path"`
+		Volume     string `json:"volume"`
 		File       *struct {
 			Name      string `json:"name"`
 			SizeBytes int64  `json:"size_bytes"`
@@ -708,8 +725,17 @@ func (s *Server) createNamespace(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(w, r, &req); err != nil {
 		return err
 	}
-	if (req.DevicePath == "") == (req.File == nil) {
-		return target.Invalid("specify exactly one of device_path or file")
+	backings := 0
+	for _, given := range []bool{req.DevicePath != "", req.File != nil, req.Volume != ""} {
+		if given {
+			backings++
+		}
+	}
+	if backings != 1 {
+		return target.Invalid("specify exactly one of device_path, file or volume")
+	}
+	if req.Volume != "" && (req.UUID != "" || req.NGUID != "") {
+		return target.Invalid("a volume brings its own uuid and nguid, so they can't be given here")
 	}
 	if req.NSID > target.MaxNSID {
 		return target.Invalid("nsid must be between 1 and %d", target.MaxNSID)
@@ -747,7 +773,13 @@ func (s *Server) createNamespace(w http.ResponseWriter, r *http.Request) error {
 		} else if sub.Namespaces[ns.NSID] != nil {
 			return target.NewConflict("namespace %d already exists", ns.NSID)
 		}
-		if req.File != nil {
+		if req.Volume != "" {
+			vol := st.Volumes[req.Volume]
+			if vol == nil {
+				return target.Invalid("no such volume %s", req.Volume)
+			}
+			ns.Volume, ns.DevicePath, ns.UUID, ns.NGUID = vol.Name, vol.DevicePath, vol.UUID, vol.NGUID
+		} else if req.File != nil {
 			path, err := s.m.createVolume(req.File.Name, req.File.SizeBytes)
 			if err != nil {
 				return err
@@ -818,6 +850,9 @@ func (s *Server) updateNamespace(w http.ResponseWriter, r *http.Request) error {
 			return notFound("no such namespace %d on %s", nsid, nqn)
 		}
 		ns := sub.Namespaces[nsid]
+		if ns.Volume != "" && (req.DevicePath != nil || req.SizeBytes != nil) {
+			return target.Invalid("namespace %d exports volume %s: change the volume, or map another", nsid, ns.Volume)
+		}
 		if req.Enabled != nil {
 			ns.Enabled = *req.Enabled
 		}

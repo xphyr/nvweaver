@@ -41,12 +41,11 @@ and CLI once, against the result.
 
 - [x] Write an OpenAPI spec for the API as it stands today (`api/openapi.yaml`)
 - [x] Agree the storage API: `docs/storage-api.md`
-- [ ] Move the storage API into the spec, as it's built
+- [ ] Move the storage API into the spec, as it's built. Done for pools and volumes
 - [x] Write `docs/pools.md`: how to create a suitable pool of each type
 - [x] Check automatically that the spec and the implementation stay in sync. Routes and field names
       are checked, not types or status codes
 - [x] Benchmark the current API early, to give the design real numbers: see `docs/testing.md`
-- [ ] Move UUID and NGUID from the namespace to the volume, with a migration for saved state
 - [ ] Replace the full reconcile with an incremental one, batched per subsystem, so that the target
       of 5,000 volumes across 100 node subsystems is reachable
 - [ ] Add an intent log for pool operations, and internal names for volumes
@@ -67,7 +66,9 @@ and CLI once, against the result.
         systemd is the better fit, and it needs privileges that the no-capabilities SPDK
         setup doesn't have
   - [ ] Document that snapshots are crash-consistent only
-- [ ] Add reflink file pools, on XFS or btrfs, which need no LVM. Ext4 doesn't support reflink
+- [x] Add reflink file pools, on XFS or btrfs, which need no LVM. Ext4 doesn't support reflink
+- [x] Add the volume model: volumes own their identity, and map into subsystems
+- [ ] Add snapshots and clones
 - [ ] Leave room in the API for group snapshots, without building them yet
 - [ ] Later: creating pools from raw disks, behind an explicit confirmation
 

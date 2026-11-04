@@ -26,6 +26,35 @@ type State struct {
 	Ports      map[uint16]*Port      `json:"ports"`
 	Hosts      map[string]*Host      `json:"hosts"`
 	Subsystems map[string]*Subsystem `json:"subsystems"`
+	Pools      map[string]*Pool      `json:"pools,omitempty"`
+	Volumes    map[string]*Volume    `json:"volumes,omitempty"`
+}
+
+// InternalPrefix starts the name of everything this service creates in a pool, which is how it
+// tells its own from anything else that may be there.
+const InternalPrefix = "nvw-"
+
+// Pool is storage that was created outside this service, and adopted to allocate volumes from.
+type Pool struct {
+	Name           string            `json:"name"`
+	Type           string            `json:"type"`
+	Path           string            `json:"path,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	WarningPercent int               `json:"warning_percent"`
+}
+
+// Volume is storage allocated from a pool, which exists whether or not it's exported. It owns
+// the identity that hosts recognise it by, so that it keeps it wherever it's mapped.
+type Volume struct {
+	Name         string            `json:"name"`
+	Pool         string            `json:"pool"`
+	InternalName string            `json:"internal_name"`
+	DevicePath   string            `json:"device_path"`
+	SizeBytes    int64             `json:"size_bytes"`
+	UUID         string            `json:"uuid"`
+	NGUID        string            `json:"nguid"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	CreatedAt    string            `json:"created_at"`
 }
 
 // Port is a TCP listener. Discovery is served on every port by the kernel.
@@ -68,6 +97,9 @@ type Namespace struct {
 	BufferedIO bool   `json:"buffered_io"`
 	// ManagedFile marks a file this service created, under its volume directory.
 	ManagedFile bool `json:"managed_file,omitempty"`
+	// Volume names the volume this namespace exports, whose path and identity are copied here,
+	// so that backends need only treat it as any other namespace.
+	Volume string `json:"volume,omitempty"`
 }
 
 // NewState returns an empty state.
@@ -76,6 +108,8 @@ func NewState() *State {
 		Ports:      map[uint16]*Port{},
 		Hosts:      map[string]*Host{},
 		Subsystems: map[string]*Subsystem{},
+		Pools:      map[string]*Pool{},
+		Volumes:    map[string]*Volume{},
 	}
 }
 
@@ -90,6 +124,12 @@ func (s *State) Normalize() {
 	}
 	if s.Subsystems == nil {
 		s.Subsystems = map[string]*Subsystem{}
+	}
+	if s.Pools == nil {
+		s.Pools = map[string]*Pool{}
+	}
+	if s.Volumes == nil {
+		s.Volumes = map[string]*Volume{}
 	}
 	for _, sub := range s.Subsystems {
 		if sub.Namespaces == nil {
@@ -214,9 +254,27 @@ func (s *State) Validate() error {
 		}
 		listeners[key] = id
 	}
+	for _, vol := range s.Volumes {
+		if s.Pools[vol.Pool] == nil {
+			return invalid("volume %s references unknown pool %s", vol.Name, vol.Pool)
+		}
+	}
+	mappedTo := map[string]string{}
 	for _, sub := range s.Subsystems {
 		if err := sub.Validate(); err != nil {
 			return err
+		}
+		for _, ns := range sub.Namespaces {
+			if ns.Volume == "" {
+				continue
+			}
+			if s.Volumes[ns.Volume] == nil {
+				return invalid("subsystem %s references unknown volume %s", sub.NQN, ns.Volume)
+			}
+			if other, dup := mappedTo[ns.Volume]; dup {
+				return NewConflict("volume %s is already mapped into %s; a volume is in one subsystem at a time, which may allow several hosts", ns.Volume, other)
+			}
+			mappedTo[ns.Volume] = sub.NQN
 		}
 		for _, h := range sub.AllowedHosts {
 			if _, ok := s.Hosts[h]; !ok {
@@ -251,6 +309,13 @@ func NewSerial() string {
 	b := make([]byte, 10)
 	mustRand(b)
 	return hex.EncodeToString(b)
+}
+
+// NewInternalName returns a name to use on disk, which is safe for any pool type.
+func NewInternalName() string {
+	b := make([]byte, 8)
+	mustRand(b)
+	return InternalPrefix + hex.EncodeToString(b)
 }
 
 // NewUUID returns a random RFC 9562 version 4 UUID.

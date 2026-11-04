@@ -4,8 +4,8 @@ A pool is where nvweaver allocates volumes from. nvweaver adopts a pool that you
 created, and never initializes a disk itself, because that destroys what is on it. This page
 explains how to create a pool that will work well.
 
-> **Status:** nvweaver can't use pools yet. This is being built, and the steps below are the
-> preparation it will need. Unless a section says otherwise, the commands were run on Fedora 44
+> **Status:** nvweaver can adopt reflink pools. LVM thin pools are being built, and the steps below are
+> the preparation they will need. Unless a section says otherwise, the commands were run on Fedora 44
 > VMs with LVM 2.03 and emulated disks, not physical drives.
 
 | | LVM thin | Reflink files |
@@ -146,6 +146,17 @@ sudo rm test.img test.clone
 | **ext4** | `cp` fails with `Operation not supported`: it has no reflink |
 | **overlayfs**, including a container's own filesystem | Refused by the kernel target, because hosts see a zero-size disk. Mount a real filesystem instead |
 | **btrfs with `nodatacow`** (`chattr +C`) | Expected to be a problem for reflink, and we haven't been able to confirm how. Avoid it on the pool directory |
+
+### Adopt it
+
+```sh
+curl -X POST $API/v1/pools -d '{"name":"files","type":"reflink","path":"/srv/nvweaver"}'
+curl -X POST $API/v1/volumes -d '{"name":"vol1","size_bytes":10737418240}'
+curl -X POST $API/v1/subsystems/$SUB/namespaces -d '{"volume":"vol1"}'
+```
+
+Adopting tries a real reflink copy, and refuses the directory if that fails. If the service runs in a container,
+mount the pool's directory into it, and use the path as it appears there.
 
 ### Things to know
 

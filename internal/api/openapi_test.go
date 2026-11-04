@@ -82,6 +82,7 @@ func newSpecServer(t *testing.T) (*Server, http.Handler) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.newDriver = newFakeDriver(t.TempDir())
 	srv := NewServer(m, "")
 	return srv, srv.Handler()
 }
@@ -138,10 +139,15 @@ func TestSpecDescribesResponses(t *testing.T) {
 	send("POST", "/v1/ports", `{"id":1,"address":"127.0.0.1","inline_data_size":8192}`, 201)
 	send("POST", "/v1/subsystems", `{"nqn":"`+sub+`","allowed_hosts":["`+host+`"],"ports":[1]}`, 201)
 	send("POST", "/v1/subsystems/"+sub+"/namespaces", `{"file":{"name":"a","size_bytes":4096}}`, 201)
+	send("POST", "/v1/pools", `{"name":"p","type":"reflink","path":"/fake","labels":{"a":"b"}}`, 201)
+	send("POST", "/v1/volumes", `{"name":"v","size_bytes":4096,"labels":{"a":"b"}}`, 201)
+	send("POST", "/v1/volumes", `{"name":"w","size_bytes":4096}`, 201)
+	send("POST", "/v1/subsystems/"+sub+"/namespaces", `{"nsid":2,"volume":"v"}`, 201)
 
 	// A passthrough subsystem is the only way to get passthru_device, which needs a real
 	// controller to create, so it is allowed to be absent here.
-	optional := map[string][]string{"Subsystem": {"passthru_device"}}
+	// A namespace has managed_file or volume, depending on its backing: both are checked below.
+	optional := map[string][]string{"Subsystem": {"passthru_device"}, "Namespace": {"volume", "managed_file"}}
 
 	for _, c := range []struct {
 		schema string
@@ -152,6 +158,10 @@ func TestSpecDescribesResponses(t *testing.T) {
 		{"Port", send("GET", "/v1/ports/1", "", 200)},
 		{"Subsystem", send("GET", "/v1/subsystems/"+sub, "", 200)},
 		{"Namespace", send("GET", "/v1/subsystems/"+sub+"/namespaces/1", "", 200)},
+		{"Namespace", send("GET", "/v1/subsystems/"+sub+"/namespaces/2", "", 200)},
+		{"Pool", send("GET", "/v1/pools/p", "", 200)},
+		{"Volume", send("GET", "/v1/volumes/v", "", 200)},
+		{"VolumePage", send("GET", "/v1/volumes?limit=1", "", 200)},
 		{"Health", send("GET", "/healthz", "", 200)},
 		{"Error", send("GET", "/v1/ports/9", "", 404)},
 	} {
@@ -171,6 +181,13 @@ func TestSpecDescribesResponses(t *testing.T) {
 				t.Errorf("%s: the spec has %q, which the API didn't return", c.schema, f)
 			}
 		}
+	}
+
+	if got := fieldsOf(t, send("GET", "/v1/subsystems/"+sub+"/namespaces/1", "", 200)); !slices.Contains(got, "managed_file") {
+		t.Errorf("a file namespace should have managed_file: %v", got)
+	}
+	if got := fieldsOf(t, send("GET", "/v1/subsystems/"+sub+"/namespaces/2", "", 200)); !slices.Contains(got, "volume") {
+		t.Errorf("a volume namespace should have volume: %v", got)
 	}
 
 	var system struct {
@@ -201,6 +218,10 @@ func TestSpecFieldsAreAccepted(t *testing.T) {
 		{"SubsystemUpdate", "PATCH", "/v1/subsystems/" + sub},
 		{"NamespaceCreate", "POST", "/v1/subsystems/" + sub + "/namespaces"},
 		{"NamespaceUpdate", "PATCH", "/v1/subsystems/" + sub + "/namespaces/1"},
+		{"PoolCreate", "POST", "/v1/pools"},
+		{"PoolUpdate", "PATCH", "/v1/pools/p"},
+		{"VolumeCreate", "POST", "/v1/volumes"},
+		{"VolumeUpdate", "PATCH", "/v1/volumes/v"},
 	} {
 		props := s.schemas[c.schema]
 		if len(props) == 0 {

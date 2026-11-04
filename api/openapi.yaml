@@ -26,7 +26,11 @@ tags:
   - name: subsystems
     description: What hosts connect to, and which hosts may do so through which ports.
   - name: namespaces
-    description: The block devices and files that a subsystem exports.
+    description: The block devices, files and volumes that a subsystem exports.
+  - name: pools
+    description: Storage created outside this service, adopted to allocate volumes from.
+  - name: volumes
+    description: Storage allocated from a pool, which exists whether or not it is exported.
 security:
   - {}
   - bearerAuth: []
@@ -447,6 +451,246 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /v1/pools:
+    get:
+      operationId: listPools
+      summary: List pools
+      tags: [pools]
+      responses:
+        '200':
+          description: All pools, by name.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Pool'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createPool
+      summary: Adopt an existing pool
+      description: |
+        Changes nothing on disk beyond a brief check that it works. See `docs/pools.md` for how to create one.
+        Adopting the same pool again succeeds.
+      tags: [pools]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PoolCreate'
+      responses:
+        '200':
+          description: The pool had already been adopted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pool'
+        '201':
+          description: The pool is adopted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pool'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /v1/pools/{pool}:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+    get:
+      operationId: getPool
+      summary: Show a pool, with its state and capacity
+      tags: [pools]
+      responses:
+        '200':
+          description: The pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pool'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updatePool
+      summary: Change a pool's labels or warning level
+      tags: [pools]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PoolUpdate'
+      responses:
+        '200':
+          description: The changed pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pool'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Invalid'
+    delete:
+      operationId: deletePool
+      summary: Forget a pool
+      description: Deletes nothing on disk, and is refused while the pool has volumes.
+      tags: [pools]
+      responses:
+        '204':
+          description: The pool is forgotten.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/volumes:
+    get:
+      operationId: listVolumes
+      summary: List volumes, a page at a time
+      tags: [volumes]
+      parameters:
+        - name: pool
+          in: query
+          description: Only this pool's volumes.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: The most to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 500
+        - name: after
+          in: query
+          description: Continue after this name, using `next_after` from the previous page.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A page of volumes, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VolumePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Invalid'
+    post:
+      operationId: createVolume
+      summary: Create a volume
+      description: The same request again succeeds with the existing volume, because CSI retries.
+      tags: [volumes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VolumeCreate'
+      responses:
+        '200':
+          description: The volume already existed, with these settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Volume'
+        '201':
+          description: The new volume.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Volume'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+        '507':
+          description: The pool has no room.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/volumes/{volume}:
+    parameters:
+      - $ref: '#/components/parameters/VolumeName'
+    get:
+      operationId: getVolume
+      summary: Show a volume
+      tags: [volumes]
+      responses:
+        '200':
+          description: The volume.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Volume'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateVolume
+      summary: Grow a volume, or change its labels
+      description: Hosts using it are told of the new size.
+      tags: [volumes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VolumeUpdate'
+      responses:
+        '200':
+          description: The changed volume.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Volume'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Invalid'
+    delete:
+      operationId: deleteVolume
+      summary: Delete a volume and its data
+      description: Refused while it is mapped into a subsystem.
+      tags: [volumes]
+      responses:
+        '204':
+          description: The volume is gone.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /v1/subsystems/{nqn}/namespaces:
     parameters:
       - $ref: '#/components/parameters/NQN'
@@ -471,7 +715,7 @@ paths:
       operationId: createNamespace
       summary: Export a device or file
       description: |
-        Give exactly one of `device_path` or `file`. A block device that is mounted, used as
+        Give exactly one of `device_path`, `file` or `volume`. A block device that is mounted, used as
         swap or held by LVM or MD is refused, as is exporting the same thing twice.
       tags: [namespaces]
       requestBody:
@@ -587,6 +831,20 @@ components:
       description: An NVMe Qualified Name.
       schema:
         $ref: '#/components/schemas/NQN'
+    PoolName:
+      name: pool
+      in: path
+      required: true
+      description: The pool's name.
+      schema:
+        type: string
+    VolumeName:
+      name: volume
+      in: path
+      required: true
+      description: The volume's name.
+      schema:
+        type: string
     PortID:
       name: id
       in: path
@@ -628,6 +886,177 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
   schemas:
+    PoolCapacity:
+      type: object
+      required: [total_bytes, used_bytes, provisioned_bytes, used_percent]
+      properties:
+        total_bytes:
+          type: integer
+          format: int64
+        used_bytes:
+          type: integer
+          format: int64
+        provisioned_bytes:
+          type: integer
+          format: int64
+          description: The total size promised to volumes, which may exceed what the pool has.
+        used_percent:
+          type: number
+    Pool:
+      type: object
+      required: [name, type, warning_percent, state, warnings, volumes]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [reflink]
+        path:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        warning_percent:
+          type: integer
+        state:
+          type: string
+          enum: [online, missing]
+        warnings:
+          type: array
+          description: Problems to act on, such as being nearly full, or files that no volume refers to.
+          items:
+            type: string
+        capacity:
+          $ref: '#/components/schemas/PoolCapacity'
+        volumes:
+          type: integer
+          description: How many volumes are in the pool.
+    PoolCreate:
+      type: object
+      additionalProperties: false
+      required: [name, type, path]
+      properties:
+        name:
+          type: string
+          maxLength: 128
+        type:
+          type: string
+          enum: [reflink]
+        path:
+          type: string
+          description: A directory on XFS or btrfs, as seen by the service.
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        warning_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          default: 80
+          description: Warn when this full. 0 turns it off.
+    PoolUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        warning_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+    VolumeMapping:
+      type: object
+      required: [subsystem, nsid]
+      properties:
+        subsystem:
+          $ref: '#/components/schemas/NQN'
+        nsid:
+          type: integer
+    Volume:
+      type: object
+      required: [name, pool, internal_name, device_path, size_bytes, uuid, nguid, created_at, state, mapped_to]
+      properties:
+        name:
+          type: string
+        pool:
+          type: string
+        internal_name:
+          type: string
+          description: The name on disk.
+        device_path:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        uuid:
+          type: string
+          description: Stays the same wherever the volume is mapped.
+        nguid:
+          type: string
+          description: Stays the same wherever the volume is mapped.
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        state:
+          type: string
+          enum: [online]
+        mapped_to:
+          description: Where it is mapped, or null.
+          oneOf:
+            - $ref: '#/components/schemas/VolumeMapping'
+            - type: 'null'
+    VolumePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Volume'
+        next_after:
+          type: string
+          description: Pass this as `after` for the next page. Absent on the last page.
+    VolumeCreate:
+      type: object
+      additionalProperties: false
+      required: [name, size_bytes]
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          description: Unique across the service.
+        pool:
+          type: string
+          description: Required unless there is exactly one pool.
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 4096
+          description: A multiple of 4096.
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+    VolumeUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        size_bytes:
+          type: integer
+          format: int64
+          description: Grow only.
+        labels:
+          type: object
+          additionalProperties:
+            type: string
     NQN:
       type: string
       maxLength: 223
@@ -676,7 +1105,7 @@ components:
           description: Can serve hosts on `0.0.0.0` or `::`.
     System:
       type: object
-      required: [version, backend, capabilities, kernel, modules, target_ready, ports, hosts, subsystems]
+      required: [version, backend, capabilities, pool_types, kernel, modules, target_ready, ports, hosts, subsystems, pools, volumes]
       properties:
         version:
           type: string
@@ -685,6 +1114,11 @@ components:
           enum: [nvmet, spdk]
         capabilities:
           $ref: '#/components/schemas/Capabilities'
+        pool_types:
+          type: array
+          description: The pool types that this service can adopt.
+          items:
+            type: string
         kernel:
           type: string
           description: The running kernel's release.
@@ -704,6 +1138,12 @@ components:
         subsystems:
           type: integer
           description: How many subsystems are configured.
+        pools:
+          type: integer
+          description: How many pools are adopted.
+        volumes:
+          type: integer
+          description: How many volumes exist.
     Port:
       type: object
       required: [id, address, service]
@@ -898,6 +1338,9 @@ components:
         managed_file:
           type: boolean
           description: Whether it is a file created by this service.
+        volume:
+          type: string
+          description: The volume this exports, if any, whose path and identity it uses.
         live_enabled:
           type: boolean
           description: Whether it really is being served, which can differ from `enabled`.
@@ -918,6 +1361,11 @@ components:
           description: |
             An absolute path to a block device or file. The kernel backend refuses files on
             overlayfs, which includes a container's own filesystem.
+        volume:
+          type: string
+          description: |
+            Export this volume, with its own UUID and NGUID. A volume is in one subsystem at a time, which may
+            allow several hosts.
         file:
           type: object
           description: Create a sparse file in the service's volume directory.

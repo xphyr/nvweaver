@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 
+	"nvweaver/internal/storage"
 	"nvweaver/internal/target"
 	"nvweaver/internal/target/targettest"
 )
@@ -28,6 +29,64 @@ type env struct {
 	fs   *targettest.FS
 	dir  string
 	http http.Handler
+	// pools fakes the storage on disk, surviving a restart of the service.
+	pools *fakePools
+}
+
+// fakePools is pool storage without needing a filesystem that has reflink.
+type fakePools struct {
+	dir       string
+	files     map[string]int64
+	checkErr  error
+	createErr error
+}
+
+func (f *fakePools) driver(p *target.Pool) (storage.Driver, error) {
+	if p.Type != storage.TypeReflink {
+		return nil, target.Invalid("pool type %q isn't available", p.Type)
+	}
+	return fakeDriver{f}, nil
+}
+
+type fakeDriver struct{ *fakePools }
+
+func (d fakeDriver) Check() error { return d.checkErr }
+func (d fakeDriver) Capacity() (storage.Capacity, error) {
+	return storage.Capacity{TotalBytes: 1000, UsedBytes: 900}, nil
+}
+func (d fakeDriver) Create(internal string, size int64) (string, error) {
+	if d.createErr != nil {
+		return "", d.createErr
+	}
+	if _, dup := d.files[internal]; dup {
+		return "", fmt.Errorf("exists")
+	}
+	path := filepath.Join(d.dir, internal)
+	if err := os.WriteFile(path, make([]byte, 4096), 0o600); err != nil {
+		return "", err
+	}
+	d.files[internal] = size
+	return path, nil
+}
+func (d fakeDriver) Delete(internal string) error {
+	delete(d.files, internal)
+	return os.Remove(filepath.Join(d.dir, internal))
+}
+func (d fakeDriver) Grow(internal string, size int64) error {
+	d.files[internal] = size
+	return nil
+}
+func (d fakeDriver) List() ([]string, error) {
+	var names []string
+	for n := range d.files {
+		names = append(names, n)
+	}
+	return names, nil
+}
+
+// newFakeDriver is for tests that only need pools to work.
+func newFakeDriver(dir string) func(*target.Pool) (storage.Driver, error) {
+	return (&fakePools{dir: dir, files: map[string]int64{}}).driver
 }
 
 func newEnv(t *testing.T) *env {
@@ -43,6 +102,10 @@ func (e *env) start() {
 	if err != nil {
 		e.t.Fatal(err)
 	}
+	if e.pools == nil {
+		e.pools = &fakePools{dir: e.t.TempDir(), files: map[string]int64{}}
+	}
+	m.newDriver = e.pools.driver
 	e.http = NewServer(m, "").Handler()
 }
 

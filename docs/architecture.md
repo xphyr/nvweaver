@@ -38,6 +38,7 @@ below it, never through this process.
 | `internal/target` | State model and validation (`model.go`), `Backend` interface (`backend.go`), kernel backend (`reconcile.go`) |
 | `internal/target/targettest` | Fake configfs that enforces the kernel's ordering rules |
 | `internal/spdk` | SPDK backend: reconcile (`backend.go`), process (`process.go`), RPC (`rpc.go`) |
+| `internal/storage` | Pool drivers, which allocate volumes as paths for the backends to export |
 | `internal/sdnotify` | systemd readiness notification |
 | `dist/systemd` | Unit template, environment file, Quadlet |
 | `test` | End-to-end suites and benchmark |
@@ -78,6 +79,11 @@ how a volume can move between them. Serial, UUID and NGUID are generated once an
 there, because hosts recognise a volume by them.
 
 Managed file volumes are in `volumes/` under the same directory.
+
+## Pools and volumes
+
+Pools and volumes sit above the target backends, which don't know about them. Mapping a volume copies its path, UUID
+and NGUID onto a namespace, which a backend treats like any other. So a pool type only has to produce a path.
 
 ## Backend lifetime
 

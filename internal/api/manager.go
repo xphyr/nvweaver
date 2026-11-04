@@ -14,6 +14,7 @@ import (
 	"sync"
 	"syscall"
 
+	"nvweaver/internal/storage"
 	"nvweaver/internal/target"
 )
 
@@ -25,6 +26,8 @@ type Manager struct {
 	statePath string
 	volumeDir string
 	log       *slog.Logger
+	// newDriver returns the driver for a pool. Tests substitute a fake.
+	newDriver func(*target.Pool) (storage.Driver, error)
 }
 
 // NewManager loads any saved state and applies it to the kernel. Attributes
@@ -37,6 +40,7 @@ func NewManager(b target.Backend, dataDir string, log *slog.Logger) (*Manager, e
 		statePath: filepath.Join(dataDir, "state.json"),
 		volumeDir: filepath.Join(dataDir, "volumes"),
 		log:       log,
+		newDriver: storage.New,
 	}
 	if err := os.MkdirAll(m.volumeDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
@@ -190,6 +194,11 @@ func checkPassthru(path string) error {
 // namespace being updated, if any.
 func checkUnshared(s *target.State, path, skipNQN string, skipNSID uint32) error {
 	want := resolve(path)
+	for _, vol := range s.Volumes {
+		if resolve(vol.DevicePath) == want {
+			return target.NewConflict("%s belongs to volume %s: map the volume instead", path, vol.Name)
+		}
+	}
 	for _, sub := range s.Subsystems {
 		for _, ns := range sub.Namespaces {
 			if sub.NQN == skipNQN && ns.NSID == skipNSID {
