@@ -34,5 +34,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /nvweaverd /usr/local/bin/nvweaverd
 COPY --from=spdk /spdk/build/bin/nvmf_tgt /usr/local/bin/nvmf_tgt
+COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/licenses/nvweaver/
+COPY --from=build /usr/local/go/LICENSE /usr/local/go/PATENTS /usr/share/licenses/nvweaver/go/
+COPY --from=spdk /spdk/LICENSE /spdk/licenses/ /usr/share/licenses/nvweaver/spdk/
+COPY --from=spdk /spdk/dpdk/license/ /usr/share/licenses/nvweaver/dpdk/
+COPY --from=spdk /spdk/isa-l/LICENSE /usr/share/licenses/nvweaver/isa-l/
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/nvweaverd"]

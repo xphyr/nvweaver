@@ -3,7 +3,7 @@
 FROM docker.io/library/golang:1.26-alpine AS build
 RUN apk add --no-cache make
 WORKDIR /src
-COPY go.mod Makefile README.md ./
+COPY go.mod Makefile README.md LICENSE THIRD_PARTY_NOTICES.md ./
 COPY cmd ./cmd
 COPY internal ./internal
 COPY dist ./dist

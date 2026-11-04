@@ -10,5 +10,7 @@ FROM docker.io/library/alpine:3.22
 # xz, zstd and gzip modules, whichever the host distribution uses.
 RUN apk add --no-cache kmod
 COPY --from=build /nvweaverd /usr/local/bin/nvweaverd
+COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/licenses/nvweaver/
+COPY --from=build /usr/local/go/LICENSE /usr/local/go/PATENTS /usr/share/licenses/nvweaver/go/
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/nvweaverd"]

@@ -7,7 +7,7 @@
 # bind-mount the host's /dev, and masks the systemd units that could change the host.
 set -u
 
-ENGINE=${ENGINE:-docker}
+ENGINE=${ENGINE:-sudo podman}
 IMAGE=${IMAGE:-nvweaver:systemd-test}
 SPDK_IMAGE=${SPDK_IMAGE:-nvweaver:spdk}
 TGT=nvweaver-sd-machine
@@ -113,7 +113,7 @@ fi
 $ENGINE rm -f "$TGT" "$INI" >/dev/null 2>&1
 $ENGINE volume rm -f "$VOL" >/dev/null 2>&1
 $ENGINE run -d --name "$INI" --privileged --network host -v /lib/modules:/lib/modules:ro -v /dev:/dev \
-	alpine:3.22 sleep infinity >/dev/null || exit 1
+	docker.io/library/alpine:3.22 sleep infinity >/dev/null || exit 1
 trap cleanup EXIT
 ini "apk add -q --no-progress nvme-cli curl jq util-linux kmod coreutils busybox-extras" || exit 1
 ini "modprobe nvme-tcp" || exit 1
@@ -251,8 +251,8 @@ section "Quadlet: the SPDK image as a service, with no capabilities"
 if $ENGINE image inspect "$SPDK_IMAGE" >/dev/null 2>&1; then
 	QUNIT=nvweaver-spdk.service
 	$ENGINE save "$SPDK_IMAGE" | $ENGINE exec -i "$TGT" podman load -q >/dev/null && ok "image loaded into Podman" || bad "image loaded into Podman"
-	# Docker's name for the image, to the name a build with Podman would give it.
-	sd "podman tag docker.io/library/$SPDK_IMAGE localhost/$SPDK_IMAGE"
+	# Only an image saved by Docker lacks the name that a Podman build gives it.
+	sd "podman image exists localhost/$SPDK_IMAGE || podman tag docker.io/library/$SPDK_IMAGE localhost/$SPDK_IMAGE"
 	sd "systemctl daemon-reload"
 	# Quadlet units start at boot, so it has been retrying without an image until now.
 	sd "systemctl reset-failed $QUNIT" 2>/dev/null

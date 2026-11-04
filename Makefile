@@ -33,6 +33,8 @@ install: nvweaverd nvweaver.service
 	install -D -m 0755 nvweaverd $(DESTDIR)$(BINDIR)/nvweaverd
 	install -D -m 0644 nvweaver.service $(DESTDIR)$(UNITDIR)/nvweaver.service
 	install -D -m 0644 README.md $(DESTDIR)$(DOCDIR)/README.md
+	install -D -m 0644 LICENSE $(DESTDIR)$(DOCDIR)/LICENSE
+	install -D -m 0644 THIRD_PARTY_NOTICES.md $(DESTDIR)$(DOCDIR)/THIRD_PARTY_NOTICES.md
 	$(install-envfile)
 	@echo "Installed. To start now and at every boot:"
 	@echo "  systemctl daemon-reload && systemctl enable --now nvweaver"
@@ -48,7 +50,8 @@ install-quadlet:
 # possibly data. Stop and disable the service first.
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/nvweaverd $(DESTDIR)$(UNITDIR)/nvweaver.service \
-		$(DESTDIR)$(QUADLETDIR)/nvweaver-spdk.container $(DESTDIR)$(DOCDIR)/README.md
+		$(DESTDIR)$(QUADLETDIR)/nvweaver-spdk.container $(DESTDIR)$(DOCDIR)/README.md \
+		$(DESTDIR)$(DOCDIR)/LICENSE $(DESTDIR)$(DOCDIR)/THIRD_PARTY_NOTICES.md
 
 clean:
 	rm -f nvweaverd nvweaver.service

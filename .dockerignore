@@ -4,4 +4,6 @@
 !internal
 !Makefile
 !README.md
+!LICENSE
+!THIRD_PARTY_NOTICES.md
 !dist

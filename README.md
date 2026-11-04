@@ -32,7 +32,10 @@ between targets and hosts see the same UUID, NGUID, block size and data.
 ## Quick start
 
 ```sh
-docker compose up -d --build
+sudo podman build -t nvweaver:dev -f Containerfile .
+sudo podman run -d --name nvweaver --privileged --network host \
+  -v /lib/modules:/lib/modules:ro -v /dev:/dev -v nvweaver-data:/var/lib/nvweaver \
+  nvweaver:dev
 API=http://127.0.0.1:8420
 SUB=nqn.2026-11.lab.example:vol1
 HOST=nqn.2026-11.lab.example:client1
@@ -49,21 +52,16 @@ curl -X POST $API/v1/subsystems/$SUB/namespaces \
   -d '{"file":{"name":"vol1.img","size_bytes":10737418240}}'
 ```
 
-Without Compose, replace the first command with:
-
-```sh
-docker build -t nvweaver:dev -f Containerfile .
-docker run -d --name nvweaver --privileged --network host \
-  -v /lib/modules:/lib/modules:ro -v /dev:/dev -v nvweaver-data:/var/lib/nvweaver \
-  nvweaver:dev
-```
+The commands above run as root because the kernel target needs it. `compose.yaml` does the
+same thing for Compose users, and hasn't been tested. Docker is a fallback: the same
+commands work with `docker` in place of `sudo podman`.
 
 On a host without `nvmet-tcp`, use the SPDK image, with no privileges and only the
 storage you pass in. Omit `--device` to use only service-created files:
 
 ```sh
-docker build -t nvweaver:spdk -f Containerfile.spdk .
-docker run -d --name nvweaver --network host --cap-drop=ALL \
+podman build -t nvweaver:spdk -f Containerfile.spdk .
+podman run -d --name nvweaver --network host --cap-drop=ALL \
   --device /dev/sdc -v nvweaver-data:/var/lib/nvweaver \
   nvweaver:spdk
 ```
@@ -182,7 +180,8 @@ sudo systemctl start nvweaver-spdk
 ```
 
 Add an `AddDevice=` line to `/etc/containers/systemd/nvweaver-spdk.container` for each
-disk it may export. It starts at boot once installed, because Quadlet units can't be
+disk it may export, giving it a name inside the container, such as
+`AddDevice=/dev/disk/by-id/your-disk:/dev/nvweaver0`. Use that name in the API. It starts at boot once installed, because Quadlet units can't be
 enabled or disabled; remove the file to stop that.
 
 Worth knowing:
@@ -238,10 +237,12 @@ go test ./...      # needs no privileges; uses a fake configfs
 ./test/e2e.sh      # real target and Linux initiator over loopback
 ./test/bench.sh    # NVMe/TCP overhead, measured against null_blk
 ./test/systemd-e2e.sh  # the installed service under real systemd, in a container
+./test/vm/vm-e2e.sh    # separate initiator, emulated disks, passthrough, real install and reboot
 ```
 
 Set `BACKEND=spdk` to run `e2e.sh` and `bench.sh` against SPDK. `systemd-e2e.sh` installs
 nothing on the machine running it: `make install` runs inside a disposable container.
+`vm-e2e.sh` needs QEMU with KVM and no root, and manages its own VMs: see `test/vm/lab.sh`.
 
 The last two need privileged containers. They temporarily load kernel modules and
 create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Podman.
@@ -253,11 +254,9 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
   argument for other baselines).
 - No formal NVMe conformance suite has been run. Protocol behaviour is the target's;
   the tests here exercise both with the Linux initiator only.
-- **Not yet tested on physical NVMe hardware or over a real network.** All tests so
-  far ran on one machine over loopback, including those for NVMe-backed namespaces.
+- **Not yet tested on physical NVMe hardware or over a physical network.** Tests use
+  loopback and VMs with QEMU's emulated NVMe, SATA and virtio disks, including passthrough.
   See [TODO.md](TODO.md) for what is deferred until hardware is available.
-- Passthrough has only been tested against a fabrics-attached controller, with
-  Identify. I/O through it is untested.
 - No ANA groups, NVMe/TCP TLS, per-controller statistics, or API for referrals.
 
 ## More documentation
@@ -269,4 +268,5 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Bundled components have their own licenses: see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

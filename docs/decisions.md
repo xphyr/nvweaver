@@ -131,7 +131,15 @@ there, not as absolute numbers.
 - **Chosen:** build on emulation for now, and track hardware tests as deferred in `TODO.md`.
 - **Why:** no physical NVMe hardware is available right now.
 
-## 16. Roadmap order
+## 16. Podman is the container engine
+
+- **Chosen:** Podman by default, in scripts and documentation. Docker is a fallback, and
+  testing against it is low priority.
+- **Why:** the user's preference. Also, Quadlet is already how the SPDK image runs as a service.
+- **Constraint:** the kernel target and the Linux initiator need real root, so a full
+  end-to-end run needs rootful Podman, and rootless can't replace it.
+
+## 17. Roadmap order
 
 - **Chosen:** the order in `TODO.md`.
 - **Why:**

@@ -15,7 +15,7 @@ Work through these in order: each phase depends on the ones before it.
   - [ ] Find out whether hosted runners have `nvmet-tcp` and `nvme-tcp`, or whether the
         end-to-end suites need a self-hosted runner
 - [x] Add a `LICENSE` (MIT)
-- [ ] Include SPDK and DPDK license notices in the published SPDK image
+- [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)
 
 ## 2. API foundations
 
@@ -79,6 +79,11 @@ Production-like scale is a requirement, so measure this before building on it.
   - [ ] Test at production-like volume and node counts
   - [ ] Document that there is a single target, with no failover
 
+## Later (low priority)
+
+- [ ] Test the suites against Docker. Podman is the supported engine and Docker a fallback,
+      and nothing has been run against Docker since Podman became the default
+
 ## Enterprise features to consider
 
 To decide later: these matter if tests should match enterprise array behaviour closely.
@@ -93,14 +98,20 @@ No physical NVMe hardware is available right now, so development continues on em
 The tests so far use one machine over loopback, with files, loop devices, `null_blk` and
 network-attached NVMe namespaces.
 
-- [ ] Add a QEMU environment with emulated NVMe drives and separate target and initiator
-      VMs. This allows passthrough tests against a PCIe controller and tests over a real
-      network path. It emulates the hardware, so it does not replace the tests below
+- [x] Run all suites on rootful Podman
+- [x] Add a QEMU environment with emulated NVMe drives and separate target and initiator
+      VMs (`test/vm/lab.sh`). It emulates the hardware, so it does not replace the tests below
+- [x] Use the VMs to test passthrough against a PCIe-style controller (`test/vm/vm-e2e.sh`)
+- [x] Use the VMs to test with a separate initiator
+- [x] Use the VMs to test the systemd setup for real: `make install` as root, enable, reboot
+      the VM, SELinux enforcing, and the Quadlet on the VM's own Podman
+- [ ] Run benchmarks between the VMs and over the 1 Gb network, on both backends
 
 ### Deferred until hardware is available
 
 - [ ] Test block device and passthrough namespaces on a physical NVMe drive
-- [ ] Test with a separate physical initiator over a real network
+- [ ] Test with a separate physical initiator over a real network. A network test from another
+      machine to a target on the lab host needs no new hardware, but is also not done yet
 - [ ] Measure real performance on both backends. Current numbers are from a loaded VM over
       loopback
 - [ ] Install on a real host and reboot, to prove the boot ordering. So far systemd has

@@ -9,7 +9,7 @@
 # BACKEND=nvmet (default) or spdk. For SPDK, EXTRA_ENV passes settings through, for
 # example EXTRA_ENV="-e NVWEAVER_SPDK_POLLING=true".
 set -u
-ENGINE=${ENGINE:-docker}
+ENGINE=${ENGINE:-sudo podman}
 BACKEND=${BACKEND:-nvmet}
 case "$BACKEND" in
 nvmet) IMAGE=${IMAGE:-nvweaver:dev} ;;
@@ -42,7 +42,7 @@ if [ -e /sys/module/null_blk ]; then echo "null_blk is already loaded; refusing 
 
 $ENGINE rm -f "$TGT" "$INI" >/dev/null 2>&1
 $ENGINE run -d --name "$INI" --privileged --network host -v /lib/modules:/lib/modules:ro -v /dev:/dev \
-	alpine:3.22 sleep infinity >/dev/null || exit 1
+	docker.io/library/alpine:3.22 sleep infinity >/dev/null || exit 1
 trap cleanup EXIT
 ini "apk add -q --no-progress nvme-cli curl jq fio kmod util-linux" || exit 1
 ini "modprobe null_blk nr_devices=1 gb=64 queue_mode=2 submit_queues=$(nproc) bs=4096" || { echo "null_blk is not available on this kernel"; exit 1; }

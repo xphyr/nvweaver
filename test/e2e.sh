@@ -2,7 +2,9 @@
 # End-to-end test: the container image against the real kernel target, with the
 # real Linux initiator connecting over loopback.
 #
-# Needs Docker or Podman with privileged containers. It temporarily loads
+# Needs rootful Podman, because the kernel target and the initiator both need real
+# root. ENGINE sets the command, by default "sudo podman". Docker is a fallback, with
+# ENGINE=docker. It temporarily loads
 # nvmet/nvmet-tcp on the host and creates NVMe devices there, using only
 # 127.0.0.1, throwaway files and one loop device. It uses no other disks, except
 # that it checks a mounted disk is refused (see "in-use").
@@ -11,7 +13,7 @@
 # that differ between them are marked below; everything else must pass on both.
 set -u
 
-ENGINE=${ENGINE:-docker}
+ENGINE=${ENGINE:-sudo podman}
 BACKEND=${BACKEND:-nvmet}
 case "$BACKEND" in
 nvmet) IMAGE=${IMAGE:-nvweaver:dev}; CONTAINERFILE=Containerfile ;;
@@ -144,7 +146,7 @@ fi
 $ENGINE rm -f "$TGT" "$INI" >/dev/null 2>&1
 $ENGINE volume rm -f "$VOL" >/dev/null 2>&1
 $ENGINE run -d --name "$INI" --privileged --network host -v /lib/modules:/lib/modules:ro -v /dev:/dev \
-	alpine:3.22 sleep infinity >/dev/null || exit 1
+	docker.io/library/alpine:3.22 sleep infinity >/dev/null || exit 1
 trap cleanup EXIT
 ini "apk add -q --no-progress nvme-cli curl jq util-linux kmod coreutils busybox-extras iproute2-ss" || exit 1
 ini "modprobe nvme-tcp" || exit 1
@@ -155,6 +157,15 @@ ok "target starts and loads nvmet-tcp"
 api "system reports nvmet ready" 200 GET /v1/system
 expect_has "target_ready is true" '"target_ready": true' "$BODY"
 expect_has "running the requested backend" "\"backend\": \"$BACKEND\"" "$BODY"
+
+section "License notices"
+case "$BACKEND" in
+nvmet) NOTICES="LICENSE THIRD_PARTY_NOTICES.md go/LICENSE go/PATENTS" ;;
+spdk) NOTICES="LICENSE THIRD_PARTY_NOTICES.md go/LICENSE go/PATENTS spdk/LICENSE spdk/bsd-3-clause.txt dpdk/bsd-3-clause.txt dpdk/README isa-l/LICENSE" ;;
+esac
+for f in $NOTICES; do
+	$ENGINE exec "$TGT" test -s "/usr/share/licenses/nvweaver/$f" && ok "$f is in the image" || bad "$f is in the image"
+done
 
 section "CRUD"
 api "create port 1" 201 POST /v1/ports "{\"id\":1,\"address\":\"127.0.0.1\",\"service\":$P1}"
@@ -176,9 +187,12 @@ api "block device namespace" 201 POST "/v1/subsystems/$SB/namespaces" "{\"nsid\"
 api "same device twice refused" 409 POST "/v1/subsystems/$SA/namespaces" "{\"nsid\":2,\"device_path\":\"$LOOP\"}"
 
 section "Safety guards"
-ROOT_DISK=$(findmnt -no SOURCE /boot 2>/dev/null)
+# -v drops any "[/subvolume]" suffix, which isn't part of the device path.
+ROOT_DISK=$(findmnt -nvo SOURCE /)
 if [ -b "$ROOT_DISK" ]; then
 	api "in-use: mounted disk refused ($ROOT_DISK)" 409 POST "/v1/subsystems/$SA/namespaces" "{\"nsid\":3,\"device_path\":\"$ROOT_DISK\"}"
+else
+	bad "in-use: found the root disk to test with" "got '$ROOT_DISK'"
 fi
 ini "(nc -l -p 14499 >/dev/null 2>&1 &) ; sleep 0.3"
 api "create port on an address someone else holds" 201 POST /v1/ports '{"id":3,"address":"127.0.0.1","service":14499}'

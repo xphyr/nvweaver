@@ -18,11 +18,16 @@ make test                         # go vet and unit tests; no privileges needed
 ./test/e2e.sh                     # kernel target, end to end
 BACKEND=spdk ./test/e2e.sh        # SPDK target, end to end
 ./test/systemd-e2e.sh             # make install, the unit and the Quadlet, under systemd
+./test/vm/vm-e2e.sh               # separate initiator, emulated disks, passthrough, real reboot
 ./test/bench.sh                   # NVMe/TCP overhead against null_blk; also BACKEND=spdk
 ```
 
-`SKIP_BUILD=1` reuses existing images. The SPDK image takes several minutes to build
+`test/vm/lab.sh` manages disposable VMs with their own kernels, which need no root on the machine
+running them. Prefer them over loading modules on a shared machine. `SKIP_BUILD=1` reuses existing images. The SPDK image takes several minutes to build
 from scratch. The Go code uses the standard library only.
+
+**Podman is the container engine. Docker is only a fallback**, with `ENGINE=docker`. Suites
+default to `ENGINE="sudo podman"`, because the kernel target and the initiator need real root.
 
 End-to-end suites need privileged containers. They temporarily load kernel modules and
 create NVMe devices on the machine running them, then clean up. Check that they did:
@@ -31,11 +36,15 @@ no leftover containers, volumes, loop devices, NVMe controllers or modules.
 ## Rules
 
 - **Don't install anything on a development machine.** That includes `make install`
-  without `DESTDIR`, and enabling units. Test under systemd with `test/systemd-e2e.sh`.
+  without `DESTDIR`, and enabling units. To test under systemd, use a disposable VM from
+  `test/vm/lab.sh`, where installing is fine, or `test/systemd-e2e.sh`.
+- **Only touch containers and images you created**, by name. Build hosts may run other
+  containers, so never use `prune`, or remove anything by wildcard.
 - **Never point a test at a disk you weren't explicitly given.** Use loopback addresses,
   throwaway files and loop devices. Only name a physical drive that the user has said can
   be overwritten.
-- **Commit only when asked, and the user does the pushing.** Work on a branch.
+- **Commit only when asked, and the user does the pushing.** Committing to `main` is fine when
+  the user says so; otherwise use a branch.
 - **Don't bypass commit signing.** If signing fails, retry or ask.
 - **Don't push secrets or machine details.** This repo goes to GitHub. Hostnames, lab
   addresses and credentials belong in `CLAUDE.local.md`, which is git-ignored.
