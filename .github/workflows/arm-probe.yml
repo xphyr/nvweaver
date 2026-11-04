@@ -1,0 +1,87 @@
+# A throwaway probe of what works on Arm, on its own branch. It publishes nothing. Each step keeps
+# going after a failure, so that one run answers as many questions as it can.
+name: Arm probe
+
+on:
+  push:
+    branches: [arm-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  facts-and-kernel-target:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: What is this machine?
+        run: |
+          uname -a
+          echo "uname -p: $(uname -p)"
+          nproc
+          free -g
+          lscpu | grep -E 'Model name|Vendor|Flags' | cut -c1-200
+          grep -m1 Features /proc/cpuinfo
+          podman --version
+      - name: Is there KVM?
+        continue-on-error: true
+        run: |
+          ls -l /dev/kvm
+          sudo chmod 666 /dev/kvm
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-arm qemu-efi-aarch64
+          qemu-system-aarch64 --version | head -1
+          # Boot nothing: just see whether KVM can create a guest with this CPU.
+          timeout 10 qemu-system-aarch64 -M virt -accel kvm -cpu host -m 256 -display none -S -monitor none -serial none; echo "exit $? (124 means it ran until stopped)"
+      - name: Are the kernel modules there?
+        continue-on-error: true
+        run: |
+          modinfo -F filename nvmet_tcp nvme_tcp null_blk || true
+          sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" || echo "no extra modules package"
+          modinfo -F filename nvmet_tcp
+          modinfo -F filename nvme_tcp
+      - name: Unit tests, natively
+        continue-on-error: true
+        run: |
+          go vet ./...
+          go test -race ./...
+      - name: Build the kernel image, natively
+        id: kernel_image
+        continue-on-error: true
+        run: |
+          sudo podman build -q -t nvweaver:dev --build-arg VERSION=arm-probe -f Containerfile .
+          sudo podman image inspect nvweaver:dev --format 'arch={{.Architecture}} size={{.Size}}'
+          sudo podman run --rm --pull=never nvweaver:dev --version
+      - name: Kernel target end to end, over loopback
+        continue-on-error: true
+        run: SKIP_BUILD=1 IMAGE=nvweaver:dev ENGINE="sudo podman" timeout 600 ./test/e2e.sh
+
+  spdk:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the SPDK image with an Arm baseline
+        id: build
+        run: |
+          start=$(date +%s)
+          sudo podman build -q -t nvweaver:spdk --build-arg VERSION=arm-probe \
+            --build-arg SPDK_ARCH=armv8-a+crc -f Containerfile.spdk .
+          echo "built in $(( $(date +%s) - start ))s"
+          sudo podman image inspect nvweaver:spdk --format 'arch={{.Architecture}} size={{.Size}}'
+          sudo podman run --rm --pull=never nvweaver:spdk --version
+          sudo podman run --rm --pull=never --entrypoint nvmf_tgt nvweaver:spdk --version
+      - name: Which instructions does the binary rely on?
+        continue-on-error: true
+        run: |
+          sudo podman run --rm --pull=never --entrypoint sh nvweaver:spdk -c 'ls -l /usr/local/bin/nvmf_tgt; ldd /usr/local/bin/nvmf_tgt | head -12'
+      - name: Install modules for the initiator
+        continue-on-error: true
+        run: sudo apt-get update -q && sudo apt-get install -y -q "linux-modules-extra-$(uname -r)"
+      - name: SPDK target end to end, over loopback
+        continue-on-error: true
+        run: BACKEND=spdk SKIP_BUILD=1 IMAGE=nvweaver:spdk ENGINE="sudo podman" timeout 900 ./test/e2e.sh
