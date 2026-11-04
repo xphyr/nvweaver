@@ -37,7 +37,7 @@ lint:
 	podman run --rm --pull=missing -v "$$PWD:/spec:ro,Z" --workdir /spec $(REDOCLY_IMAGE) \
 		lint --skip-rule operation-4xx-response api/openapi.yaml
 
-# BUILD_FLAGS can add layer caching, as CI does.
+# BUILD_FLAGS can add layer caching, as CI does, or a platform such as --platform linux/arm64.
 images:
 	podman build $(BUILD_FLAGS) -t nvweaver:dev --build-arg VERSION=$(VERSION) -f Containerfile .
 	podman build $(BUILD_FLAGS) -t nvweaver:spdk --build-arg VERSION=$(VERSION) -f Containerfile.spdk .

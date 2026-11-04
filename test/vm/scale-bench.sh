@@ -4,7 +4,7 @@
 # find limits and compare changes, not as absolute numbers.
 #
 # Build the images first, with "make images". BUDGET_SECONDS limits each backend (600). SHAPE is
-# node or volume, as in scale-bench.py. SPDK needs fs.aio-max-nr raised for this many volumes.
+# node or volume, as in scale-bench.py. BACKENDS picks which to run. SPDK needs fs.aio-max-nr raised for this many volumes.
 set -u
 
 LAB=$(dirname "$0")/lab.sh
@@ -71,5 +71,9 @@ trap '"$LAB" down >/dev/null 2>&1 </dev/null' EXIT
 t 'sudo sysctl -q -w fs.aio-max-nr=1048576; uname -r; nproc; free -m | sed -n 2p' | tr '\n' ' '
 echo
 
-run_backend nvmet localhost/nvweaver:dev
-run_backend spdk localhost/nvweaver:spdk
+for backend in ${BACKENDS:-nvmet spdk}; do
+	case "$backend" in
+	nvmet) run_backend nvmet localhost/nvweaver:dev ;;
+	spdk) run_backend spdk localhost/nvweaver:spdk ;;
+	esac
+done

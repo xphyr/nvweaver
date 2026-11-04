@@ -19,6 +19,8 @@ type fake struct {
 	keys  map[string]bool
 	calls []string
 	fail  map[string]error
+	// listed counts nvmf_get_subsystems calls, and listedAll those not naming a subsystem.
+	listed, listedAll int
 }
 
 func newFake() *fake {
@@ -61,9 +63,15 @@ func (f *fake) Call(method string, params, result any) error {
 	sub := f.subs[p.NQN]
 	switch method {
 	case "nvmf_get_subsystems":
+		f.listed++
+		if p.NQN == "" {
+			f.listedAll++
+		}
 		list := []*liveSubsystem{}
 		for _, s := range f.subs {
-			list = append(list, s)
+			if p.NQN == "" || s.NQN == p.NQN {
+				list = append(list, s)
+			}
 		}
 		b, _ := json.Marshal(list)
 		return json.Unmarshal(b, result)
@@ -368,5 +376,43 @@ func TestErrnoCodesBecomeClientErrors(t *testing.T) {
 	var ce *target.ConflictError
 	if err := b.Reconcile(nil, state()); !errors.As(err, &ce) {
 		t.Errorf("want conflict, got %v", err)
+	}
+}
+
+func TestLiveChecksDontFetchEverything(t *testing.T) {
+	b, f := newBackend()
+	apply(t, b, state())
+
+	f.listed, f.listedAll = 0, 0
+	if !b.LiveEnabled(subA, 1) {
+		t.Error("namespace 1 should be live")
+	}
+	if b.LiveEnabled(subA, 2) {
+		t.Error("namespace 2 doesn't exist")
+	}
+	if b.LiveEnabled("nqn.2026-11.net.example:none", 1) {
+		t.Error("that subsystem doesn't exist")
+	}
+	if f.listedAll != 0 {
+		t.Errorf("a single check fetched every subsystem %d times", f.listedAll)
+	}
+
+	f.listed, f.listedAll = 0, 0
+	live := b.LiveEnabledAll()
+	for range 100 {
+		if !live(subA, 1) {
+			t.Error("namespace 1 should be live")
+		}
+	}
+	if live(subA, 2) || live("nqn.2026-11.net.example:none", 1) {
+		t.Error("reported something that doesn't exist as live")
+	}
+	if f.listed != 1 {
+		t.Errorf("fetched the live state %d times for one snapshot, want 1", f.listed)
+	}
+
+	f.fail["nvmf_get_subsystems"] = &RPCError{Code: -1, Message: "down"}
+	if b.LiveEnabled(subA, 1) || b.LiveEnabledAll()(subA, 1) {
+		t.Error("nothing should be reported live when SPDK can't be asked")
 	}
 }

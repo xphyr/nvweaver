@@ -50,6 +50,42 @@ hasn't been tested since Podman became the default.
 the host: native unit, SATA and file namespaces, data, a real reboot with no SELinux denials, and both
 images. Its tarball's Quadlet can't start, because it names a local image. Fixed for later releases.
 
+### Scale baseline
+
+`test/vm/scale-bench.sh` with 5,000 volumes across 100 node subsystems, before any scale work, on loopback in one VM
+with 4 vCPUs and 8 GB, using sparse files and with disk flushes made cheap. Other tests ran at the same time on the kernel
+target's run, so treat these as a baseline to compare against, not absolute numbers.
+
+| | Kernel target | SPDK target |
+|---|---|---|
+| Volumes reached | 5,000 | 5,000, with `fs.aio-max-nr` raised |
+| Add one volume, at 1,000 / 5,000 | 50 / 264 ms | 148 / 488 ms |
+| Move a volume between nodes, at 1,000 / 5,000 | 135 / 644 ms | 350 / 1,094 ms |
+| List everything, at 5,000 | 94 ms | 71 ms |
+| Building all 5,000 | 13 minutes | 26 minutes |
+| Stop, removing everything | 47 s | 113 s |
+| Start, restoring everything | 12 s | 144 s |
+| Discovery, and connecting to one subsystem | 0.03 s each | 0.03 s each |
+| Target memory | Not measured | 303 MB |
+| Service memory | 21 MB | 36 MB |
+
+Adding a volume takes longer as total volumes grow, because every change reconciles everything. With one subsystem per
+volume instead, the kernel target took 402 ms per volume, for five API calls, at only 1,000 volumes.
+
+Not measured: many connected hosts, I/O across many volumes, or a real disk.
+
+### Sharing a volume between hosts
+
+On both backends, at the `v0.1.0` code plus the list fix, with host A on a separate VM and host B on the target VM's
+own kernel. Host B was added while A had I/O running, with no errors and A's controller unchanged. Both saw the same
+NGUID, and each read what the other wrote. Then A was removed from the allow list while connected:
+
+| After removal | Kernel target | SPDK |
+|---|---|---|
+| A's controller | Stays `live` | `connecting`, retrying |
+| A writes | **Succeeds** | Blocks |
+| A reconnects after disconnecting | Refused | Refused |
+
 ### Storage pools
 
 Run directly on a Fedora 44 VM with LVM 2.03, before any nvweaver code uses them. On LVM thin, snapshots
@@ -78,6 +114,8 @@ code, in run 41906823419:
 | SPDK image, `SPDK_ARCH=armv8-a+crc` | Built in 126 seconds |
 | `/dev/kvm` | **Absent**, so the VM suites can't run there |
 | `nvmet-tcp`, `nvme-tcp` | Present, compressed with zstd, which the image's `modprobe` handled |
+
+`LAB_ARCH=aarch64 test/vm/lab.sh` is written to run emulated Arm VMs on an x86 machine, but hasn't run yet.
 
 Not covered on Arm: emulated disks, a separate initiator, a real install and reboot, SELinux, other
 kernels or distributions, physical Arm hardware, and CPUs older than this one.

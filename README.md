@@ -283,6 +283,9 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
 ## Known limits
 
 - NVMe/TCP only.
+- **On the kernel target, removing a host doesn't cut off a connection it already has.** It can keep reading and
+  writing until it disconnects, though it can't reconnect. SPDK drops the connection straight away. Don't rely on
+  removal to fence a host that's misbehaving.
 - **On SPDK, the kernel's `fs.aio-max-nr` limits volumes.** Each volume uses 128 per SPDK core, so the
   default of 65,536 allows 512 volumes on one core. Beyond that, adding a namespace fails with an
   unhelpful error. Raise it on the host with `sysctl -w fs.aio-max-nr=1048576`: a container with no

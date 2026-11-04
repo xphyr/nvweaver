@@ -40,21 +40,23 @@ Storage brings the biggest API changes, so design them in the spec first, and bu
 and CLI once, against the result.
 
 - [x] Write an OpenAPI spec for the API as it stands today (`api/openapi.yaml`)
-- [ ] Design pools, volumes, snapshots and clones in the spec, as in `docs/decisions.md` 19 to 24
+- [x] Agree the storage API: `docs/storage-api.md`
+- [ ] Move the storage API into the spec, as it's built
 - [x] Write `docs/pools.md`: how to create a suitable pool of each type
 - [x] Check automatically that the spec and the implementation stay in sync. Routes and field names
       are checked, not types or status codes
-- [ ] Add an endpoint listing available block devices, for choosing what goes in a pool
-- [ ] Benchmark the current API early, to give the design real numbers. See phase 5
+- [x] Benchmark the current API early, to give the design real numbers: see `docs/testing.md`
 - [ ] Move UUID and NGUID from the namespace to the volume, with a migration for saved state
 - [ ] Replace the full reconcile with an incremental one, batched per subsystem, so that the target
       of 5,000 volumes across 100 node subsystems is reachable
 - [ ] Add an intent log for pool operations, and internal names for volumes
-- [ ] Fix SPDK's slow list: each namespace's status check fetches its entire configuration
+- [ ] Make removing a host force its connections off on the kernel target, and test the effect on other hosts
+- [x] Fix SPDK's slow list, which fetched its entire configuration for each namespace
 - [ ] Check `fs.aio-max-nr` on SPDK at startup, and give a clear error. Each volume needs 128 per core
 - [ ] Handle long-running operations such as full clones, without blocking the API behind its
       single lock
-- [ ] Add support for an LVM backend, using thin provisioning only. Adopt existing pools only
+- [ ] Add support for an LVM backend, using thin provisioning only. Adopt existing pools only. In a container, use
+      the host's own `lvm`, and test that together with a shared `/dev`
   - [ ] Enable snapshots and cloning of NVMe devices
   - [ ] Give every clone a new UUID and NGUID, or hosts reject it as a duplicate
   - [ ] Activate thin snapshots explicitly, because they skip activation by default
@@ -74,6 +76,7 @@ and CLI once, against the result.
 - [ ] Add TLS to the API, needed before the web UI or CSI driver use it over a network
 - [ ] Create a shared Go API client from the spec, for the CLI and CSI driver to use
 - [ ] Add an endpoint showing connected hosts
+- [ ] Add an endpoint listing available block devices. Pools are adopted for now, so nothing needs it yet
 
 ## 4. Command line utility
 
@@ -104,7 +107,8 @@ Production-like scale is a requirement, so measure this before building on it.
   - [ ] Controller, and a privileged node plugin (`nvme connect`, format, mount)
   - [ ] Make volume creation idempotent by name in the API, because CSI retries calls
   - [ ] Use the snapshot and cloning features
-  - [ ] Map volumes into per-node subsystems, and shared volumes into a shared one
+  - [ ] Map volumes into per-node subsystems, and each shared volume into its own subsystem
+  - [ ] Test RWX block volumes and KubeVirt live migration with the real thing
   - [ ] Scope names per cluster, so that several clusters can share one target
   - [ ] Detect nodes sharing a `hostnqn`, common on cloned images, which breaks access
         control

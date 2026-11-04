@@ -578,11 +578,29 @@ func (b *Backend) Revalidate(nqn string, nsid uint32) error {
 
 // LiveEnabled implements target.Backend.
 func (b *Backend) LiveEnabled(nqn string, nsid uint32) bool {
-	live, err := b.subsystems()
-	if err != nil || live[nqn] == nil {
+	// Ask about this subsystem only: all of them is slow with thousands of namespaces.
+	var list []*liveSubsystem
+	if err := b.rpc.Call("nvmf_get_subsystems", map[string]any{"nqn": nqn}, &list); err != nil {
 		return false
 	}
-	return slices.ContainsFunc(live[nqn].Namespaces, func(l liveNamespace) bool { return l.NSID == nsid })
+	for _, sub := range list {
+		if sub.NQN == nqn && slices.ContainsFunc(sub.Namespaces, func(l liveNamespace) bool { return l.NSID == nsid }) {
+			return true
+		}
+	}
+	return false
+}
+
+// LiveEnabledAll implements target.Backend, fetching the live state once for all the checks.
+func (b *Backend) LiveEnabledAll() target.LiveChecker {
+	live, err := b.subsystems()
+	if err != nil {
+		return func(string, uint32) bool { return false }
+	}
+	return func(nqn string, nsid uint32) bool {
+		sub := live[nqn]
+		return sub != nil && slices.ContainsFunc(sub.Namespaces, func(l liveNamespace) bool { return l.NSID == nsid })
+	}
 }
 
 // probeListen finds problems SPDK would only report as "Invalid parameters".

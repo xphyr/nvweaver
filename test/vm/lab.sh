@@ -15,15 +15,48 @@
 #   load tgt|ini IMAGE   copy a local Podman image into a VM's root image store
 #
 # Settings: LAB_DIR (~/nvweaver-vms), LAB_CPUS (4), LAB_MEM_MB (4096).
+#
+# LAB_ARCH=aarch64 runs Arm VMs instead, in ~/nvweaver-vms-aarch64. On an x86 machine they are
+# emulated, which needs qemu-system-aarch64 and edk2-aarch64, and is many times slower. LAB_CPU
+# picks the CPU model (default max), such as cortex-a72 to stand in for older Arm hardware.
+# LAB_TIMEOUT_SCALE multiplies how long to wait for VMs (10 when emulating, otherwise 1).
 set -u
 
 FEDORA_VERSION=44
 FEDORA_BUILD=44-1.7
-BASE_NAME=Fedora-Cloud-Base-Generic-$FEDORA_BUILD.x86_64.qcow2
-FEDORA_URL=https://download.fedoraproject.org/pub/fedora/linux/releases/$FEDORA_VERSION/Cloud/x86_64/images
-CHECKSUM_NAME=Fedora-Cloud-$FEDORA_BUILD-x86_64-CHECKSUM
+LAB_ARCH=${LAB_ARCH:-x86_64}
+BASE_NAME=Fedora-Cloud-Base-Generic-$FEDORA_BUILD.$LAB_ARCH.qcow2
+FEDORA_URL=https://download.fedoraproject.org/pub/fedora/linux/releases/$FEDORA_VERSION/Cloud/$LAB_ARCH/images
+CHECKSUM_NAME=Fedora-Cloud-$FEDORA_BUILD-$LAB_ARCH-CHECKSUM
 
-LAB_DIR=${LAB_DIR:-$HOME/nvweaver-vms}
+case "$LAB_ARCH" in
+x86_64)
+	LAB_DIR=${LAB_DIR:-$HOME/nvweaver-vms}
+	QEMU=(qemu-system-x86_64)
+	MACHINE=q35
+	# The q35 machine has an AHCI controller built in.
+	SATA_ARGS=(-device "ide-hd,drive=sata0,bus=ide.0,serial=NVWEAVERSATA")
+	;;
+aarch64)
+	LAB_DIR=${LAB_DIR:-$HOME/nvweaver-vms-aarch64}
+	QEMU=(qemu-system-aarch64 -bios "${LAB_FIRMWARE:-/usr/share/edk2/aarch64/QEMU_EFI.fd}")
+	MACHINE=virt
+	SATA_ARGS=(-device "ich9-ahci,id=ahci" -device "ide-hd,drive=sata0,bus=ahci.0,serial=NVWEAVERSATA")
+	;;
+*)
+	echo "lab: LAB_ARCH must be x86_64 or aarch64" >&2
+	exit 2
+	;;
+esac
+if [ "$(uname -m)" = "$LAB_ARCH" ]; then
+	ACCEL=kvm
+	LAB_CPU=${LAB_CPU:-host}
+	LAB_TIMEOUT_SCALE=${LAB_TIMEOUT_SCALE:-1}
+else
+	ACCEL=tcg,thread=multi
+	LAB_CPU=${LAB_CPU:-max}
+	LAB_TIMEOUT_SCALE=${LAB_TIMEOUT_SCALE:-10}
+fi
 LAB_CPUS=${LAB_CPUS:-4}
 LAB_MEM_MB=${LAB_MEM_MB:-4096}
 GOLDEN=$LAB_DIR/golden.qcow2
@@ -119,20 +152,20 @@ runcmd:
 EOF
 	make_seed "$LAB_DIR/base-seed.iso" base "$LAB_DIR/base-user-data"
 	echo "Provisioning the base image; this upgrades Fedora and takes several minutes"
-	qemu-system-x86_64 -name nvweaver-lab-base -machine q35,accel=kvm -cpu host \
+	"${QEMU[@]}" -name nvweaver-lab-base -machine "$MACHINE,accel=$ACCEL" -cpu "$LAB_CPU" \
 		-smp "$LAB_CPUS" -m "$LAB_MEM_MB" -display none -daemonize \
 		-pidfile "$LAB_DIR/base.pid" -serial "file:$LAB_DIR/base-console.log" \
 		-drive "file=$building,if=virtio,format=qcow2" \
 		-drive "file=$LAB_DIR/base-seed.iso,if=virtio,format=raw,readonly=on" \
 		-device virtio-rng-pci -nic user,model=virtio-net-pci || die "cannot start QEMU"
-	for _ in $(seq 1 240); do
+	for _ in $(seq 1 $((240 * LAB_TIMEOUT_SCALE))); do
 		running "$LAB_DIR/base.pid" || break
 		sleep 5
 	done
 	if running "$LAB_DIR/base.pid"; then
 		kill "$(cat "$LAB_DIR/base.pid")"
 		tail -20 "$LAB_DIR/base-console.log"
-		die "provisioning did not finish in 20 minutes"
+		die "provisioning did not finish in $((20 * LAB_TIMEOUT_SCALE)) minutes"
 	fi
 	rm -f "$LAB_DIR/base.pid"
 	# Flatten, so that the base image is one self-contained file.
@@ -188,7 +221,7 @@ start_vm() { # NAME SSH-PORT MAC ADDRESS LINK-OPTS [extra QEMU args...]
 	vm_user_data "$RUN/$name-user-data"
 	vm_network "$RUN/$name-network" "$mac" "$addr"
 	make_seed "$RUN/$name-seed.iso" "$name" "$RUN/$name-user-data" "$RUN/$name-network"
-	qemu-system-x86_64 -name "nvweaver-lab-$name" -machine q35,accel=kvm -cpu host \
+	"${QEMU[@]}" -name "nvweaver-lab-$name" -machine "$MACHINE,accel=$ACCEL" -cpu "$LAB_CPU" \
 		-smp "$LAB_CPUS" -m "$LAB_MEM_MB" -display none -daemonize \
 		-pidfile "$RUN/$name.pid" -serial "file:$RUN/$name-console.log" \
 		-drive "file=$disk,if=none,id=root,format=qcow2,cache=unsafe" \
@@ -222,13 +255,13 @@ cmd_up() {
 		-drive "file=$RUN/nvme1.qcow2,if=none,id=nvme1,format=qcow2,cache=unsafe" \
 		-device "nvme,serial=NVWEAVER0002,drive=nvme1" \
 		-drive "file=$RUN/sata0.qcow2,if=none,id=sata0,format=qcow2,cache=unsafe" \
-		-device "ide-hd,drive=sata0,bus=ide.0,serial=NVWEAVERSATA" \
+		"${SATA_ARGS[@]}" \
 		-drive "file=$RUN/virtio0.qcow2,if=none,id=scratchv,format=qcow2,cache=unsafe" \
 		-device "virtio-blk-pci,drive=scratchv,serial=NVWEAVERVIRTIO"
 	start_vm ini 2222 52:54:00:99:00:02 10.99.0.2 server=off
 	local vm
 	for vm in tgt ini; do
-		for _ in $(seq 1 90); do
+		for _ in $(seq 1 $((90 * LAB_TIMEOUT_SCALE))); do
 			timeout 20 ssh "${SSH_OPTS[@]}" -p "$(ssh_port "$vm")" lab@127.0.0.1 'test -s /etc/nvme/hostnqn' 2>/dev/null && break
 			sleep 2
 		done

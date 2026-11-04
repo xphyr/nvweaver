@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -364,5 +365,47 @@ func TestSystemReportsVersion(t *testing.T) {
 	}
 	if got.Version != "1.2.3" {
 		t.Errorf("version = %q", got.Version)
+	}
+}
+
+// countingBackend counts how a listing checks whether namespaces are live.
+type countingBackend struct {
+	target.Backend
+	single, all int
+}
+
+func (c *countingBackend) LiveEnabled(nqn string, nsid uint32) bool {
+	c.single++
+	return c.Backend.LiveEnabled(nqn, nsid)
+}
+
+func (c *countingBackend) LiveEnabledAll() target.LiveChecker {
+	c.all++
+	return c.Backend.LiveEnabledAll()
+}
+
+func TestListingChecksLiveStateOnce(t *testing.T) {
+	backend := &countingBackend{Backend: &target.Target{FS: targettest.New(), Root: "/nvmet"}}
+	m, err := NewManager(backend, t.TempDir(), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &env{t: t, http: NewServer(m, "").Handler()}
+	for i := range 3 {
+		sub := fmt.Sprintf("%s%d", subNQN, i)
+		e.do("POST", "/v1/subsystems", obj{"nqn": sub}, 201)
+		e.do("POST", "/v1/subsystems/"+sub+"/namespaces", obj{"nsid": 1, "file": obj{"name": sub[len(sub)-1:], "size_bytes": 4096}}, 201)
+	}
+	backend.single, backend.all = 0, 0
+	rec := httptest.NewRecorder()
+	e.http.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/subsystems", nil))
+	if rec.Code != 200 {
+		t.Fatalf("list = %d", rec.Code)
+	}
+	if backend.all != 1 || backend.single != 0 {
+		t.Errorf("listing made %d snapshots and %d single checks, want 1 and 0", backend.all, backend.single)
+	}
+	if !strings.Contains(rec.Body.String(), `"live_enabled": true`) {
+		t.Errorf("listing lost live state: %s", rec.Body)
 	}
 }

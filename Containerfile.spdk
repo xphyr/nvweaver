@@ -11,8 +11,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}"
 FROM docker.io/library/debian:trixie-slim AS spdk
 ARG SPDK_VERSION=v26.09
 # SPDK defaults to the build machine's CPU, and an image built that way dies with
-# an illegal instruction on older hosts, so this names a baseline instead.
-ARG SPDK_ARCH=x86-64-v2
+# an illegal instruction on older hosts, so this names a baseline for each architecture.
+ARG SPDK_ARCH=
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git gcc g++ make pkg-config nasm autoconf automake libtool \
       meson ninja-build python3 python3-pyelftools python3-venv python3-yaml python3-jinja2 python3-tabulate \
@@ -20,7 +20,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git clone --depth 1 --branch "$SPDK_VERSION" --recurse-submodules --shallow-submodules \
       https://github.com/spdk/spdk.git /spdk
 WORKDIR /spdk
-RUN ./configure --target-arch="$SPDK_ARCH" --without-uring \
+RUN arch="$SPDK_ARCH"; \
+    if [ -z "$arch" ]; then \
+      case "$(uname -m)" in \
+        x86_64) arch=x86-64-v2 ;; \
+        aarch64) arch=armv8-a+crc ;; \
+        *) echo "Set SPDK_ARCH for $(uname -m)"; exit 1 ;; \
+      esac; \
+    fi; \
+    ./configure --target-arch="$arch" --without-uring \
       --disable-tests --disable-unit-tests --disable-examples \
       --without-vhost --without-virtio --without-fsdev --without-aio-fsdev \
       --without-nvme-cuse --without-crypto --without-isal-crypto \

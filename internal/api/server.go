@@ -475,7 +475,11 @@ type subsystemView struct {
 }
 
 func (s *Server) viewNamespace(nqn string, n *target.Namespace) namespaceView {
-	v := namespaceView{Namespace: n, LiveEnabled: s.m.backend.LiveEnabled(nqn, n.NSID)}
+	return viewNamespaceWith(s.m.backend.LiveEnabled, nqn, n)
+}
+
+func viewNamespaceWith(live target.LiveChecker, nqn string, n *target.Namespace) namespaceView {
+	v := namespaceView{Namespace: n, LiveEnabled: live(nqn, n.NSID)}
 	if size, ok := backingSize(n.DevicePath); ok {
 		v.SizeBytes = &size
 	}
@@ -483,9 +487,13 @@ func (s *Server) viewNamespace(nqn string, n *target.Namespace) namespaceView {
 }
 
 func (s *Server) viewSubsystem(sub *target.Subsystem) subsystemView {
+	return viewSubsystemWith(s.m.backend.LiveEnabled, sub)
+}
+
+func viewSubsystemWith(live target.LiveChecker, sub *target.Subsystem) subsystemView {
 	v := subsystemView{Subsystem: sub, Namespaces: []namespaceView{}}
 	for _, nsid := range slices.Sorted(maps.Keys(sub.Namespaces)) {
-		v.Namespaces = append(v.Namespaces, s.viewNamespace(sub.NQN, sub.Namespaces[nsid]))
+		v.Namespaces = append(v.Namespaces, viewNamespaceWith(live, sub.NQN, sub.Namespaces[nsid]))
 	}
 	return v
 }
@@ -493,8 +501,9 @@ func (s *Server) viewSubsystem(sub *target.Subsystem) subsystemView {
 func (s *Server) listSubsystems(w http.ResponseWriter, _ *http.Request) error {
 	return s.m.view(func(st *target.State) error {
 		out := []subsystemView{}
+		live := s.m.backend.LiveEnabledAll()
 		for _, nqn := range slices.Sorted(maps.Keys(st.Subsystems)) {
-			out = append(out, s.viewSubsystem(st.Subsystems[nqn]))
+			out = append(out, viewSubsystemWith(live, st.Subsystems[nqn]))
 		}
 		writeJSON(w, http.StatusOK, out)
 		return nil

@@ -19,6 +19,9 @@ type Capabilities struct {
 	WildcardListen bool `json:"wildcard_listen"`
 }
 
+// LiveChecker reports whether a namespace is really being served.
+type LiveChecker func(nqn string, nsid uint32) bool
+
 // Backend is an NVMe/TCP target implementation.
 type Backend interface {
 	// Name identifies the backend, as in NVWEAVER_BACKEND.
@@ -34,6 +37,9 @@ type Backend interface {
 	Revalidate(nqn string, nsid uint32) error
 	// LiveEnabled reports whether a namespace is really being served.
 	LiveEnabled(nqn string, nsid uint32) bool
+	// LiveEnabledAll is for checking many namespaces at once. It may take a snapshot, so don't
+	// keep the result beyond one request.
+	LiveEnabledAll() LiveChecker
 	// Available reports whether the target is usable right now.
 	Available() bool
 	// Close releases anything the backend runs. Configuration removal is
@@ -81,6 +87,9 @@ func (t *Target) Check(s *State) error {
 	}
 	return nil
 }
+
+// LiveEnabledAll implements Backend. Each check reads one configfs file, so there's nothing to save.
+func (t *Target) LiveEnabledAll() LiveChecker { return t.LiveEnabled }
 
 // Close implements Backend. The kernel target needs no release.
 func (t *Target) Close() error { return nil }

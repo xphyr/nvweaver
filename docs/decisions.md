@@ -218,3 +218,13 @@ there, not as absolute numbers.
 - **Left room for:** group snapshots, which all three vendors support. Not in the first version, and
   LVM may not offer an atomic multi-volume snapshot.
 
+## 25. nvweaver runs on its own machine, with the privileges it needs
+
+- **Chosen:** the expected deployment is a dedicated machine outside any Kubernetes cluster, serving it over the
+  network. It's a storage system, so running privileged is fine.
+- **Why it matters:** this removes constraints such as cluster pod security policies and needing to manage LVM with no
+  capabilities. Running SPDK with no capabilities still works, and is tested, but isn't something to design around.
+- **Consequence:** in a container, LVM runs as the host's own through `nsenter`. See `docs/storage-api.md`.
+- **For the CSI driver:** its controller and node plugin run in the cluster and reach this machine over the network, so
+  the API's TLS and token matter.
+
