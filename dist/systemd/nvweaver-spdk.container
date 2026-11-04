@@ -1,0 +1,33 @@
+# Podman Quadlet: runs the SPDK image as a service, on hosts without nvmet-tcp.
+# Build the image first: podman build -t nvweaver:spdk -f Containerfile.spdk .
+[Unit]
+Description=NVMe over TCP target (SPDK, in a container)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=30
+
+[Container]
+Image=localhost/nvweaver:spdk
+# Built locally, so there is no registry to pull from if it is missing.
+Pull=never
+Network=host
+DropCapability=all
+NoNewPrivileges=true
+Notify=true
+Volume=nvweaver-data:/var/lib/nvweaver
+Environment=NVWEAVER_BACKEND=spdk
+# Must exist: unlike in a plain unit, Quadlet has no "-" prefix to make it optional.
+EnvironmentFile=/etc/nvweaver/nvweaver.env
+# One line for each disk this service may export. It can reach no others.
+#AddDevice=/dev/disk/by-id/your-disk
+
+[Service]
+# SPDK's data path stops with the container, so a crash needs a restart.
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

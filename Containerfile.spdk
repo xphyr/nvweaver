@@ -1,0 +1,38 @@
+# The SPDK variant, for hosts whose kernel has no nvmet-tcp. It also contains
+# the kernel backend, so NVWEAVER_BACKEND=auto still prefers the kernel.
+FROM docker.io/library/golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /nvweaverd ./cmd/nvweaverd
+
+FROM docker.io/library/debian:trixie-slim AS spdk
+ARG SPDK_VERSION=v26.09
+# SPDK defaults to the build machine's CPU, and an image built that way dies with
+# an illegal instruction on older hosts, so this names a baseline instead.
+ARG SPDK_ARCH=x86-64-v2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates git gcc g++ make pkg-config nasm autoconf automake libtool \
+      meson ninja-build python3 python3-pyelftools python3-venv python3-yaml python3-jinja2 python3-tabulate \
+      libaio-dev libnuma-dev libssl-dev uuid-dev libncurses-dev libcunit1-dev
+RUN git clone --depth 1 --branch "$SPDK_VERSION" --recurse-submodules --shallow-submodules \
+      https://github.com/spdk/spdk.git /spdk
+WORKDIR /spdk
+RUN ./configure --target-arch="$SPDK_ARCH" --without-uring \
+      --disable-tests --disable-unit-tests --disable-examples \
+      --without-vhost --without-virtio --without-fsdev --without-aio-fsdev \
+      --without-nvme-cuse --without-crypto --without-isal-crypto \
+      --without-ocf --without-rdma --without-fio --without-xnvme --without-vfio-user \
+      --without-idxd --without-rbd --without-iscsi-initiator --without-sma --without-avahi \
+    && make -j"$(nproc)" \
+    && strip build/bin/nvmf_tgt
+
+FROM docker.io/library/debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      kmod libaio1t64 libnuma1 libssl3t64 libuuid1 openssl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /nvweaverd /usr/local/bin/nvweaverd
+COPY --from=spdk /spdk/build/bin/nvmf_tgt /usr/local/bin/nvmf_tgt
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/local/bin/nvweaverd"]

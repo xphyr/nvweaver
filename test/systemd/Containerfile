@@ -1,0 +1,32 @@
+# A disposable machine for test/systemd-e2e.sh: real systemd as PID 1, with the
+# service put in place by the real "make install".
+FROM docker.io/library/golang:1.26-alpine AS build
+RUN apk add --no-cache make
+WORKDIR /src
+COPY go.mod Makefile README.md ./
+COPY cmd ./cmd
+COPY internal ./internal
+COPY dist ./dist
+RUN make install install-quadlet DESTDIR=/stage
+
+FROM docker.io/library/debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      systemd systemd-sysv dbus kmod curl jq procps podman \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /stage/ /
+# The test machine shares the real host's kernel. Everything that would reach out
+# and change the host (device nodes, sysctls, modules, firmware, time) is masked.
+RUN systemctl mask \
+      systemd-udevd.service systemd-udevd-kernel.socket systemd-udevd-control.socket \
+      systemd-udev-trigger.service systemd-udev-settle.service \
+      systemd-tmpfiles-setup-dev.service systemd-tmpfiles-setup-dev-early.service \
+      systemd-sysctl.service systemd-modules-load.service kmod-static-nodes.service \
+      systemd-binfmt.service proc-sys-fs-binfmt_misc.automount systemd-hwdb-update.service \
+      systemd-random-seed.service systemd-firstboot.service systemd-remount-fs.service \
+      systemd-timesyncd.service getty.target console-getty.service \
+      dev-hugepages.mount dev-mqueue.mount sys-kernel-debug.mount sys-kernel-tracing.mount \
+      sys-fs-fuse-connections.mount
+# Nested inside the container engine, overlay storage isn't dependable.
+RUN mkdir -p /etc/containers && printf '[storage]\ndriver = "vfs"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' > /etc/containers/storage.conf
+STOPSIGNAL SIGRTMIN+3
+ENTRYPOINT ["/sbin/init"]
