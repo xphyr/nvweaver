@@ -1,0 +1,961 @@
+openapi: 3.1.0
+info:
+  title: nvweaver API
+  summary: Configure an NVMe over TCP target.
+  description: |
+    Everything here is configuration. NVMe/TCP traffic goes to the target itself, which
+    is the kernel's `nvmet` or SPDK, and never through this API.
+
+    A request either happens completely or not at all: if the target refuses part of a
+    change, what was already applied is rolled back. Until version 1.0.0, this API may
+    still change.
+  version: 0.1.0
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://127.0.0.1:8420
+    description: The default address, on the machine running the service.
+tags:
+  - name: system
+    description: The service and the target it runs.
+  - name: ports
+    description: TCP listeners. Hosts discover subsystems through any port attached to one.
+  - name: hosts
+    description: Initiator identities, with optional DH-HMAC-CHAP credentials.
+  - name: subsystems
+    description: What hosts connect to, and which hosts may do so through which ports.
+  - name: namespaces
+    description: The block devices and files that a subsystem exports.
+security:
+  - {}
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Check that the target is usable
+      description: Never needs a token.
+      tags: [system]
+      security:
+        - {}
+      responses:
+        '200':
+          description: The target is usable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: The target isn't usable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /v1/system:
+    get:
+      operationId: getSystem
+      summary: Show the service, its backend and what that backend can do
+      tags: [system]
+      responses:
+        '200':
+          description: The system's state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/System'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/ports:
+    get:
+      operationId: listPorts
+      summary: List ports
+      tags: [ports]
+      responses:
+        '200':
+          description: All ports, by ID.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Port'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createPort
+      summary: Create a port
+      description: A port only starts listening once a subsystem is attached to it.
+      tags: [ports]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortCreate'
+      responses:
+        '201':
+          description: The new port.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Port'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /v1/ports/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PortID'
+    get:
+      operationId: getPort
+      summary: Show a port
+      tags: [ports]
+      responses:
+        '200':
+          description: The port.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Port'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updatePort
+      summary: Change a port
+      description: |
+        Drops the port's connections briefly if it is in use, because the kernel only
+        allows port changes while no subsystem is attached. Hosts reconnect by themselves.
+      tags: [ports]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortUpdate'
+      responses:
+        '200':
+          description: The changed port.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Port'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+    delete:
+      operationId: deletePort
+      summary: Delete a port
+      description: Refused while a subsystem is attached to it.
+      tags: [ports]
+      responses:
+        '204':
+          description: The port is gone.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/hosts:
+    get:
+      operationId: listHosts
+      summary: List hosts
+      tags: [hosts]
+      responses:
+        '200':
+          description: All hosts, by NQN.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Host'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createHost
+      summary: Create a host
+      tags: [hosts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostCreate'
+      responses:
+        '201':
+          description: The new host. Secrets are never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Host'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /v1/hosts/{nqn}:
+    parameters:
+      - $ref: '#/components/parameters/NQN'
+    get:
+      operationId: getHost
+      summary: Show a host
+      tags: [hosts]
+      responses:
+        '200':
+          description: The host. Secrets are never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Host'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateHost
+      summary: Change a host's credentials
+      description: Credentials can't be cleared. To remove them, delete and recreate the host.
+      tags: [hosts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostUpdate'
+      responses:
+        '200':
+          description: The changed host.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Host'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+    delete:
+      operationId: deleteHost
+      summary: Delete a host
+      description: Refused while a subsystem allows it.
+      tags: [hosts]
+      responses:
+        '204':
+          description: The host is gone.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/subsystems:
+    get:
+      operationId: listSubsystems
+      summary: List subsystems
+      tags: [subsystems]
+      responses:
+        '200':
+          description: All subsystems, by NQN.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Subsystem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createSubsystem
+      summary: Create a subsystem
+      tags: [subsystems]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubsystemCreate'
+      responses:
+        '201':
+          description: The new subsystem.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subsystem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /v1/subsystems/{nqn}:
+    parameters:
+      - $ref: '#/components/parameters/NQN'
+    get:
+      operationId: getSubsystem
+      summary: Show a subsystem
+      tags: [subsystems]
+      responses:
+        '200':
+          description: The subsystem.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subsystem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateSubsystem
+      summary: Change a subsystem's access policy
+      description: |
+        Serial and model can't be changed, because the kernel freezes them once a host has
+        identified the controller.
+      tags: [subsystems]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubsystemUpdate'
+      responses:
+        '200':
+          description: The changed subsystem.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subsystem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+    delete:
+      operationId: deleteSubsystem
+      summary: Delete a subsystem
+      description: Also removes its namespaces. Managed files are kept.
+      tags: [subsystems]
+      responses:
+        '204':
+          description: The subsystem is gone.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/subsystems/{nqn}/ports/{id}:
+    parameters:
+      - $ref: '#/components/parameters/NQN'
+      - $ref: '#/components/parameters/PortID'
+    put:
+      operationId: attachPort
+      summary: Attach a subsystem to a port
+      description: Idempotent. The first subsystem attached to a port makes it start listening.
+      tags: [subsystems]
+      responses:
+        '204':
+          description: The subsystem is attached.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+    delete:
+      operationId: detachPort
+      summary: Detach a subsystem from a port
+      description: Idempotent.
+      tags: [subsystems]
+      responses:
+        '204':
+          description: The subsystem is detached.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/subsystems/{nqn}/hosts/{host}:
+    parameters:
+      - $ref: '#/components/parameters/NQN'
+      - name: host
+        in: path
+        required: true
+        description: The host's NQN.
+        schema:
+          type: string
+    put:
+      operationId: allowHost
+      summary: Allow a host to use a subsystem
+      description: Idempotent. Refused on a subsystem that allows any host.
+      tags: [subsystems]
+      responses:
+        '204':
+          description: The host is allowed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+    delete:
+      operationId: denyHost
+      summary: Stop allowing a host to use a subsystem
+      description: Idempotent.
+      tags: [subsystems]
+      responses:
+        '204':
+          description: The host is no longer allowed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/subsystems/{nqn}/namespaces:
+    parameters:
+      - $ref: '#/components/parameters/NQN'
+    get:
+      operationId: listNamespaces
+      summary: List a subsystem's namespaces
+      tags: [namespaces]
+      responses:
+        '200':
+          description: The subsystem's namespaces, by NSID.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Namespace'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: createNamespace
+      summary: Export a device or file
+      description: |
+        Give exactly one of `device_path` or `file`. A block device that is mounted, used as
+        swap or held by LVM or MD is refused, as is exporting the same thing twice.
+      tags: [namespaces]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NamespaceCreate'
+      responses:
+        '201':
+          description: The new namespace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Namespace'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+  /v1/subsystems/{nqn}/namespaces/{nsid}:
+    parameters:
+      - $ref: '#/components/parameters/NQN'
+      - name: nsid
+        in: path
+        required: true
+        description: The namespace ID.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 1024
+    get:
+      operationId: getNamespace
+      summary: Show a namespace
+      tags: [namespaces]
+      responses:
+        '200':
+          description: The namespace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Namespace'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateNamespace
+      summary: Change a namespace
+      description: Changing `device_path` or `buffered_io` interrupts hosts briefly.
+      tags: [namespaces]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NamespaceUpdate'
+      responses:
+        '200':
+          description: The changed namespace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Namespace'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+    delete:
+      operationId: deleteNamespace
+      summary: Stop exporting a namespace
+      tags: [namespaces]
+      parameters:
+        - name: delete_file
+          in: query
+          description: Also delete the file, which must be one this service manages.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '204':
+          description: The namespace is gone.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Required on everything but `/healthz`, when `NVWEAVER_API_TOKEN` is set.
+  parameters:
+    NQN:
+      name: nqn
+      in: path
+      required: true
+      description: An NVMe Qualified Name.
+      schema:
+        $ref: '#/components/schemas/NQN'
+    PortID:
+      name: id
+      in: path
+      required: true
+      description: The port's ID.
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 65534
+  responses:
+    BadRequest:
+      description: The body isn't valid JSON, or has an unknown field.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: The bearer token is missing or wrong.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: There is no such object.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: This clashes with existing configuration, or something else is using it.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Invalid:
+      description: The request can't be carried out, or this backend can't do it.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    NQN:
+      type: string
+      maxLength: 223
+      examples:
+        - nqn.2026-11.net.example:vol1
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+    Capabilities:
+      type: object
+      description: What this backend can do that the other might not.
+      required:
+        - passthrough
+        - survives_service_exit
+        - per_port_inline_data
+        - buffered_io
+        - per_host_dhchap_params
+        - wildcard_listen
+      properties:
+        passthrough:
+          type: boolean
+          description: Can export a whole NVMe controller.
+        survives_service_exit:
+          type: boolean
+          description: Can keep serving hosts with no service running.
+        per_port_inline_data:
+          type: boolean
+          description: Can set `inline_data_size` for each port.
+        buffered_io:
+          type: boolean
+          description: Can serve a namespace through the page cache.
+        per_host_dhchap_params:
+          type: boolean
+          description: Honours `dhchap_hash` and `dhchap_dhgroup` for each host.
+        wildcard_listen:
+          type: boolean
+          description: Can serve hosts on `0.0.0.0` or `::`.
+    System:
+      type: object
+      required: [version, backend, capabilities, kernel, modules, target_ready, ports, hosts, subsystems]
+      properties:
+        version:
+          type: string
+        backend:
+          type: string
+          enum: [nvmet, spdk]
+        capabilities:
+          $ref: '#/components/schemas/Capabilities'
+        kernel:
+          type: string
+          description: The running kernel's release.
+        modules:
+          type: object
+          description: Whether each kernel target module is loaded.
+          additionalProperties:
+            type: boolean
+        target_ready:
+          type: boolean
+        ports:
+          type: integer
+          description: How many ports are configured.
+        hosts:
+          type: integer
+          description: How many hosts are configured.
+        subsystems:
+          type: integer
+          description: How many subsystems are configured.
+    Port:
+      type: object
+      required: [id, address, service]
+      properties:
+        id:
+          type: integer
+        address:
+          type: string
+          description: An IP address. The SPDK backend refuses wildcard addresses.
+          examples:
+            - 192.0.2.10
+        service:
+          type: integer
+          description: The TCP port.
+          examples:
+            - 4420
+        inline_data_size:
+          type: integer
+          minimum: 0
+          description: Refused by the SPDK backend.
+    PortCreate:
+      type: object
+      additionalProperties: false
+      required: [address]
+      properties:
+        id:
+          type: integer
+          minimum: 0
+          maximum: 65534
+          description: The lowest free ID if not given.
+        address:
+          type: string
+        service:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          default: 4420
+        inline_data_size:
+          type: integer
+          minimum: 0
+    PortUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        address:
+          type: string
+        service:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        inline_data_size:
+          type: integer
+          minimum: 0
+    Host:
+      type: object
+      required: [nqn, has_dhchap_key, has_dhchap_ctrl_key]
+      properties:
+        nqn:
+          $ref: '#/components/schemas/NQN'
+        has_dhchap_key:
+          type: boolean
+        has_dhchap_ctrl_key:
+          type: boolean
+        dhchap_hash:
+          type: string
+        dhchap_dhgroup:
+          type: string
+    HostCreate:
+      type: object
+      additionalProperties: false
+      required: [nqn]
+      properties:
+        nqn:
+          $ref: '#/components/schemas/NQN'
+        dhchap_key:
+          type: string
+          writeOnly: true
+          description: Never returned. Stored in plain text in the service's state file.
+        dhchap_ctrl_key:
+          type: string
+          writeOnly: true
+          description: Never returned. Stored in plain text in the service's state file.
+        dhchap_hash:
+          type: string
+          description: Accepted but not enforced per host by the SPDK backend.
+          examples:
+            - hmac(sha256)
+        dhchap_dhgroup:
+          type: string
+          description: Accepted but not enforced per host by the SPDK backend.
+    HostUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        dhchap_key:
+          type: string
+          writeOnly: true
+        dhchap_ctrl_key:
+          type: string
+          writeOnly: true
+        dhchap_hash:
+          type: string
+        dhchap_dhgroup:
+          type: string
+    Subsystem:
+      type: object
+      required: [nqn, serial, model, allow_any_host, allowed_hosts, ports, namespaces]
+      properties:
+        nqn:
+          $ref: '#/components/schemas/NQN'
+        serial:
+          type: string
+        model:
+          type: string
+        allow_any_host:
+          type: boolean
+        allowed_hosts:
+          type: array
+          items:
+            $ref: '#/components/schemas/NQN'
+        ports:
+          type: array
+          items:
+            type: integer
+        passthru_device:
+          type: string
+        namespaces:
+          type: array
+          items:
+            $ref: '#/components/schemas/Namespace'
+    SubsystemCreate:
+      type: object
+      additionalProperties: false
+      required: [nqn]
+      properties:
+        nqn:
+          $ref: '#/components/schemas/NQN'
+        serial:
+          type: string
+          minLength: 1
+          maxLength: 20
+          description: Generated if not given. Can't be changed later.
+        model:
+          type: string
+          minLength: 1
+          maxLength: 40
+          default: nvweaver
+          description: Can't be changed later.
+        allow_any_host:
+          type: boolean
+          default: false
+          description: Can't be combined with `allowed_hosts`.
+        allowed_hosts:
+          type: array
+          items:
+            $ref: '#/components/schemas/NQN'
+        ports:
+          type: array
+          items:
+            type: integer
+        passthru_device:
+          type: string
+          description: |
+            An NVMe controller such as `/dev/nvme0`, for hosts to use directly. The subsystem
+            can't then have namespaces. Refused by the SPDK backend.
+    SubsystemUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        allow_any_host:
+          type: boolean
+    Namespace:
+      type: object
+      required: [nsid, device_path, uuid, nguid, enabled, buffered_io, live_enabled]
+      properties:
+        nsid:
+          type: integer
+        device_path:
+          type: string
+          description: The path as seen by the service, which may be inside a container.
+        uuid:
+          type: string
+          description: Stays the same across restarts and between backends.
+        nguid:
+          type: string
+          description: Stays the same across restarts and between backends.
+        enabled:
+          type: boolean
+          description: Whether it should be served.
+        buffered_io:
+          type: boolean
+        managed_file:
+          type: boolean
+          description: Whether it is a file created by this service.
+        live_enabled:
+          type: boolean
+          description: Whether it really is being served, which can differ from `enabled`.
+        size_bytes:
+          type: integer
+          format: int64
+    NamespaceCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        nsid:
+          type: integer
+          minimum: 0
+          maximum: 1024
+          description: The lowest free ID if not given, or 0.
+        device_path:
+          type: string
+          description: |
+            An absolute path to a block device or file. The kernel backend refuses files on
+            overlayfs, which includes a container's own filesystem.
+        file:
+          type: object
+          description: Create a sparse file in the service's volume directory.
+          additionalProperties: false
+          required: [name, size_bytes]
+          properties:
+            name:
+              type: string
+              maxLength: 128
+            size_bytes:
+              type: integer
+              format: int64
+              minimum: 4096
+              description: A multiple of 4096.
+        uuid:
+          type: string
+          description: Generated if not given.
+        nguid:
+          type: string
+          description: Generated if not given.
+        buffered_io:
+          type: boolean
+          default: false
+          description: Refused by the SPDK backend.
+        enabled:
+          type: boolean
+          default: true
+    NamespaceUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        device_path:
+          type: string
+        buffered_io:
+          type: boolean
+        size_bytes:
+          type: integer
+          format: int64
+          description: Grow a file created by this service. Hosts are told of the new size.

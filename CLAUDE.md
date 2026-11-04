@@ -10,6 +10,7 @@ Read these before changing related code:
 - [docs/decisions.md](docs/decisions.md): what was chosen, what was rejected and why
 - [docs/testing.md](docs/testing.md): coverage, latest results, untested areas, pitfalls
 - [docs/releasing.md](docs/releasing.md): CI, releases and what they publish
+- [api/openapi.yaml](api/openapi.yaml): the API. Change it first, then the code; tests compare them
 - [TODO.md](TODO.md): the roadmap, in dependency order
 
 ## Commands

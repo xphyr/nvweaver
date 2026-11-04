@@ -25,6 +25,8 @@ type Server struct {
 	Version string
 	m       *Manager
 	token   string
+	// patterns lists the routes, for comparing with the OpenAPI spec.
+	patterns []string
 }
 
 // NewServer returns an API handler. A non-empty token is required as a bearer
@@ -102,7 +104,10 @@ func decode(w http.ResponseWriter, r *http.Request, v any) error {
 // Handler returns the routed API.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	route := func(pattern string, h handler) { mux.HandleFunc(pattern, s.wrap(h)) }
+	route := func(pattern string, h handler) {
+		s.patterns = append(s.patterns, pattern)
+		mux.HandleFunc(pattern, s.wrap(h))
+	}
 
 	route("GET /v1/system", s.getSystem)
 
@@ -137,6 +142,7 @@ func (s *Server) Handler() http.Handler {
 
 	authed := s.authenticate(mux)
 	root := http.NewServeMux()
+	s.patterns = append(s.patterns, "GET /healthz")
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		if !s.m.backend.Available() {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "target unavailable"})

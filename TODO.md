@@ -14,9 +14,10 @@ Work through these in order: each phase depends on the ones before it.
   - [x] Publish binaries, the kernel and SPDK images, checksums and provenance
   - [x] Cache the SPDK build
 - [x] Prove CI on GitHub
-- [ ] Prove the release workflow, by tagging a pre-release such as `v0.1.0-rc1`
+- [x] Prove the release workflow, with the `v0.1.0-rc1` and `v0.1.0-rc2` pre-releases
 - [ ] Prove CI on a pull request, including one from a fork: it reads the SPDK cache without logging in
-- [ ] Make the first release
+- [x] Make the first release: `v0.1.0`, on x86-64
+- [ ] Install from a release tarball on a clean machine. The suites install from source
 - [ ] Publish cross-platform releases for x86-64 and arm64. This is a goal, but not started: x86-64
       comes first. Keep new work portable until then
   - [ ] Go binary and kernel image, tested on Arm before publishing
@@ -34,15 +35,22 @@ destroys storage, separate from the kernel and SPDK target backends.
 Storage brings the biggest API changes, so design them in the spec first, and build the client
 and CLI once, against the result.
 
-- [ ] Write an OpenAPI spec for the API as it stands today
-- [ ] Design pools, volumes, snapshots and clones in the spec, including how they relate to
-      today's namespaces
-- [ ] Check automatically that the spec and the implementation stay in sync
+- [x] Write an OpenAPI spec for the API as it stands today (`api/openapi.yaml`)
+- [ ] Design pools, volumes, snapshots and clones in the spec, as in `docs/decisions.md` 19 to 24
+- [ ] Write `docs/pools.md`: how to create a suitable pool of each type
+- [x] Check automatically that the spec and the implementation stay in sync. Routes and field names
+      are checked, not types or status codes
 - [ ] Add an endpoint listing available block devices, for choosing what goes in a pool
 - [ ] Benchmark the current API early, to give the design real numbers. See phase 5
+- [ ] Move UUID and NGUID from the namespace to the volume, with a migration for saved state
+- [ ] Replace the full reconcile with an incremental one, batched per subsystem, so that the target
+      of 5,000 volumes across 100 node subsystems is reachable
+- [ ] Add an intent log for pool operations, and internal names for volumes
+- [ ] Fix SPDK's slow list: each namespace's status check fetches its entire configuration
+- [ ] Check `fs.aio-max-nr` on SPDK at startup, and give a clear error. Each volume needs 128 per core
 - [ ] Handle long-running operations such as full clones, without blocking the API behind its
       single lock
-- [ ] Add support for an LVM backend, using thin provisioning only
+- [ ] Add support for an LVM backend, using thin provisioning only. Adopt existing pools only
   - [ ] Enable snapshots and cloning of NVMe devices
   - [ ] Give every clone a new UUID and NGUID, or hosts reject it as a duplicate
   - [ ] Activate thin snapshots explicitly, because they skip activation by default
@@ -53,7 +61,9 @@ and CLI once, against the result.
         systemd is the better fit, and it needs privileges that the no-capabilities SPDK
         setup doesn't have
   - [ ] Document that snapshots are crash-consistent only
-- [ ] Consider reflink clones for file volumes on XFS or btrfs, which would need no LVM
+- [ ] Add reflink file pools, on XFS or btrfs, which need no LVM. Ext4 doesn't support reflink
+- [ ] Leave room in the API for group snapshots, without building them yet
+- [ ] Later: creating pools from raw disks, behind an explicit confirmation
 
 ## 3. API foundations
 
@@ -90,6 +100,8 @@ Production-like scale is a requirement, so measure this before building on it.
   - [ ] Controller, and a privileged node plugin (`nvme connect`, format, mount)
   - [ ] Make volume creation idempotent by name in the API, because CSI retries calls
   - [ ] Use the snapshot and cloning features
+  - [ ] Map volumes into per-node subsystems, and shared volumes into a shared one
+  - [ ] Scope names per cluster, so that several clusters can share one target
   - [ ] Detect nodes sharing a `hostnqn`, common on cloned images, which breaks access
         control
   - [ ] Limit queue counts per connection, based on the phase 5 measurements

@@ -26,13 +26,16 @@ test:
 
 SHELLCHECK_IMAGE = docker.io/koalaman/shellcheck:v0.10.0
 ACTIONLINT_IMAGE = docker.io/rhysd/actionlint:1.7.7
+REDOCLY_IMAGE = docker.io/redocly/cli:2.8.0
 
 # Formatting, then shell scripts and workflows, using pinned tools in rootless Podman.
 lint:
 	@files=$$(gofmt -l .); if [ -n "$$files" ]; then echo "Not gofmt-formatted: $$files"; exit 1; fi
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(SHELLCHECK_IMAGE) -S warning \
-		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/vm-e2e.sh test/vm/run-all.sh
+		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/vm-e2e.sh test/vm/run-all.sh test/vm/scale-bench.sh
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(ACTIONLINT_IMAGE)
+	podman run --rm --pull=missing -v "$$PWD:/spec:ro,Z" --workdir /spec $(REDOCLY_IMAGE) \
+		lint --skip-rule operation-4xx-response api/openapi.yaml
 
 # BUILD_FLAGS can add layer caching, as CI does.
 images:

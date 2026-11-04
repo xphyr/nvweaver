@@ -160,3 +160,61 @@ there, not as absolute numbers.
     brings the biggest API changes. The client, CLI and web UI then get built once, against it.
   - TLS comes before the web UI and CSI driver, which reach the API over a network.
   - Scale work comes before the CSI driver, because production-like scale is a requirement.
+
+## 19. Pools, volumes and snapshots are separate from exports
+
+- **Chosen:** Pool -> Volume -> Snapshot, with a clone being a new Volume made from a snapshot or
+  volume. A Volume exists whether or not it is exported, and owns the UUID, NGUID, internal name and
+  state. A Namespace becomes a mapping of a Volume into a Subsystem, holding little more than the
+  NSID. `device_path` namespaces stay, for exporting an existing disk directly.
+- **Why:** a snapshot or clone must exist whether or not anything exports it. A volume has to keep
+  its identity when it moves to another node, or hosts see a different disk.
+- **Reviewed against:** NetApp Trident, Dell csi-powerstore and Dell csi-powermax, read for comparison
+  only, with no code taken. All three separate storage from exposure. ONTAP's "namespace" is what we
+  call a Volume. We don't copy multi-array backends, storage class engines, QoS or replication.
+- **Pools can be nearly invisible:** PowerStore exposes none, so a default pool is reasonable.
+
+## 20. Export per node, not per volume
+
+- **Chosen:** CSI maps volumes into one subsystem per node, and raw volumes shared between nodes into
+  a shared subsystem.
+- **Why:** subsystems and connections then follow nodes rather than volumes. All three vendors scope
+  visibility per host: Trident with per-node subsystems, PowerMax with per-node masking views,
+  PowerStore with host mappings inside one subsystem. As far as we know the kernel target can't hide
+  namespaces per host within a subsystem, so per-node subsystems are what works on both backends.
+- **Limit:** 1,024 namespaces per subsystem, on our side and in Trident's driver.
+
+## 21. Deleting a volume with snapshots simply works
+
+- **Chosen:** on LVM thin and reflink, delete at once. Tests confirm that snapshots and clones survive
+  losing their origin. Any future pool type where they don't is refused. Deleting a volume that is
+  exported is always refused.
+- **Rejected:** Trident's soft delete and PowerMax's deletion queue, which suit their arrays. PowerStore
+  refuses. We add a `state` field, but no soft-delete state until something needs one.
+
+## 22. Pools are adopted, not created
+
+- **Chosen:** adopt an existing LVM volume group or thin pool, or an existing reflink-capable directory.
+  `docs/pools.md` documents how to create them. The service doesn't initialize disks.
+- **Why:** initializing a disk is destructive, and the settings matter at scale, as `docs/pools.md`
+  explains. Creating pools could come later, behind an explicit confirmation.
+- **Pool types:** LVM thin and reflink files, from the start. Reflink needs no LVM and no extra
+  privileges, so it also suits SPDK with no capabilities. Classic LVM snapshots are rejected.
+
+## 23. Storage changes record their intent first
+
+- **Chosen:** an intent log for pool operations, and a separate internal name for each volume.
+- **Why:** today we apply and then save, which is fine for configuration we can re-apply, but a crash
+  between `lvcreate` and the save would orphan storage. Trident does the same with transactions.
+
+## 24. The scale target is 5,000 volumes across 100 node subsystems
+
+- **Chosen:** this as the first target, measured with `test/vm/scale-bench.sh`.
+- **Design consequences:**
+  - Incremental reconcile, batching per subsystem, and returning "busy" under load, as PowerMax does,
+    rather than one global lock and a full reconcile on every change.
+  - Slow operations don't block the API.
+  - Create is idempotent by name, because CSI retries.
+- **Left room for:** group snapshots, which all three vendors support. Not in the first version, and
+  LVM may not offer an atomic multi-volume snapshot.
+

@@ -20,6 +20,10 @@ enforcing, linked to each other only. On both backends it exports each disk type
 `/dev/disk/by-id` path to the other VM, and checks the data on the target's disk. Then it installs
 for real as root, and reboots the VM for the native unit and for the Quadlet.
 
+`internal/api/openapi_test.go` compares `api/openapi.yaml` with the code, in both directions: every
+route, every response field, and every request field the spec lists. It doesn't check types or status
+codes. It reads the spec by indentation to avoid a YAML dependency, so it fails if the layout changes.
+
 The fakes encode what we believe the real systems do, so only the end-to-end suites can
 prove behaviour. Anything new that touches a target needs end-to-end coverage.
 

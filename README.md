@@ -102,7 +102,7 @@ refused, as is exporting the same device twice.
 
 ## API
 
-JSON over HTTP. Errors are `{"error":"..."}` with status 400, 401, 404, 409
+[`api/openapi.yaml`](api/openapi.yaml) is the full specification. JSON over HTTP. Errors are `{"error":"..."}` with status 400, 401, 404, 409
 (conflict, including an address already in use) or 422 (invalid). A failed change
 is rolled back, so it never leaves partial configuration.
 
@@ -250,6 +250,11 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
 ## Known limits
 
 - NVMe/TCP only.
+- **On SPDK, the kernel's `fs.aio-max-nr` limits volumes.** Each volume uses 128 per SPDK core, so the
+  default of 65,536 allows 512 volumes on one core. Beyond that, adding a namespace fails with an
+  unhelpful error. Raise it on the host with `sysctl -w fs.aio-max-nr=1048576`: a container with no
+  capabilities can't do this itself.
+- Scale is being worked on. Each API change currently takes longer as configuration grows.
 - The SPDK image is only built and tested for x86-64 (`SPDK_ARCH` is the build
   argument for other baselines).
 - No formal NVMe conformance suite has been run. Protocol behaviour is the target's;
