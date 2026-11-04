@@ -25,23 +25,22 @@ Work through these in order: each phase depends on the ones before it.
 - [x] Add a `LICENSE` (MIT)
 - [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)
 
-## 2. API foundations
-
-- [ ] Write an OpenAPI spec
-- [ ] Add TLS to the API, needed before the web UI or CSI driver use it over a network
-- [ ] Create a shared Go API client, for the CLI and CSI driver to use
-- [ ] Add an endpoint listing available block devices
-- [ ] Add an endpoint showing connected hosts
-
-## 3. Command line utility
-
-- [ ] Create a command line utility for CRUD actions, using the shared client
-
-## 4. Storage layer
+## 2. Storage layer, spec first
 
 The API only exports devices it is given today. This adds a layer that creates and
 destroys storage, separate from the kernel and SPDK target backends.
 
+Storage brings the biggest API changes, so design them in the spec first, and build the client
+and CLI once, against the result.
+
+- [ ] Write an OpenAPI spec for the API as it stands today
+- [ ] Design pools, volumes, snapshots and clones in the spec, including how they relate to
+      today's namespaces
+- [ ] Check automatically that the spec and the implementation stay in sync
+- [ ] Add an endpoint listing available block devices, for choosing what goes in a pool
+- [ ] Benchmark the current API early, to give the design real numbers. See phase 5
+- [ ] Handle long-running operations such as full clones, without blocking the API behind its
+      single lock
 - [ ] Add support for an LVM backend, using thin provisioning only
   - [ ] Enable snapshots and cloning of NVMe devices
   - [ ] Give every clone a new UUID and NGUID, or hosts reject it as a duplicate
@@ -55,11 +54,21 @@ destroys storage, separate from the kernel and SPDK target backends.
   - [ ] Document that snapshots are crash-consistent only
 - [ ] Consider reflink clones for file volumes on XFS or btrfs, which would need no LVM
 
+## 3. API foundations
+
+- [ ] Add TLS to the API, needed before the web UI or CSI driver use it over a network
+- [ ] Create a shared Go API client from the spec, for the CLI and CSI driver to use
+- [ ] Add an endpoint showing connected hosts
+
+## 4. Command line utility
+
+- [ ] Create a command line utility for CRUD actions, using the shared client
+
 ## 5. Scale
 
 Production-like scale is a requirement, so measure this before building on it.
 
-- [ ] Benchmark the API with thousands of subsystems, namespaces and hosts
+- [ ] Benchmark the API with thousands of subsystems, namespaces, hosts and volumes
 - [ ] Replace the full reconcile, single lock and whole-state save on every change, if
       the benchmark shows they limit scale (likely)
 - [ ] Add pagination to list endpoints
@@ -71,7 +80,7 @@ Production-like scale is a requirement, so measure this before building on it.
 - [ ] Create a web UI for manually handling CRUD tasks, embedded in the binary
   - [ ] The web UI should allow for token auth or simple username/password authentication
   - [ ] Hash passwords, and protect sessions against CSRF
-  - [ ] Cover the volumes, snapshots and clones from phase 4
+  - [ ] Cover the volumes, snapshots and clones from phase 2
 
 ## 7. Kubernetes CSI driver
 

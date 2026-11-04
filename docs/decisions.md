@@ -94,7 +94,7 @@ there, not as absolute numbers.
 - **Chosen:** default to `127.0.0.1:8420`, and refuse to start off loopback with no token.
 - **Why:** the API can export any unused block device on the host.
 - **Known gap:** there is no TLS yet, so a token crosses the network in clear text. See
-  `TODO.md`, phase 2.
+  `TODO.md`, phase 3.
 
 ## 11. Stopping removes the target by default
 
@@ -156,6 +156,7 @@ there, not as absolute numbers.
 
 - **Chosen:** the order in `TODO.md`.
 - **Why:**
+  - The storage layer comes first, designed in the OpenAPI spec before it's built, because it
+    brings the biggest API changes. The client, CLI and web UI then get built once, against it.
   - TLS comes before the web UI and CSI driver, which reach the API over a network.
-  - The storage layer comes before the web UI, so the UI isn't reworked around volumes.
   - Scale work comes before the CSI driver, because production-like scale is a requirement.

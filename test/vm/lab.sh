@@ -214,6 +214,8 @@ cmd_up() {
 	mkdir -p "$RUN" || exit 1
 	local d
 	for d in nvme0 nvme1 sata0 virtio0; do scratch "$RUN/$d.qcow2" 8G; done
+	# The target's socket exists once QEMU has started, and rebooting a guest doesn't restart
+	# QEMU, so the initiator's side has no need to reconnect.
 	start_vm tgt 2221 52:54:00:99:00:01 10.99.0.1 server=on \
 		-drive "file=$RUN/nvme0.qcow2,if=none,id=nvme0,format=qcow2,cache=unsafe" \
 		-device "nvme,serial=NVWEAVER0001,drive=nvme0" \
@@ -223,7 +225,7 @@ cmd_up() {
 		-device "ide-hd,drive=sata0,bus=ide.0,serial=NVWEAVERSATA" \
 		-drive "file=$RUN/virtio0.qcow2,if=none,id=scratchv,format=qcow2,cache=unsafe" \
 		-device "virtio-blk-pci,drive=scratchv,serial=NVWEAVERVIRTIO"
-	start_vm ini 2222 52:54:00:99:00:02 10.99.0.2 server=off,reconnect-ms=1000
+	start_vm ini 2222 52:54:00:99:00:02 10.99.0.2 server=off
 	local vm
 	for vm in tgt ini; do
 		for _ in $(seq 1 90); do
