@@ -1,0 +1,29 @@
+services:
+  nvweaver:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: nvweaver:dev
+    container_name: nvweaver
+    restart: unless-stopped
+    # privileged: configures the kernel target and opens host block devices.
+    # host network: the kernel, not this container, owns the NVMe/TCP sockets.
+    privileged: true
+    network_mode: host
+    # The NVMe/TCP controller itself is in the kernel; give teardown time to run.
+    stop_grace_period: 30s
+    environment:
+      # The API can export any unused host block device, so it stays on loopback
+      # by default. To expose it, set an address here and NVWEAVER_API_TOKEN too.
+      NVWEAVER_LISTEN: ${NVWEAVER_LISTEN:-127.0.0.1:8420}
+      NVWEAVER_API_TOKEN: ${NVWEAVER_API_TOKEN:-}
+      # true: stopping this container leaves the target serving hosts.
+      NVWEAVER_KEEP_ON_EXIT: ${NVWEAVER_KEEP_ON_EXIT:-false}
+    volumes:
+      - /lib/modules:/lib/modules:ro
+      # A full /dev so that devices added after startup are visible.
+      - /dev:/dev
+      - nvweaver-data:/var/lib/nvweaver
+
+volumes:
+  nvweaver-data:

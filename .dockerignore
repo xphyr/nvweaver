@@ -1,0 +1,7 @@
+*
+!go.mod
+!cmd
+!internal
+!Makefile
+!README.md
+!dist

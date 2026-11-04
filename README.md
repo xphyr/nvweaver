@@ -1,5 +1,9 @@
 # nvweaver
 
+<p align="center">
+  <img src="images/nvweaver-logo-light-italic.png" alt="nvweaver logo">
+</p>
+
 An NVMe over TCP target for test and automation labs, run from a container and
 configured through a REST API.
 
@@ -83,8 +87,11 @@ port; add one on 8009 if your initiators expect the standard discovery port.
 | NVMe namespace | `device_path: /dev/nvme0n1` | Exported as a block device. |
 | SATA, SAS, virtio, loop, and so on | `device_path: /dev/sdc` | Any block device the host has. |
 | File on a volume you mounted | `device_path: /data/x.img` | Path as seen inside the container. |
-| Sparse file managed by the service | `file: {name, size_bytes}` | Can be grown live. |
+| Sparse file managed by the service | `file: {name, size_bytes}` | Can be grown live. Mount a volume at the data directory, as the examples do. |
 | Whole NVMe controller | `passthru_device: /dev/nvme0` on the subsystem | Hosts see the real controller. The subsystem can't have other namespaces. |
+
+The kernel target refuses files on overlayfs, which includes a container's own
+filesystem: hosts would see a disk of size zero with no device node.
 
 On SPDK, passthrough is not available, and everything else in the table goes
 through Linux AIO, so an NVMe drive gets no more speed than the kernel target gives
@@ -246,6 +253,20 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
   argument for other baselines).
 - No formal NVMe conformance suite has been run. Protocol behaviour is the target's;
   the tests here exercise both with the Linux initiator only.
+- **Not yet tested on physical NVMe hardware or over a real network.** All tests so
+  far ran on one machine over loopback, including those for NVMe-backed namespaces.
+  See [TODO.md](TODO.md) for what is deferred until hardware is available.
 - Passthrough has only been tested against a fabrics-attached controller, with
-  Identify, on one machine. I/O through it to physical NVMe hardware is untested.
+  Identify. I/O through it is untested.
 - No ANA groups, NVMe/TCP TLS, per-controller statistics, or API for referrals.
+
+## More documentation
+
+- [TODO.md](TODO.md): the roadmap, and what is deferred until hardware is available
+- [docs/architecture.md](docs/architecture.md): how the pieces fit together
+- [docs/decisions.md](docs/decisions.md): design decisions, and what was rejected
+- [docs/testing.md](docs/testing.md): coverage, latest results and known pitfalls
+
+## License
+
+[MIT](LICENSE)
