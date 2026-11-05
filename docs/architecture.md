@@ -82,8 +82,11 @@ Managed file volumes are in `volumes/` under the same directory.
 
 ## Pools and volumes
 
-Pools and volumes sit above the target backends, which don't know about them. Mapping a volume copies its path, UUID
-and NGUID onto a namespace, which a backend treats like any other. So a pool type only has to produce a path.
+Pools, volumes and snapshots sit above the target backends, which don't know about them. Mapping a volume copies its
+path, UUID and NGUID onto a namespace, which a backend treats like any other. So a pool type only has to produce a path.
+
+A snapshot and a clone are separate driver calls, because they can differ by pool type: a thin LVM snapshot stays inactive
+until it's needed. On reflink both are instant copies of a file, and independent of their source once made.
 
 ## Backend lifetime
 

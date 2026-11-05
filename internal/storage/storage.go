@@ -31,7 +31,13 @@ type Driver interface {
 	Delete(internal string) error
 	// Grow makes a volume larger.
 	Grow(internal string, sizeBytes int64) error
-	// List returns the internal names of volumes on disk, to find any that nothing refers to.
+	// Snapshot makes a read-only copy of a volume, returning its path. It's kept apart from Clone
+	// because pool types can differ: an LVM thin snapshot stays inactive until it's needed.
+	Snapshot(source, internal string) (string, error)
+	// Clone makes a new volume from a volume or snapshot, returning the path to export. It may
+	// be larger than its source, and 0 means the same size. It fails if the name exists.
+	Clone(source, internal string, sizeBytes int64) (string, error)
+	// List returns the internal names of volumes and snapshots on disk, to find any that nothing refers to.
 	List() ([]string, error)
 }
 

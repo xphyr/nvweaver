@@ -20,7 +20,7 @@ tags:
   - name: system
     description: The service and the target it runs.
   - name: ports
-    description: TCP listeners. Hosts discover subsystems through any port attached to one.
+    description: Listeners, each on one transport. Hosts discover subsystems through any port attached to one.
   - name: hosts
     description: Initiator identities, with optional DH-HMAC-CHAP credentials.
   - name: subsystems
@@ -29,6 +29,8 @@ tags:
     description: The block devices, files and volumes that a subsystem exports.
   - name: pools
     description: Storage created outside this service, adopted to allocate volumes from.
+  - name: snapshots
+    description: Read-only copies of volumes at a moment in time. To use one, clone it to a new volume.
   - name: volumes
     description: Storage allocated from a pool, which exists whether or not it is exported.
 security:
@@ -597,8 +599,10 @@ paths:
           $ref: '#/components/responses/Invalid'
     post:
       operationId: createVolume
-      summary: Create a volume
-      description: The same request again succeeds with the existing volume, because CSI retries.
+      summary: Create a volume, or clone one from a snapshot or volume
+      description: >-
+        A clone gets a new UUID and NGUID, and shares no future changes with its source. The same request again succeeds
+        with the existing volume, because CSI retries.
       tags: [volumes]
       requestBody:
         required: true
@@ -680,7 +684,7 @@ paths:
     delete:
       operationId: deleteVolume
       summary: Delete a volume and its data
-      description: Refused while it is mapped into a subsystem.
+      description: Refused while it is mapped into a subsystem. Its snapshots and clones aren't affected.
       tags: [volumes]
       responses:
         '204':
@@ -691,6 +695,111 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /v1/snapshots:
+    get:
+      operationId: listSnapshots
+      summary: List snapshots, a page at a time
+      tags: [snapshots]
+      parameters:
+        - name: volume
+          in: query
+          description: Only snapshots taken of the volume with this name, which may no longer exist.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: The most to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 500
+        - name: after
+          in: query
+          description: Continue after this name, using `next_after` from the previous page.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A page of snapshots, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Invalid'
+    post:
+      operationId: createSnapshot
+      summary: Take a snapshot of a volume
+      description: >-
+        Works while the volume is in use, and is crash-consistent: it holds what the volume held at that moment, as if
+        the host had lost power. The same request again succeeds with the existing snapshot, because CSI retries.
+      tags: [snapshots]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SnapshotCreate'
+      responses:
+        '200':
+          description: The snapshot already existed, of this volume.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Snapshot'
+        '201':
+          description: The new snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Snapshot'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+        '507':
+          description: The pool has no room.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/snapshots/{snapshot}:
+    parameters:
+      - $ref: '#/components/parameters/SnapshotName'
+    get:
+      operationId: getSnapshot
+      summary: Show a snapshot
+      tags: [snapshots]
+      responses:
+        '200':
+          description: The snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Snapshot'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteSnapshot
+      summary: Delete a snapshot and its data
+      description: Volumes cloned from it aren't affected.
+      tags: [snapshots]
+      responses:
+        '204':
+          description: The snapshot is gone.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/subsystems/{nqn}/namespaces:
     parameters:
       - $ref: '#/components/parameters/NQN'
@@ -845,6 +954,13 @@ components:
       description: The volume's name.
       schema:
         type: string
+    SnapshotName:
+      name: snapshot
+      in: path
+      required: true
+      description: The snapshot's name.
+      schema:
+        type: string
     PortID:
       name: id
       in: path
@@ -904,7 +1020,7 @@ components:
           type: number
     Pool:
       type: object
-      required: [name, type, warning_percent, state, warnings, volumes]
+      required: [name, type, warning_percent, state, warnings, volumes, snapshots]
       properties:
         name:
           type: string
@@ -932,6 +1048,9 @@ components:
         volumes:
           type: integer
           description: How many volumes are in the pool.
+        snapshots:
+          type: integer
+          description: How many snapshots are in the pool.
     PoolCreate:
       type: object
       additionalProperties: false
@@ -968,6 +1087,15 @@ components:
           type: integer
           minimum: 0
           maximum: 100
+    VolumeSource:
+      type: object
+      additionalProperties: false
+      description: Exactly one of these. It records the name at the time, which may no longer exist.
+      properties:
+        snapshot:
+          type: string
+        volume:
+          type: string
     VolumeMapping:
       type: object
       required: [subsystem, nsid]
@@ -978,7 +1106,7 @@ components:
           type: integer
     Volume:
       type: object
-      required: [name, pool, internal_name, device_path, size_bytes, uuid, nguid, created_at, state, mapped_to]
+      required: [name, pool, internal_name, device_path, size_bytes, uuid, nguid, source, created_at, state, mapped_to]
       properties:
         name:
           type: string
@@ -998,6 +1126,11 @@ components:
         nguid:
           type: string
           description: Stays the same wherever the volume is mapped.
+        source:
+          description: What it was cloned from, or null.
+          oneOf:
+            - $ref: '#/components/schemas/VolumeSource'
+            - type: 'null'
         labels:
           type: object
           additionalProperties:
@@ -1027,7 +1160,7 @@ components:
     VolumeCreate:
       type: object
       additionalProperties: false
-      required: [name, size_bytes]
+      required: [name]
       properties:
         name:
           type: string
@@ -1035,12 +1168,16 @@ components:
           description: Unique across the service.
         pool:
           type: string
-          description: Required unless there is exactly one pool.
+          description: Required unless there is exactly one pool, or this is a clone, which stays in its source's pool.
         size_bytes:
           type: integer
           format: int64
           minimum: 4096
-          description: A multiple of 4096.
+          description: >-
+            A multiple of 4096. Required unless this is a clone, which defaults to its source's size and may be larger,
+            but not smaller.
+        source:
+          $ref: '#/components/schemas/VolumeSource'
         labels:
           type: object
           additionalProperties:
@@ -1057,6 +1194,53 @@ components:
           type: object
           additionalProperties:
             type: string
+    Snapshot:
+      type: object
+      required: [name, volume, pool, internal_name, device_path, size_bytes, created_at, state]
+      properties:
+        name:
+          type: string
+        volume:
+          type: string
+          description: The name of the volume it was taken of, which may no longer exist.
+        pool:
+          type: string
+        internal_name:
+          type: string
+          description: The name on disk.
+        device_path:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        state:
+          type: string
+          enum: [online]
+    SnapshotPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Snapshot'
+        next_after:
+          type: string
+          description: Pass this as `after` for the next page. Absent on the last page.
+    SnapshotCreate:
+      type: object
+      additionalProperties: false
+      required: [name, volume]
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          description: Unique across the service.
+        volume:
+          type: string
     NQN:
       type: string
       maxLength: 223
@@ -1084,6 +1268,7 @@ components:
         - buffered_io
         - per_host_dhchap_params
         - wildcard_listen
+        - transports
       properties:
         passthrough:
           type: boolean
@@ -1103,9 +1288,14 @@ components:
         wildcard_listen:
           type: boolean
           description: Can serve hosts on `0.0.0.0` or `::`.
+        transports:
+          type: array
+          description: The NVMe transports that a port can use.
+          items:
+            type: string
     System:
       type: object
-      required: [version, backend, capabilities, pool_types, kernel, modules, target_ready, ports, hosts, subsystems, pools, volumes]
+      required: [version, backend, capabilities, pool_types, kernel, modules, target_ready, ports, hosts, subsystems, pools, volumes, snapshots]
       properties:
         version:
           type: string
@@ -1144,12 +1334,18 @@ components:
         volumes:
           type: integer
           description: How many volumes exist.
+        snapshots:
+          type: integer
+          description: How many snapshots exist.
     Port:
       type: object
-      required: [id, address, service]
+      required: [id, transport, address, service]
       properties:
         id:
           type: integer
+        transport:
+          type: string
+          enum: [tcp]
         address:
           type: string
           description: An IP address. The SPDK backend refuses wildcard addresses.
@@ -1157,7 +1353,7 @@ components:
             - 192.0.2.10
         service:
           type: integer
-          description: The TCP port.
+          description: The transport's port number.
           examples:
             - 4420
         inline_data_size:
@@ -1174,6 +1370,11 @@ components:
           minimum: 0
           maximum: 65534
           description: The lowest free ID if not given.
+        transport:
+          type: string
+          enum: [tcp]
+          default: tcp
+          description: See `capabilities.transports`. A transport this service can't use is refused.
         address:
           type: string
         service:
@@ -1188,6 +1389,9 @@ components:
       type: object
       additionalProperties: false
       properties:
+        transport:
+          type: string
+          enum: [tcp]
         address:
           type: string
         service:

@@ -1,8 +1,8 @@
 # Storage API design
 
 **Status: agreed, and being built.** What's built is in `api/openapi.yaml`, where the sync tests hold the code
-to it: so far, pools and volumes, on reflink. Still to come: snapshots and clones, LVM thin, and the behaviour under
-load described here. The reasoning behind the model is in
+to it: so far, pools, volumes, snapshots, clones and port transports, on reflink. Still to come: LVM thin, and the
+behaviour under load described here. The reasoning behind the model is in
 [decisions.md](decisions.md), entries 19 to 24.
 
 ## The model
@@ -79,7 +79,9 @@ DELETE /v1/volumes/{name}       refused while it is mapped
   absent on the last page.
 - **Create is idempotent by name.** The same request again returns the existing volume with `200`, and
   a new one returns `201`. The same name with different settings is `409`, because CSI retries.
-- **A clone gets a new UUID and NGUID,** and defaults to the source's size. It may be larger.
+- **A clone gets a new UUID and NGUID,** and defaults to the source's size. It may be larger. It stays in its source's
+  pool, so `pool` can be left out. A filesystem on it keeps its own UUID: XFS needs `-o nouuid` to mount a clone on a
+  host that also has the original mounted.
 - **`internal_name`** is what's on disk, made from random characters, so user-chosen names never need
   to be safe for LVM or filesystems. The prefix also tells us what belongs to us in a shared volume group.
 - **Deleting** works with snapshots present, which keep their data, and is refused while mapped.
@@ -99,12 +101,17 @@ DELETE /v1/snapshots/{name}
 
 ```json
 {"name": "snap-1", "volume": "pvc-1234", "pool": "fast", "size_bytes": 10737418240, "state": "online",
- "internal_name": "nvw-82c1d7e4f09a3b56", "created_at": "2026-11-04T20:05:00Z"}
+ "internal_name": "nvw-82c1d7e4f09a3b56", "device_path": "/srv/nvweaver/nvw-82c1d7e4f09a3b56.img",
+ "created_at": "2026-11-04T20:05:00Z"}
 ```
 
 - **Snapshots are top-level, not under their volume.** This is a correction to the earlier proposal:
   a snapshot can outlive its volume, and then a URL under that volume would no longer work.
 - **Creating is idempotent by name,** as with volumes.
+- **Crash-consistent.** It works while a host is writing, and holds what the volume held at that moment, as if the
+  host had lost power. A filesystem replays its log when a clone of it is mounted. Applications that need more must
+  quiesce themselves first.
+- **`volume` is the name at the time.** A later volume could reuse the name, so `?volume=` and a retry go by name only.
 - **Read-only.** To use one, clone it to a new volume. Group snapshots could later be added as their own
   resource, such as `/v1/snapshot-groups`, without changing any of this.
 

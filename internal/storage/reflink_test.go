@@ -166,3 +166,105 @@ func TestCloneCopiesData(t *testing.T) {
 	}
 	_ = d
 }
+
+func TestSnapshotsAndClonesAreIndependent(t *testing.T) {
+	d, dir := driver(t)
+	if !supportsReflink(t, dir) {
+		t.Skip("this filesystem has no reflink; the end-to-end suites cover it")
+	}
+	name := func(s string) string { return target.InternalPrefix + s }
+	vol, err := d.Create(name("vol"), 8192)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := append([]byte("before"), make([]byte, 8186)...)
+	if err := os.WriteFile(vol, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := d.Snapshot(name("vol"), name("snap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(snap); err != nil || info.Mode().Perm() != 0o400 || info.Size() != 8192 {
+		t.Errorf("snapshot: %v, %v", info, err)
+	}
+	clone, err := d.Clone(name("snap"), name("clone"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(clone); err != nil || info.Mode().Perm() != 0o600 || info.Size() != 8192 {
+		t.Errorf("clone: %v, %v", info, err)
+	}
+
+	// Changing any one of them leaves the others alone.
+	if err := os.WriteFile(vol, append([]byte("volume"), make([]byte, 8186)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(clone, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte("clone!"), 0); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	for path, want := range map[string]string{vol: "volume", snap: "before", clone: "clone!"} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got[:6]) != want {
+			t.Errorf("%s holds %q, want %q", filepath.Base(path), got[:6], want)
+		}
+	}
+
+	// Each survives the others being deleted.
+	if err := d.Delete(name("vol")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(snap); err != nil || string(got[:6]) != "before" {
+		t.Errorf("snapshot after deleting its volume: %q, %v", got[:6], err)
+	}
+	if err := d.Delete(name("snap")); err != nil {
+		t.Errorf("a read-only snapshot must still be deletable: %v", err)
+	}
+	if got, err := os.ReadFile(clone); err != nil || string(got[:6]) != "clone!" {
+		t.Errorf("clone after deleting its snapshot: %q, %v", got[:6], err)
+	}
+}
+
+func TestCloneSizes(t *testing.T) {
+	d, dir := driver(t)
+	if !supportsReflink(t, dir) {
+		t.Skip("this filesystem has no reflink; the end-to-end suites cover it")
+	}
+	name := func(s string) string { return target.InternalPrefix + s }
+	if _, err := d.Create(name("vol"), 8192); err != nil {
+		t.Fatal(err)
+	}
+	big, err := d.Clone(name("vol"), name("big"), 16384)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(big); err != nil || info.Size() != 16384 {
+		t.Errorf("larger clone: %v, %v", info, err)
+	}
+	var ve *target.ValidationError
+	if _, err := d.Clone(name("vol"), name("small"), 4096); !errors.As(err, &ve) {
+		t.Errorf("a smaller clone must be refused: %v", err)
+	}
+	if _, err := d.Clone(name("vol"), name("big"), 0); err == nil {
+		t.Error("cloning over an existing name must fail")
+	}
+	if _, err := d.Clone(name("missing"), name("x"), 0); err == nil {
+		t.Error("cloning something missing must fail")
+	}
+	names, err := d.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(names, name("big")) || slices.Contains(names, name("x")) || slices.Contains(names, name("small")) {
+		t.Errorf("a failed clone must leave nothing behind: %v", names)
+	}
+}

@@ -47,7 +47,7 @@ and CLI once, against the result.
 
 - [x] Write an OpenAPI spec for the API as it stands today (`api/openapi.yaml`)
 - [x] Agree the storage API: `docs/storage-api.md`
-- [ ] Move the storage API into the spec, as it's built. Done for pools and volumes
+- [ ] Move the storage API into the spec, as it's built. Done for pools, volumes and snapshots
 - [x] Write `docs/pools.md`: how to create a suitable pool of each type
 - [x] Check automatically that the spec and the implementation stay in sync. Routes and field names
       are checked, not types or status codes
@@ -74,9 +74,9 @@ and CLI once, against the result.
   - [ ] Document that snapshots are crash-consistent only
 - [x] Add reflink file pools, on XFS or btrfs, which need no LVM. Ext4 doesn't support reflink
 - [x] Add the volume model: volumes own their identity, and map into subsystems
-- [ ] Add snapshots and clones
+- [x] Add snapshots and clones, on reflink. Checked as real files on XFS, including under load: see `docs/testing.md`
 - [ ] Leave room in the API for group snapshots, without building them yet
-- [ ] Add `transport` to ports, accepting only `tcp` for now, and `capabilities.transports`, before the CLI and
+- [x] Add `transport` to ports, accepting only `tcp` for now, and `capabilities.transports`, before the CLI and
       CSI driver are written against the API. See "Transports" in `docs/storage-api.md`
 - [ ] Later: creating pools from raw disks, behind an explicit confirmation
 

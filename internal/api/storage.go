@@ -40,10 +40,11 @@ type capacityView struct {
 
 type poolView struct {
 	*target.Pool
-	State    string        `json:"state"`
-	Warnings []string      `json:"warnings"`
-	Capacity *capacityView `json:"capacity,omitempty"`
-	Volumes  int           `json:"volumes"`
+	State     string        `json:"state"`
+	Warnings  []string      `json:"warnings"`
+	Capacity  *capacityView `json:"capacity,omitempty"`
+	Volumes   int           `json:"volumes"`
+	Snapshots int           `json:"snapshots"`
 }
 
 // viewPool asks the pool's driver for what can only be found out live.
@@ -56,6 +57,12 @@ func (s *Server) viewPool(st *target.State, p *target.Pool) poolView {
 			v.Volumes++
 			provisioned += vol.SizeBytes
 			known[vol.InternalName] = true
+		}
+	}
+	for _, snap := range st.Snapshots {
+		if snap.Pool == p.Name {
+			v.Snapshots++
+			known[snap.InternalName] = true
 		}
 	}
 	d, err := s.m.newDriver(p)
@@ -214,6 +221,11 @@ func (s *Server) deletePool(w http.ResponseWriter, r *http.Request) error {
 				return target.NewConflict("pool %s still has volumes, such as %s", name, vol.Name)
 			}
 		}
+		for _, snap := range st.Snapshots {
+			if snap.Pool == name {
+				return target.NewConflict("pool %s still has snapshots, such as %s", name, snap.Name)
+			}
+		}
 		delete(st.Pools, name)
 		return nil
 	})
@@ -259,15 +271,22 @@ func viewVolume(vol *target.Volume, mapped map[string]*mappingView) volumeView {
 	return volumeView{Volume: vol, State: "online", MappedTo: mapped[vol.Name]}
 }
 
+func pageLimit(v string) (int, error) {
+	if v == "" {
+		return defaultPageSize, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > maxPageSize {
+		return 0, target.Invalid("limit must be between 1 and %d", maxPageSize)
+	}
+	return n, nil
+}
+
 func (s *Server) listVolumes(w http.ResponseWriter, r *http.Request) error {
 	q := r.URL.Query()
-	limit := defaultPageSize
-	if v := q.Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > maxPageSize {
-			return target.Invalid("limit must be between 1 and %d", maxPageSize)
-		}
-		limit = n
+	limit, err := pageLimit(q.Get("limit"))
+	if err != nil {
+		return err
 	}
 	after, pool := q.Get("after"), q.Get("pool")
 	return s.m.view(func(st *target.State) error {
@@ -312,12 +331,49 @@ func defaultPool(st *target.State, requested string) (*target.Pool, error) {
 	return nil, target.Invalid("there are %d pools, so pool is required", len(st.Pools))
 }
 
+// poolFull turns running out of space into the status that says so.
+func poolFull(pool string, err error) error {
+	if errors.Is(err, syscall.ENOSPC) {
+		return &statusError{http.StatusInsufficientStorage, fmt.Sprintf("pool %s is full: %v", pool, err)}
+	}
+	return err
+}
+
+// cloneSource is what a clone is made from.
+type cloneSource struct {
+	pool, internal string
+	sizeBytes      int64
+}
+
+func findSource(st *target.State, src *target.VolumeSource) (cloneSource, error) {
+	if src.Snapshot != "" {
+		snap := st.Snapshots[src.Snapshot]
+		if snap == nil {
+			return cloneSource{}, target.Invalid("no such snapshot %s", src.Snapshot)
+		}
+		return cloneSource{snap.Pool, snap.InternalName, snap.SizeBytes}, nil
+	}
+	vol := st.Volumes[src.Volume]
+	if vol == nil {
+		return cloneSource{}, target.Invalid("no such volume %s", src.Volume)
+	}
+	return cloneSource{vol.Pool, vol.InternalName, vol.SizeBytes}, nil
+}
+
+func sameSource(a, b *target.VolumeSource) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) error {
 	var req struct {
-		Name      string            `json:"name"`
-		Pool      string            `json:"pool"`
-		SizeBytes int64             `json:"size_bytes"`
-		Labels    map[string]string `json:"labels"`
+		Name      string               `json:"name"`
+		Pool      string               `json:"pool"`
+		SizeBytes int64                `json:"size_bytes"`
+		Source    *target.VolumeSource `json:"source"`
+		Labels    map[string]string    `json:"labels"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		return err
@@ -325,35 +381,68 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) error {
 	if err := checkObjectName("volume", req.Name); err != nil {
 		return err
 	}
-	if req.SizeBytes < 4096 || req.SizeBytes%4096 != 0 {
+	if src := req.Source; src != nil && (src.Snapshot == "") == (src.Volume == "") {
+		return target.Invalid("source must name either a snapshot or a volume")
+	}
+	sizeGiven := req.SizeBytes != 0 || req.Source == nil
+	if sizeGiven && (req.SizeBytes < 4096 || req.SizeBytes%4096 != 0) {
 		return target.Invalid("size_bytes must be a positive multiple of 4096")
 	}
 	var vol *target.Volume
 	var driver storage.Driver
 	created := false
 	err := s.m.mutate(func(st *target.State) error {
-		pool, err := defaultPool(st, req.Pool)
-		if err != nil {
-			return err
-		}
-		// CSI retries, so the same request again is a success, not a conflict.
+		// CSI retries, so the same request again is a success, not a conflict. This comes first
+		// because a clone's source may have gone by then.
 		if existing := st.Volumes[req.Name]; existing != nil {
-			if existing.Pool != pool.Name || existing.SizeBytes != req.SizeBytes {
+			wantPool := req.Pool
+			if req.Source == nil {
+				p, err := defaultPool(st, req.Pool)
+				if err != nil {
+					return err
+				}
+				wantPool = p.Name
+			}
+			if (wantPool != "" && existing.Pool != wantPool) ||
+				(sizeGiven && existing.SizeBytes != req.SizeBytes) ||
+				!sameSource(existing.Source, req.Source) {
 				return target.NewConflict("volume %s already exists with different settings", req.Name)
 			}
 			vol = existing
 			return nil
 		}
+		var pool *target.Pool
+		var source cloneSource
+		var err error
+		if req.Source != nil {
+			if source, err = findSource(st, req.Source); err != nil {
+				return err
+			}
+			if req.Pool != "" && req.Pool != source.pool {
+				return target.Invalid("a clone stays in its source's pool, %s", source.pool)
+			}
+			pool = st.Pools[source.pool]
+			if sizeGiven && req.SizeBytes < source.sizeBytes {
+				return target.Invalid("a clone can't be smaller than its source (%d bytes)", source.sizeBytes)
+			}
+			if !sizeGiven {
+				req.SizeBytes = source.sizeBytes
+			}
+		} else if pool, err = defaultPool(st, req.Pool); err != nil {
+			return err
+		}
 		if driver, err = s.m.newDriver(pool); err != nil {
 			return err
 		}
 		internal := target.NewInternalName()
-		path, err := driver.Create(internal, req.SizeBytes)
+		var path string
+		if req.Source != nil {
+			path, err = driver.Clone(source.internal, internal, req.SizeBytes)
+		} else {
+			path, err = driver.Create(internal, req.SizeBytes)
+		}
 		if err != nil {
-			if errors.Is(err, syscall.ENOSPC) {
-				return &statusError{http.StatusInsufficientStorage, fmt.Sprintf("pool %s is full: %v", pool.Name, err)}
-			}
-			return err
+			return poolFull(pool.Name, err)
 		}
 		vol = &target.Volume{
 			Name:         req.Name,
@@ -363,6 +452,7 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) error {
 			SizeBytes:    req.SizeBytes,
 			UUID:         target.NewUUID(),
 			NGUID:        target.NewNGUID(),
+			Source:       req.Source,
 			Labels:       req.Labels,
 			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 		}
@@ -475,6 +565,153 @@ func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	// Saved first: a failure here leaves a file that the pool reports, not a volume with no storage.
+	if err := driver.Delete(internal); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+// --- snapshots ---
+
+type snapshotView struct {
+	*target.Snapshot
+	State string `json:"state"`
+}
+
+type snapshotPage struct {
+	Items     []snapshotView `json:"items"`
+	NextAfter string         `json:"next_after,omitempty"`
+}
+
+func viewSnapshot(snap *target.Snapshot) snapshotView {
+	return snapshotView{Snapshot: snap, State: "online"}
+}
+
+func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) error {
+	q := r.URL.Query()
+	limit, err := pageLimit(q.Get("limit"))
+	if err != nil {
+		return err
+	}
+	after, volume := q.Get("after"), q.Get("volume")
+	return s.m.view(func(st *target.State) error {
+		page := snapshotPage{Items: []snapshotView{}}
+		for _, name := range slices.Sorted(maps.Keys(st.Snapshots)) {
+			snap := st.Snapshots[name]
+			// The volume needn't exist: a snapshot can outlive it.
+			if name <= after || (volume != "" && snap.Volume != volume) {
+				continue
+			}
+			if len(page.Items) == limit {
+				page.NextAfter = page.Items[limit-1].Name
+				break
+			}
+			page.Items = append(page.Items, viewSnapshot(snap))
+		}
+		writeJSON(w, http.StatusOK, page)
+		return nil
+	})
+}
+
+func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) error {
+	var req struct {
+		Name   string `json:"name"`
+		Volume string `json:"volume"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		return err
+	}
+	if err := checkObjectName("snapshot", req.Name); err != nil {
+		return err
+	}
+	var snap *target.Snapshot
+	var driver storage.Driver
+	created := false
+	err := s.m.mutate(func(st *target.State) error {
+		// This comes first because the volume may have gone by the time CSI retries.
+		if existing := st.Snapshots[req.Name]; existing != nil {
+			if existing.Volume != req.Volume {
+				return target.NewConflict("snapshot %s already exists, of volume %s", req.Name, existing.Volume)
+			}
+			snap = existing
+			return nil
+		}
+		vol := st.Volumes[req.Volume]
+		if vol == nil {
+			return target.Invalid("no such volume %s", req.Volume)
+		}
+		var err error
+		if driver, err = s.m.newDriver(st.Pools[vol.Pool]); err != nil {
+			return err
+		}
+		internal := target.NewInternalName()
+		path, err := driver.Snapshot(vol.InternalName, internal)
+		if err != nil {
+			return poolFull(vol.Pool, err)
+		}
+		snap = &target.Snapshot{
+			Name:         req.Name,
+			Volume:       vol.Name,
+			Pool:         vol.Pool,
+			InternalName: internal,
+			DevicePath:   path,
+			SizeBytes:    vol.SizeBytes,
+			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		}
+		st.Snapshots[req.Name] = snap
+		created = true
+		return nil
+	})
+	if err != nil {
+		if created && driver != nil {
+			if derr := driver.Delete(snap.InternalName); derr != nil {
+				s.m.log.Error("couldn't clean up a snapshot after a failed create", "snapshot", req.Name, "error", derr)
+			}
+		}
+		return err
+	}
+	code := http.StatusOK
+	if created {
+		code = http.StatusCreated
+	}
+	writeJSON(w, code, viewSnapshot(snap))
+	return nil
+}
+
+func (s *Server) getSnapshot(w http.ResponseWriter, r *http.Request) error {
+	name := r.PathValue("snapshot")
+	return s.m.view(func(st *target.State) error {
+		snap := st.Snapshots[name]
+		if snap == nil {
+			return notFound("no such snapshot %s", name)
+		}
+		writeJSON(w, http.StatusOK, viewSnapshot(snap))
+		return nil
+	})
+}
+
+func (s *Server) deleteSnapshot(w http.ResponseWriter, r *http.Request) error {
+	name := r.PathValue("snapshot")
+	var driver storage.Driver
+	var internal string
+	err := s.m.mutate(func(st *target.State) error {
+		snap := st.Snapshots[name]
+		if snap == nil {
+			return notFound("no such snapshot %s", name)
+		}
+		var err error
+		if driver, err = s.m.newDriver(st.Pools[snap.Pool]); err != nil {
+			return err
+		}
+		internal = snap.InternalName
+		delete(st.Snapshots, name)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	// Saved first, as with volumes: a failure here leaves a file that the pool reports.
 	if err := driver.Delete(internal); err != nil {
 		return err
 	}

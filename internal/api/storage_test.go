@@ -276,3 +276,203 @@ func TestAVolumesFileCantBeExportedDirectly(t *testing.T) {
 	e.do("POST", "/v1/subsystems/"+subNQN+"/namespaces", obj{"device_path": vol["device_path"]}, 409)
 	e.do("POST", "/v1/subsystems/"+subNQN+"/namespaces", obj{"volume": "v"}, 201)
 }
+
+func TestSnapshotsAndClones(t *testing.T) {
+	e := newEnv(t)
+	e.pool()
+	vol := e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 8192}, 201)
+	if vol["source"] != nil {
+		t.Errorf("a new volume has no source: %v", vol["source"])
+	}
+
+	e.do("POST", "/v1/snapshots", obj{"name": "s", "volume": "nope"}, 422)
+	e.do("POST", "/v1/snapshots", obj{"name": "../s", "volume": "v"}, 422)
+	snap := e.do("POST", "/v1/snapshots", obj{"name": "s", "volume": "v"}, 201)
+	if snap["pool"] != "p" || snap["size_bytes"] != float64(8192) || snap["state"] != "online" {
+		t.Errorf("snapshot = %v", snap)
+	}
+	again := e.do("POST", "/v1/snapshots", obj{"name": "s", "volume": "v"}, 200)
+	if again["internal_name"] != snap["internal_name"] {
+		t.Errorf("a retry should find the same snapshot: %v, %v", snap, again)
+	}
+	e.do("POST", "/v1/volumes", obj{"name": "other", "size_bytes": 4096}, 201)
+	e.do("POST", "/v1/snapshots", obj{"name": "s", "volume": "other"}, 409)
+	files := len(e.pools.files)
+
+	// A clone's source: exactly one, which exists, in its own pool, at no less than its size.
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{}}, 422)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"snapshot": "s", "volume": "v"}}, 422)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"snapshot": "nope"}}, 422)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"volume": "nope"}}, 422)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"snapshot": "s"}, "size_bytes": 4096}, 422)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"snapshot": "s"}, "size_bytes": 8193}, 422)
+	e.do("POST", "/v1/pools", obj{"name": "q", "type": "reflink", "path": "/q"}, 201)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "pool": "q", "source": obj{"snapshot": "s"}}, 422)
+	if len(e.pools.files) != files {
+		t.Errorf("a refused clone allocated storage: %v", e.pools.files)
+	}
+
+	clone := e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"snapshot": "s"}}, 201)
+	if clone["size_bytes"] != float64(8192) || clone["pool"] != "p" {
+		t.Errorf("a clone defaults to its source's size and pool: %v", clone)
+	}
+	if clone["uuid"] == vol["uuid"] || clone["nguid"] == vol["nguid"] || clone["internal_name"] == vol["internal_name"] {
+		t.Errorf("a clone needs its own identity, or hosts reject it as a duplicate: %v, %v", clone, vol)
+	}
+	if fmt.Sprint(clone["source"]) != "map[snapshot:s]" {
+		t.Errorf("source = %v", clone["source"])
+	}
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"snapshot": "s"}}, 200)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"snapshot": "s"}, "size_bytes": 8192}, 200)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"snapshot": "s"}, "size_bytes": 16384}, 409)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"volume": "v"}}, 409)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "pool": "p", "size_bytes": 8192}, 409)
+	big := e.do("POST", "/v1/volumes", obj{"name": "big", "source": obj{"volume": "v"}, "size_bytes": 16384}, 201)
+	if big["size_bytes"] != float64(16384) {
+		t.Errorf("a clone may be larger: %v", big)
+	}
+}
+
+func TestSnapshotOutlivesItsVolume(t *testing.T) {
+	e := newEnv(t)
+	e.pool()
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4096}, 201)
+	e.do("POST", "/v1/snapshots", obj{"name": "s", "volume": "v"}, 201)
+	e.do("DELETE", "/v1/volumes/v", nil, 204)
+
+	got := e.do("GET", "/v1/snapshots/s", nil, 200)
+	if got["volume"] != "v" {
+		t.Errorf("snapshot = %v", got)
+	}
+	// CSI may retry after the volume has gone.
+	e.do("POST", "/v1/snapshots", obj{"name": "s", "volume": "v"}, 200)
+	e.do("POST", "/v1/snapshots", obj{"name": "t", "volume": "v"}, 422)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"snapshot": "s"}}, 201)
+
+	// Forgetting a pool would lose track of the snapshot's data.
+	e.do("DELETE", "/v1/volumes/c", nil, 204)
+	if got := e.do("DELETE", "/v1/pools/p", nil, 409); !strings.Contains(fmt.Sprint(got["error"]), "snapshots") {
+		t.Errorf("error = %v", got["error"])
+	}
+	// A clone also keeps working after its snapshot goes, and retrying it finds it.
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"snapshot": "s"}}, 201)
+	e.do("DELETE", "/v1/snapshots/s", nil, 204)
+	e.do("DELETE", "/v1/snapshots/s", nil, 404)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"snapshot": "s"}}, 200)
+	e.do("POST", "/v1/volumes", obj{"name": "d", "source": obj{"snapshot": "s"}}, 422)
+	e.do("DELETE", "/v1/volumes/c", nil, 204)
+	if len(e.pools.files) != 0 {
+		t.Errorf("left on disk: %v", e.pools.files)
+	}
+	e.do("DELETE", "/v1/pools/p", nil, 204)
+}
+
+func TestListingSnapshots(t *testing.T) {
+	e := newEnv(t)
+	e.pool()
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4096}, 201)
+	e.do("POST", "/v1/volumes", obj{"name": "w", "size_bytes": 4096}, 201)
+	e.do("POST", "/v1/snapshots", obj{"name": "a", "volume": "v"}, 201)
+	e.do("POST", "/v1/snapshots", obj{"name": "b", "volume": "w"}, 201)
+	e.do("POST", "/v1/snapshots", obj{"name": "c", "volume": "v"}, 201)
+
+	names := func(path string) string {
+		got := e.do("GET", path, nil, 200)
+		var out []string
+		for _, item := range got["items"].([]any) {
+			out = append(out, item.(map[string]any)["name"].(string))
+		}
+		return fmt.Sprintf("%v next=%v", out, got["next_after"])
+	}
+	for path, want := range map[string]string{
+		"/v1/snapshots":                  "[a b c] next=<nil>",
+		"/v1/snapshots?limit=2":          "[a b] next=b",
+		"/v1/snapshots?limit=2&after=b":  "[c] next=<nil>",
+		"/v1/snapshots?volume=v":         "[a c] next=<nil>",
+		"/v1/snapshots?volume=v&limit=1": "[a] next=a",
+		"/v1/snapshots?volume=gone":      "[] next=<nil>",
+	} {
+		if got := names(path); got != want {
+			t.Errorf("%s = %s, want %s", path, got, want)
+		}
+	}
+	e.do("GET", "/v1/snapshots?limit=0", nil, 422)
+
+	pool := e.do("GET", "/v1/pools/p", nil, 200)
+	if pool["snapshots"] != float64(3) || pool["volumes"] != float64(2) {
+		t.Errorf("pool = %v", pool)
+	}
+	if strings.Contains(fmt.Sprint(pool["warnings"]), "no volume refers") {
+		t.Errorf("snapshots aren't strays: %v", pool["warnings"])
+	}
+	if got := e.do("GET", "/v1/system", nil, 200); got["snapshots"] != float64(3) {
+		t.Errorf("system = %v", got)
+	}
+}
+
+func TestSnapshotFileCantBeExportedDirectly(t *testing.T) {
+	e := newEnv(t)
+	e.pool()
+	e.do("POST", "/v1/subsystems", obj{"nqn": "nqn.2026-11.test:a"}, 201)
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4096}, 201)
+	snap := e.do("POST", "/v1/snapshots", obj{"name": "s", "volume": "v"}, 201)
+	got := e.do("POST", "/v1/subsystems/nqn.2026-11.test:a/namespaces", obj{"device_path": snap["device_path"]}, 409)
+	if !strings.Contains(fmt.Sprint(got["error"]), "snapshot s") {
+		t.Errorf("error = %v", got["error"])
+	}
+}
+
+func TestSnapshotsAndClonesFullPool(t *testing.T) {
+	e := newEnv(t)
+	e.pool()
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4096}, 201)
+	e.pools.createErr = fmt.Errorf("clone: %w", syscall.ENOSPC)
+	e.do("POST", "/v1/snapshots", obj{"name": "s", "volume": "v"}, 507)
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"volume": "v"}}, 507)
+	e.pools.createErr = nil
+	if got := e.do("GET", "/v1/system", nil, 200); got["snapshots"] != float64(0) || got["volumes"] != float64(1) {
+		t.Errorf("a failed copy must leave nothing behind: %v", got)
+	}
+}
+
+func TestSnapshotsSurviveARestart(t *testing.T) {
+	e := newEnv(t)
+	e.pool()
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4096}, 201)
+	snap := e.do("POST", "/v1/snapshots", obj{"name": "s", "volume": "v"}, 201)
+	clone := e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"snapshot": "s"}}, 201)
+	e.start()
+	if got := e.do("GET", "/v1/snapshots/s", nil, 200); got["internal_name"] != snap["internal_name"] {
+		t.Errorf("snapshot = %v", got)
+	}
+	if got := e.do("GET", "/v1/volumes/c", nil, 200); fmt.Sprint(got["source"]) != "map[snapshot:s]" || got["nguid"] != clone["nguid"] {
+		t.Errorf("clone = %v", got)
+	}
+}
+
+func TestPortTransport(t *testing.T) {
+	e := newEnv(t)
+	got := e.do("POST", "/v1/ports", obj{"id": 1, "address": "127.0.0.1", "service": 4420}, 201)
+	if got["transport"] != "tcp" {
+		t.Errorf("transport defaults to tcp: %v", got)
+	}
+	e.do("POST", "/v1/ports", obj{"id": 2, "address": "127.0.0.1", "service": 4421, "transport": "tcp"}, 201)
+	// A setting that can't be honoured is refused, never ignored.
+	e.do("POST", "/v1/ports", obj{"id": 3, "address": "127.0.0.1", "service": 4422, "transport": "rdma"}, 422)
+	e.do("PATCH", "/v1/ports/1", obj{"transport": "rdma"}, 422)
+	if got := e.do("GET", "/v1/ports/1", nil, 200); got["transport"] != "tcp" {
+		t.Errorf("a refused change must not stick: %v", got)
+	}
+	caps := e.do("GET", "/v1/system", nil, 200)["capabilities"].(map[string]any)
+	if fmt.Sprint(caps["transports"]) != "[tcp]" {
+		t.Errorf("capabilities = %v", caps)
+	}
+}
+
+func TestPortsSavedBeforeTransportsExistedAreTCP(t *testing.T) {
+	st := &target.State{Ports: map[uint16]*target.Port{1: {ID: 1, Address: "127.0.0.1", Service: 4420}}}
+	st.Normalize()
+	if st.Ports[1].Transport != target.TransportTCP {
+		t.Errorf("transport = %q", st.Ports[1].Transport)
+	}
+}

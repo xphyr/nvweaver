@@ -172,6 +172,10 @@ done
 section "CRUD"
 api "create port 1" 201 POST /v1/ports "{\"id\":1,\"address\":\"127.0.0.1\",\"service\":$P1}"
 api "create port 2" 201 POST /v1/ports "{\"id\":2,\"address\":\"127.0.0.1\",\"service\":$P2}"
+expect_eq "a port's transport defaults to tcp" tcp "$(ini "jq -r .transport /tmp/body")"
+api "a transport this service can't use is refused" 422 POST /v1/ports '{"id":8,"address":"127.0.0.1","service":14438,"transport":"rdma"}'
+api "system info lists the transports" 200 GET /v1/system
+expect_eq "just tcp, for now" '["tcp"]' "$(ini "jq -c .capabilities.transports /tmp/body")"
 api "duplicate listener refused" 409 POST /v1/ports "{\"address\":\"127.0.0.1\",\"service\":$P1}"
 api "create host1" 201 POST /v1/hosts "{\"nqn\":\"$H1\"}"
 api "create host2" 201 POST /v1/hosts "{\"nqn\":\"$H2\"}"
@@ -347,6 +351,43 @@ else
 	expect_eq "same NGUID on another node" "$(echo "$VOL_NGUID" | tr -d -)" "$(ini "cat /sys/block/$(basename "$DV")/nguid" | tr -d -)"
 	expect_eq "same UUID on another node" "$VOL_UUID" "$(ini "cat /sys/block/$(basename "$DV")/uuid")"
 	expect_eq "same data on another node" "$SUM" "$(ini "dd if=$DV bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
+	api "snapshot the volume, while a host has it connected" 201 POST /v1/snapshots '{"name":"s1","volume":"v1"}'
+	SNAP_FILE=$(ini "jq -r .device_path /tmp/body")
+	api "snapshotting it again succeeds" 200 POST /v1/snapshots '{"name":"s1","volume":"v1"}'
+	expect_eq "the same file" "$SNAP_FILE" "$(ini "jq -r .device_path /tmp/body")"
+	api "the snapshot's file can't be exported directly" 409 POST "/v1/subsystems/$N1/namespaces" "{\"device_path\":\"$SNAP_FILE\"}"
+	ini "dd if=/dev/urandom of=$DV bs=1M count=1 oflag=direct status=none"
+	V_SUM=$(ini "dd if=$DV bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")
+	if [ "$V_SUM" != "$SUM" ]; then ok "the host changes the volume after the snapshot"; else bad "the host changes the volume after the snapshot"; fi
+	expect_eq "the snapshot still holds the old data" "$SUM" "$($ENGINE exec "$TGT" sh -c "dd if=$SNAP_FILE bs=1048576 count=16 2>/dev/null | md5sum | cut -d' ' -f1")"
+	api "clone the snapshot" 201 POST /v1/volumes '{"name":"c1","source":{"snapshot":"s1"},"size_bytes":268435456}'
+	C_NGUID=$(ini "jq -r .nguid /tmp/body")
+	C_UUID=$(ini "jq -r .uuid /tmp/body")
+	C_FILE=$(ini "jq -r .device_path /tmp/body")
+	if [ "$C_NGUID" != "$VOL_NGUID" ] && [ "$C_UUID" != "$VOL_UUID" ]; then ok "the clone has its own identity"; else bad "the clone has its own identity" "$C_NGUID $C_UUID"; fi
+	api "cloning it again succeeds" 200 POST /v1/volumes '{"name":"c1","source":{"snapshot":"s1"}}'
+	api "the same name from another source is a conflict" 409 POST /v1/volumes '{"name":"c1","source":{"volume":"v1"}}'
+	api "a clone can't be smaller than its source" 422 POST /v1/volumes '{"name":"c9","source":{"snapshot":"s1"},"size_bytes":4096}'
+	api "map the clone to node 1, alongside the original on node 2" 201 POST "/v1/subsystems/$N1/namespaces" '{"volume":"c1"}'
+	out=$(connect "$H1" "$HID1" "$N1" $P1) && ok "node 1 connects to the clone" || bad "node 1 connects to the clone" "$out"
+	DC=$(wait_dev "$N1")
+	expect_eq "the host sees the clone's larger size" 268435456 "$(ini "blockdev --getsize64 $DC")"
+	expect_eq "with the clone's NGUID" "$(echo "$C_NGUID" | tr -d -)" "$(ini "cat /sys/block/$(basename "$DC")/nguid" | tr -d -)"
+	expect_eq "the clone holds the snapshot's data, not the volume's" "$SUM" "$(ini "dd if=$DC bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
+	ini "dd if=/dev/urandom of=$DC bs=1M count=1 seek=4 oflag=direct status=none"
+	C_SUM=$(ini "dd if=$DC bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")
+	if [ "$C_SUM" != "$SUM" ]; then ok "the host changes the clone"; else bad "the host changes the clone"; fi
+	expect_eq "and the original doesn't change" "$V_SUM" "$(ini "dd if=$DV bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
+	expect_eq "nor does the snapshot" "$SUM" "$($ENGINE exec "$TGT" sh -c "dd if=$SNAP_FILE bs=1048576 count=16 2>/dev/null | md5sum | cut -d' ' -f1")"
+	api "clone a volume directly, while it's in use" 201 POST /v1/volumes '{"name":"c2","source":{"volume":"v1"}}'
+	C2_FILE=$(ini "jq -r .device_path /tmp/body")
+	expect_eq "it holds the volume's current data" "$V_SUM" "$($ENGINE exec "$TGT" sh -c "dd if=$C2_FILE bs=1048576 count=16 2>/dev/null | md5sum | cut -d' ' -f1")"
+	disconnect "$N1"
+	api "unmap the clone" 204 DELETE "/v1/subsystems/$N1/namespaces/1"
+	api "delete the snapshot's first clone" 204 DELETE /v1/volumes/c1
+	api "delete the other clone" 204 DELETE /v1/volumes/c2
+	expect_eq "their files are gone" 0 "$($ENGINE exec "$TGT" sh -c "ls $C_FILE $C2_FILE 2>/dev/null | wc -l")"
+	expect_eq "the snapshot is untouched" "$SUM" "$($ENGINE exec "$TGT" sh -c "dd if=$SNAP_FILE bs=1048576 count=16 2>/dev/null | md5sum | cut -d' ' -f1")"
 	disconnect "$N2"
 	api "a pool with volumes can't be forgotten" 409 DELETE /v1/pools/p1
 	api "a second volume, for paging" 201 POST /v1/volumes '{"name":"v2","pool":"p1","size_bytes":4096}'
@@ -362,6 +403,14 @@ else
 	api "delete a namespace on node 2" 204 DELETE "/v1/subsystems/$N2/namespaces/1"
 	api "delete the volume" 204 DELETE /v1/volumes/v1
 	api "delete the other volume" 204 DELETE /v1/volumes/v2
+	api "the snapshot outlives its volume" 200 GET /v1/snapshots/s1
+	expect_eq "and keeps its data" "$SUM" "$($ENGINE exec "$TGT" sh -c "dd if=$SNAP_FILE bs=1048576 count=16 2>/dev/null | md5sum | cut -d' ' -f1")"
+	api "a pool with snapshots can't be forgotten" 409 DELETE /v1/pools/p1
+	api "clone it after its volume has gone" 201 POST /v1/volumes '{"name":"c3","source":{"snapshot":"s1"}}'
+	C3_FILE=$(ini "jq -r .device_path /tmp/body")
+	api "delete the snapshot" 204 DELETE /v1/snapshots/s1
+	expect_eq "and the clone keeps its data" "$SUM" "$($ENGINE exec "$TGT" sh -c "dd if=$C3_FILE bs=1048576 count=16 2>/dev/null | md5sum | cut -d' ' -f1")"
+	api "delete that clone" 204 DELETE /v1/volumes/c3
 	expect_eq "their files are gone" 0 "$($ENGINE exec "$TGT" sh -c "ls $POOL_DIR | grep -c img")"
 	api "remove node 1" 204 DELETE "/v1/subsystems/$N1"
 	api "remove node 2" 204 DELETE "/v1/subsystems/$N2"

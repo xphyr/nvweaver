@@ -28,6 +28,7 @@ type State struct {
 	Subsystems map[string]*Subsystem `json:"subsystems"`
 	Pools      map[string]*Pool      `json:"pools,omitempty"`
 	Volumes    map[string]*Volume    `json:"volumes,omitempty"`
+	Snapshots  map[string]*Snapshot  `json:"snapshots,omitempty"`
 }
 
 // InternalPrefix starts the name of everything this service creates in a pool, which is how it
@@ -53,13 +54,36 @@ type Volume struct {
 	SizeBytes    int64             `json:"size_bytes"`
 	UUID         string            `json:"uuid"`
 	NGUID        string            `json:"nguid"`
+	Source       *VolumeSource     `json:"source"`
 	Labels       map[string]string `json:"labels,omitempty"`
 	CreatedAt    string            `json:"created_at"`
 }
 
-// Port is a TCP listener. Discovery is served on every port by the kernel.
+// VolumeSource is what a clone was made from, by the name it had then, which may have gone since.
+type VolumeSource struct {
+	Snapshot string `json:"snapshot,omitempty"`
+	Volume   string `json:"volume,omitempty"`
+}
+
+// Snapshot is a read-only copy of a volume at a moment in time. It's independent once taken, and
+// can outlive its volume. To use one, clone it to a new volume.
+type Snapshot struct {
+	Name         string `json:"name"`
+	Volume       string `json:"volume"`
+	Pool         string `json:"pool"`
+	InternalName string `json:"internal_name"`
+	DevicePath   string `json:"device_path"`
+	SizeBytes    int64  `json:"size_bytes"`
+	CreatedAt    string `json:"created_at"`
+}
+
+// TransportTCP is NVMe/TCP, the only transport so far, and the default.
+const TransportTCP = "tcp"
+
+// Port is a listener on one transport. Discovery is served on every port by the kernel.
 type Port struct {
 	ID             uint16 `json:"id"`
+	Transport      string `json:"transport"`
 	Address        string `json:"address"`
 	Service        int    `json:"service"`
 	InlineDataSize *int   `json:"inline_data_size,omitempty"`
@@ -110,6 +134,7 @@ func NewState() *State {
 		Subsystems: map[string]*Subsystem{},
 		Pools:      map[string]*Pool{},
 		Volumes:    map[string]*Volume{},
+		Snapshots:  map[string]*Snapshot{},
 	}
 }
 
@@ -130,6 +155,14 @@ func (s *State) Normalize() {
 	}
 	if s.Volumes == nil {
 		s.Volumes = map[string]*Volume{}
+	}
+	if s.Snapshots == nil {
+		s.Snapshots = map[string]*Snapshot{}
+	}
+	for _, p := range s.Ports {
+		if p.Transport == "" {
+			p.Transport = TransportTCP
+		}
 	}
 	for _, sub := range s.Subsystems {
 		if sub.Namespaces == nil {
@@ -200,6 +233,9 @@ func (p *Port) Validate() error {
 	if p.ID > MaxPortID {
 		return invalid("port id must be at most %d", MaxPortID)
 	}
+	if p.Transport != "" && p.Transport != TransportTCP {
+		return invalid("transport %q isn't available: this service can use %s", p.Transport, TransportTCP)
+	}
 	ip := net.ParseIP(p.Address)
 	if ip == nil {
 		return invalid("address %q must be an IP address", p.Address)
@@ -257,6 +293,11 @@ func (s *State) Validate() error {
 	for _, vol := range s.Volumes {
 		if s.Pools[vol.Pool] == nil {
 			return invalid("volume %s references unknown pool %s", vol.Name, vol.Pool)
+		}
+	}
+	for _, snap := range s.Snapshots {
+		if s.Pools[snap.Pool] == nil {
+			return invalid("snapshot %s references unknown pool %s", snap.Name, snap.Pool)
 		}
 	}
 	mappedTo := map[string]string{}

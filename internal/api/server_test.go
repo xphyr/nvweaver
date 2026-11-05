@@ -76,6 +76,24 @@ func (d fakeDriver) Grow(internal string, size int64) error {
 	d.files[internal] = size
 	return nil
 }
+func (d fakeDriver) copy(source, internal string, size int64) (string, error) {
+	if d.createErr != nil {
+		return "", d.createErr
+	}
+	if _, ok := d.files[source]; !ok {
+		return "", fmt.Errorf("no such source %s", source)
+	}
+	if size == 0 {
+		size = d.files[source]
+	}
+	return fakeDriver{d.fakePools}.Create(internal, size)
+}
+func (d fakeDriver) Snapshot(source, internal string) (string, error) {
+	return d.copy(source, internal, 0)
+}
+func (d fakeDriver) Clone(source, internal string, size int64) (string, error) {
+	return d.copy(source, internal, size)
+}
 func (d fakeDriver) List() ([]string, error) {
 	var names []string
 	for n := range d.files {

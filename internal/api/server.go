@@ -147,6 +147,11 @@ func (s *Server) Handler() http.Handler {
 	route("PATCH /v1/volumes/{volume}", s.updateVolume)
 	route("DELETE /v1/volumes/{volume}", s.deleteVolume)
 
+	route("GET /v1/snapshots", s.listSnapshots)
+	route("POST /v1/snapshots", s.createSnapshot)
+	route("GET /v1/snapshots/{snapshot}", s.getSnapshot)
+	route("DELETE /v1/snapshots/{snapshot}", s.deleteSnapshot)
+
 	route("GET /v1/subsystems/{nqn}/namespaces", s.listNamespaces)
 	route("POST /v1/subsystems/{nqn}/namespaces", s.createNamespace)
 	route("GET /v1/subsystems/{nqn}/namespaces/{nsid}", s.getNamespace)
@@ -205,6 +210,7 @@ func (s *Server) getSystem(w http.ResponseWriter, _ *http.Request) error {
 			"pool_types":   storage.Types(),
 			"pools":        len(st.Pools),
 			"volumes":      len(st.Volumes),
+			"snapshots":    len(st.Snapshots),
 			"kernel":       b.String(),
 			"modules":      modules,
 			"target_ready": s.m.backend.Available(),
@@ -240,6 +246,7 @@ func (s *Server) listPorts(w http.ResponseWriter, _ *http.Request) error {
 func (s *Server) createPort(w http.ResponseWriter, r *http.Request) error {
 	var req struct {
 		ID             *uint16 `json:"id"`
+		Transport      string  `json:"transport"`
 		Address        string  `json:"address"`
 		Service        int     `json:"service"`
 		InlineDataSize *int    `json:"inline_data_size"`
@@ -249,6 +256,9 @@ func (s *Server) createPort(w http.ResponseWriter, r *http.Request) error {
 	}
 	if req.Service == 0 {
 		req.Service = 4420 // IANA-assigned NVMe/TCP I/O port.
+	}
+	if req.Transport == "" {
+		req.Transport = target.TransportTCP
 	}
 	var created *target.Port
 	err := s.m.mutate(func(st *target.State) error {
@@ -264,7 +274,7 @@ func (s *Server) createPort(w http.ResponseWriter, r *http.Request) error {
 				id++
 			}
 		}
-		created = &target.Port{ID: id, Address: req.Address, Service: req.Service, InlineDataSize: req.InlineDataSize}
+		created = &target.Port{ID: id, Transport: req.Transport, Address: req.Address, Service: req.Service, InlineDataSize: req.InlineDataSize}
 		st.Ports[id] = created
 		return nil
 	})
@@ -296,6 +306,7 @@ func (s *Server) updatePort(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var req struct {
+		Transport      *string `json:"transport"`
 		Address        *string `json:"address"`
 		Service        *int    `json:"service"`
 		InlineDataSize *int    `json:"inline_data_size"`
@@ -308,6 +319,9 @@ func (s *Server) updatePort(w http.ResponseWriter, r *http.Request) error {
 		p := st.Ports[id]
 		if p == nil {
 			return notFound("no such port %d", id)
+		}
+		if req.Transport != nil {
+			p.Transport = *req.Transport
 		}
 		if req.Address != nil {
 			p.Address = *req.Address

@@ -179,6 +179,129 @@ backend_tests() { # BACKEND IMAGE [run args]
 		disconnect "$sub"
 	done
 	api "a disk can't be exported twice" 409 POST "/v1/subsystems/$NQN:$backend-file/namespaces" "{\"nsid\":2,\"device_path\":\"$NVME\"}"
+	snapshot_tests "$backend"
+}
+
+# What a client relies on a snapshot for: real files on a real filesystem, including one taken while
+# they're being written. A file whose fsync finished before the snapshot was asked for must be in it.
+snapshot_tests() { # BACKEND
+	local backend=$1 sub=$NQN:$1-snap sub_a=$NQN:$1-clone-a sub_b=$NQN:$1-clone-b
+	local dev dev_a dev_b out written committed
+	section "$backend: snapshots and clones, checked as real files on a real filesystem"
+	t "sudo podman exec nvweaver-vm mkdir -p /var/lib/nvweaver/snap-pool"
+	api "adopt a pool" 201 POST /v1/pools '{"name":"snap","type":"reflink","path":"/var/lib/nvweaver/snap-pool"}'
+	api "create a volume" 201 POST /v1/volumes '{"name":"fs","size_bytes":1073741824}'
+	for entry in "$sub:" "$sub_a:" "$sub_b:"; do
+		api "subsystem ${entry%:*}" 201 POST /v1/subsystems "{\"nqn\":\"${entry%:*}\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
+	done
+	api "map the volume" 201 POST "/v1/subsystems/$sub/namespaces" '{"volume":"fs"}'
+	out=$(connect "$sub") && ok "host connects" || bad "host connects" "$out"
+	dev=$(ini_dev "$sub")
+	if [ -z "$dev" ]; then
+		bad "the volume appears on the initiator"
+		return
+	fi
+	i "sudo mkfs.xfs -q -f $dev && sudo mkdir -p /mnt/snap /mnt/snap-a /mnt/snap-b && sudo mount $dev /mnt/snap && sudo chmod 777 /mnt/snap" &&
+		ok "make and mount a filesystem on it" || bad "make and mount a filesystem on it"
+	i 'rm -f /tmp/snap.*; cd /mnt/snap && for n in $(seq 1 32); do head -c 8M /dev/urandom > base$n; done && sync -f . && md5sum base* > /tmp/snap.manifest'
+	expect_eq "write 256 MiB of files, and record their checksums" 32 "$(i 'wc -l < /tmp/snap.manifest')"
+
+	api "snapshot it with the filesystem mounted" 201 POST /v1/snapshots '{"name":"snap-a","volume":"fs"}'
+	api "clone that snapshot" 201 POST /v1/volumes '{"name":"clone-a","source":{"snapshot":"snap-a"}}'
+	local a_internal
+	a_internal=$(t "jq -r .internal_name /tmp/b")
+	local pool_dir
+	pool_dir=$(t "sudo podman volume inspect nvweaver-vm-data --format '{{.Mountpoint}}'")/snap-pool
+	# Total, exclusive and shared bytes, for a clone that nothing has written to yet.
+	out=$(t "sync; sudo btrfs filesystem du --raw $pool_dir/$a_internal.img | tail -1")
+	local total exclusive
+	total=$(echo "$out" | awk '{print $1}')
+	exclusive=$(echo "$out" | awk '{print $2}')
+	if [ "${total:-0}" -ge 268435456 ] && [ "${exclusive:-1073741824}" -lt 16777216 ]; then
+		ok "the clone shares its data, rather than copying it ($total bytes, $exclusive its own)"
+	else
+		bad "the clone shares its data, rather than copying it" "btrfs says: $out"
+	fi
+
+	# Writes under load. Each line in the journal is a file that fsync has finished for.
+	i "setsid nohup bash -c 'cd /mnt/snap; n=0; while [ ! -f /tmp/snap.stop ]; do n=\$((n+1)); dd if=/dev/urandom of=w\$n bs=64k count=16 conv=fsync status=none || break; sync . ; md5sum w\$n >> /tmp/snap.journal; done; touch /tmp/snap.done' </dev/null >/dev/null 2>&1 &"
+	for _ in $(seq 1 $((60 * SCALE))); do
+		written=$(i 'wc -l < /tmp/snap.journal 2>/dev/null || echo 0')
+		[ "${written:-0}" -ge 8 ] && break
+		sleep 0.5
+	done
+	committed=$(i 'cat /tmp/snap.journal | wc -l')
+	api "snapshot it while a host is writing" 201 POST /v1/snapshots '{"name":"snap-b","volume":"fs"}'
+	i 'touch /tmp/snap.stop'
+	for _ in $(seq 1 $((60 * SCALE))); do
+		[ "$(i '[ -f /tmp/snap.done ] && echo yes')" = yes ] && break
+		sleep 0.5
+	done
+	written=$(i 'wc -l < /tmp/snap.journal')
+	if [ "$committed" -gt 0 ] && [ "$written" -gt "$committed" ]; then
+		ok "writes were really running, before and after it ($committed, then $written files)"
+	else
+		bad "writes were really running, before and after it" "$committed, then $written files"
+	fi
+	api "clone the snapshot taken under load" 201 POST /v1/volumes '{"name":"clone-b","source":{"snapshot":"snap-b"}}'
+
+	# Change the original, so that a clone still holding the old data shows they're independent.
+	i 'cd /mnt/snap && head -c 8M /dev/urandom > base1 && touch only-in-original && sync -f .'
+	out=$(i 'cd /mnt/snap && md5sum -c --quiet /tmp/snap.manifest 2>/dev/null | wc -l')
+	expect_eq "the original has really changed" 1 "$out"
+
+	# XFS refuses a second filesystem with the same UUID on a host without nouuid, as a clone has.
+	api "map the first clone" 201 POST "/v1/subsystems/$sub_a/namespaces" '{"volume":"clone-a"}'
+	out=$(connect "$sub_a") && ok "host connects to the first clone" || bad "host connects to the first clone" "$out"
+	dev_a=$(ini_dev "$sub_a")
+	if out=$(i "sudo mount -o nouuid $dev_a /mnt/snap-a" 2>&1); then ok "it mounts"; else bad "it mounts" "$out"; fi
+	expect_eq "every file from before the snapshot is intact" "rc=0" "$(i 'cd /mnt/snap-a && md5sum -c --quiet /tmp/snap.manifest >/dev/null 2>&1; echo rc=$?')"
+	expect_eq "nothing written after it is there" 0 "$(i 'ls /mnt/snap-a | grep -c -e "^w" -e only-in-original')"
+
+	api "map the second clone" 201 POST "/v1/subsystems/$sub_b/namespaces" '{"volume":"clone-b"}'
+	out=$(connect "$sub_b") && ok "host connects to the second clone" || bad "host connects to the second clone" "$out"
+	dev_b=$(ini_dev "$sub_b")
+	if out=$(i "sudo mount -o nouuid $dev_b /mnt/snap-b" 2>&1); then ok "it mounts, replaying its log"; else bad "it mounts, replaying its log" "$out"; fi
+	expect_eq "the files from before it are intact" "rc=0" "$(i 'cd /mnt/snap-b && md5sum -c --quiet /tmp/snap.manifest >/dev/null 2>&1; echo rc=$?')"
+	expect_eq "and so is every file finished before it was asked for ($committed)" "rc=0" \
+		"$(i "cd /mnt/snap-b && head -n $committed /tmp/snap.journal | md5sum -c --quiet >/dev/null 2>&1; echo rc=\$?")"
+	i 'cd /mnt/snap-b && touch only-in-clone && sync -f .'
+	expect_eq "a file made on the clone isn't on the original" 0 "$(i 'ls /mnt/snap | grep -c only-in-clone')"
+	expect_eq "nor one made on the original on the clone" 0 "$(i 'ls /mnt/snap-b | grep -c only-in-original')"
+
+	i 'sudo umount /mnt/snap /mnt/snap-a /mnt/snap-b'
+	for d in "$dev_a" "$dev_b"; do
+		if out=$(i "sudo xfs_repair -n $d" 2>&1); then ok "the filesystem checks clean on $d"; else bad "the filesystem checks clean on $d" "$(echo "$out" | tail -5)"; fi
+	done
+
+	# Each survives the others going. The snapshots are all that's left of what was written.
+	disconnect "$sub"
+	disconnect "$sub_a"
+	disconnect "$sub_b"
+	api "unmap the original" 204 DELETE "/v1/subsystems/$sub/namespaces/1"
+	api "unmap the first clone" 204 DELETE "/v1/subsystems/$sub_a/namespaces/1"
+	api "delete the original" 204 DELETE /v1/volumes/fs
+	api "delete the first clone" 204 DELETE /v1/volumes/clone-a
+	api "clone the first snapshot again, with its volume gone" 201 POST /v1/volumes '{"name":"clone-c","source":{"snapshot":"snap-a"}}'
+	api "delete the snapshots" 204 DELETE /v1/snapshots/snap-a
+	api "delete the other" 204 DELETE /v1/snapshots/snap-b
+	api "map the last clone" 201 POST "/v1/subsystems/$sub_a/namespaces" '{"volume":"clone-c"}'
+	out=$(connect "$sub_a") && ok "host connects" || bad "host connects" "$out"
+	dev_a=$(ini_dev "$sub_a")
+	if out=$(i "sudo mount -o nouuid $dev_a /mnt/snap-a" 2>&1); then ok "it mounts"; else bad "it mounts" "$out"; fi
+	expect_eq "with its files intact, and no snapshot or volume behind it" "rc=0" "$(i 'cd /mnt/snap-a && md5sum -c --quiet /tmp/snap.manifest >/dev/null 2>&1; echo rc=$?')"
+	i 'sudo umount /mnt/snap-a'
+	disconnect "$sub_a"
+
+	api "unmap it" 204 DELETE "/v1/subsystems/$sub_a/namespaces/1"
+	api "unmap the second clone" 204 DELETE "/v1/subsystems/$sub_b/namespaces/1"
+	api "delete the last clone" 204 DELETE /v1/volumes/clone-c
+	api "delete the second clone" 204 DELETE /v1/volumes/clone-b
+	for s in "$sub" "$sub_a" "$sub_b"; do
+		api "remove subsystem" 204 DELETE "/v1/subsystems/$s"
+	done
+	expect_eq "the pool's files are gone" 0 "$(t "sudo ls $pool_dir | grep -c img")"
+	api "forget the pool" 204 DELETE /v1/pools/snap
 }
 
 backend_cleanup() {

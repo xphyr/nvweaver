@@ -17,6 +17,8 @@ type Capabilities struct {
 	PerHostDHCHAPParams bool `json:"per_host_dhchap_params"`
 	// WildcardListen can serve hosts on 0.0.0.0 or ::.
 	WildcardListen bool `json:"wildcard_listen"`
+	// Transports lists the NVMe transports a port can use.
+	Transports []string `json:"transports"`
 }
 
 // LiveChecker reports whether a namespace is really being served.
@@ -62,6 +64,7 @@ func (t *Target) Capabilities() Capabilities {
 		BufferedIO:          true,
 		PerHostDHCHAPParams: true,
 		WildcardListen:      true,
+		Transports:          []string{TransportTCP},
 	}
 }
 

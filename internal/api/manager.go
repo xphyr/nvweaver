@@ -199,6 +199,11 @@ func checkUnshared(s *target.State, path, skipNQN string, skipNSID uint32) error
 			return target.NewConflict("%s belongs to volume %s: map the volume instead", path, vol.Name)
 		}
 	}
+	for _, snap := range s.Snapshots {
+		if resolve(snap.DevicePath) == want {
+			return target.NewConflict("%s belongs to snapshot %s: clone it to a volume instead", path, snap.Name)
+		}
+	}
 	for _, sub := range s.Subsystems {
 		for _, ns := range sub.Namespaces {
 			if sub.NQN == skipNQN && ns.NSID == skipNSID {

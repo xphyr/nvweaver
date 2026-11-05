@@ -46,7 +46,7 @@ func (b *Backend) Name() string { return "spdk" }
 
 // Capabilities implements target.Backend.
 func (b *Backend) Capabilities() target.Capabilities {
-	return target.Capabilities{}
+	return target.Capabilities{Transports: []string{target.TransportTCP}}
 }
 
 // Check implements target.Backend, rejecting what SPDK has no equivalent for

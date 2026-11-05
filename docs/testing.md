@@ -101,6 +101,30 @@ With `--metadatasize 16m`, a 1 GB metadata volume and `--config backup/archive=0
 so thin metadata use is a minimum. With default settings, the 507 KB area fell to 221 KB at 1,000 volumes,
 and `/etc/lvm/archive` reached 375 MB.
 
+### Snapshots and clones
+
+On reflink, on both targets, checked two ways, as a status code proves little here. The x86 suites gave `vm-e2e` 229,
+kernel 196, SPDK 208 and systemd 68, with no failures. The first three include these checks.
+
+**As raw data, in `e2e.sh`:** a host writes 16 MiB, the volume is snapshotted while the host is connected, and the host
+overwrites part of it. The checksums then show that the snapshot holds the old data, that a clone seen by a host holds
+the snapshot's data and not the volume's, and that writing to one changes neither of the others.
+
+**As files on a filesystem, in `vm-e2e.sh`,** from a separate initiator:
+
+| Check | How |
+|---|---|
+| A snapshot is a valid disk | XFS on the volume, and 256 MiB of random files. A clone of a snapshot mounts, and every checksum matches |
+| It's a moment in time | Nothing written after the snapshot is on that clone |
+| It's crash-consistent under load | A writer records each file once `fsync` has finished. A snapshot taken during that holds every file recorded before it was asked for, after XFS replays its log |
+| The filesystem is sound | `xfs_repair -n` reports nothing, on both clones |
+| They're independent | Changes on the original or a clone don't appear on the other, and old data stays on the clone |
+| It outlives its sources | A clone of a snapshot whose volume has gone, with the snapshot then deleted too, still verifies |
+| It shares data rather than copying | `btrfs filesystem du`: 336 MB in a new clone of the 256 MiB of files, none of it exclusive |
+
+Limits: one snapshot under load per run, so a rare race might not show; XFS only; reflink on btrfs in the VMs, and XFS as
+a reflink pool only on the CM4, without snapshots; nothing with applications such as databases, or a real power loss.
+
 ### Arm
 
 A probe on GitHub's `ubuntu-24.04-arm` runner (Neoverse-N2, 4 vCPUs, Azure kernel 7.0), at the `v0.1.0`
@@ -297,6 +321,8 @@ Checks that passed while proving nothing. Watch for these patterns:
 - **Many short SSH connections:** a test opening a new connection for each step had connections from its machine start
   timing out, while other machines and ping still worked. It cleared within minutes, and didn't recur with one shared
   `ControlMaster` connection. The cause wasn't confirmed, and network changes were being made around the same time.
+- **Skipped reflink tests:** Go's temporary directory may be tmpfs, where `internal/storage`'s reflink tests skip
+  themselves and `go test` still says `ok`. Use `TMPDIR` on btrfs or XFS, and `-v` to see that they ran.
 - **Disk names:** don't assume `nvme0n1` is namespace 1 of a subsystem with several. The names
   appear not to follow NSID, though this was inferred rather than confirmed.
 - **BusyBox:** `head` rejects `16M`, and `stat -f -c %T` can't name overlayfs, so compare the
