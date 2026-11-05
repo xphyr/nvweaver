@@ -47,10 +47,9 @@ still change. `nvweaverd --version` and `GET /v1/system` report the version.
 
 ## What's built
 
-Only `linux/amd64` for now, because that's all that has been tested. Releases are meant to become
-cross-platform, for x86-64 and arm64, and nothing is published for Arm until the suites pass there.
-The Go binary already builds for arm64, the SPDK image needs an `SPDK_ARCH` baseline chosen, and the
-VM lab is x86 only. See `TODO.md`.
+Only `linux/amd64` so far. arm64 is planned for v0.2.0, as in `docs/decisions.md`, entry 27. CI already tests Arm on every
+pull request and on `main`, but publishes nothing from it yet. Its runners have no KVM, so that job runs `e2e.sh` directly
+rather than the VM suites. Emulated Arm VMs are a manual check, with `LAB_ARCH=aarch64` and `TEST_TIMEOUT_SCALE=10`.
 
 ## Running the same checks locally
 

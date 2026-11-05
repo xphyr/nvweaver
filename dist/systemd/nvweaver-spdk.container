@@ -22,6 +22,9 @@ EnvironmentFile=/etc/nvweaver/nvweaver.env
 # One line for each disk this service may export. It can reach no others. Name it inside
 # the container, and use that name in the API: a by-id path is a symlink that doesn't exist there.
 #AddDevice=/dev/disk/by-id/your-disk:/dev/nvweaver0
+# Podman kills a container after 10 seconds by default, and the unit is then reported as failed. Keep this below
+# TimeoutStopSec, so that Podman gets to finish.
+PodmanArgs=--stop-timeout=25
 
 [Service]
 # SPDK's data path stops with the container, so a crash needs a restart.

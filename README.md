@@ -291,8 +291,8 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
   unhelpful error. Raise it on the host with `sysctl -w fs.aio-max-nr=1048576`: a container with no
   capabilities can't do this itself.
 - Scale is being worked on. Each API change currently takes longer as configuration grows.
-- The SPDK image is only built and tested for x86-64 (`SPDK_ARCH` is the build
-  argument for other baselines).
+- Published images and tarballs are x86-64 only for now. arm64 builds from source, with arm64 releases planned for
+  v0.2.0. Raspberry Pi OS's kernel has no NVMe/TCP target, so only SPDK can run there.
 - No formal NVMe conformance suite has been run. Protocol behaviour is the target's;
   the tests here exercise both with the Linux initiator only.
 - **Not yet tested on physical NVMe hardware or over a physical network.** Tests use

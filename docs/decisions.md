@@ -240,3 +240,16 @@ there, not as absolute numbers.
 - **RDMA itself is deferred until after the CSI driver:** nothing on the roadmap depends on it, and the links here are
   1 Gb Ethernet with no RDMA NICs, so its benefits couldn't be measured. Both targets support it underneath. The
   main unknown is whether SPDK's RDMA transport works with the `--no-huge` and interrupt mode that we use. Not tested.
+
+## 27. arm64 is released from v0.2.0
+
+- **Chosen:** v0.2.0 publishes arm64 images and a tarball alongside x86-64, built natively on Arm runners, with an Arm job
+  in CI so that it stays working.
+- **Why now:** the suites pass under emulation on `-cpu max` and Cortex-A72, apart from a Quadlet timeout since fixed;
+  `e2e.sh` passes on a real Arm runner; and SPDK passes over a physical network on a real CM4. What's left is mainly CI
+  and release work.
+- **What it promises:** arm64 with SPDK, and with the kernel target where the host's kernel has `nvmet-tcp`, as Fedora's
+  has. Raspberry Pi OS's kernel doesn't, so it's SPDK only there.
+- **Not promised:** a Pi 5 and its 16K-page kernel, which is untested; Arm performance or scale, which aren't measured.
+- **CI runs the suites directly on Arm,** without VMs, as its runners have no KVM. Emulated VMs took over two hours, which
+  is too slow for every change, so `TEST_TIMEOUT_SCALE=10` and `LAB_ARCH=aarch64` remain a manual check.

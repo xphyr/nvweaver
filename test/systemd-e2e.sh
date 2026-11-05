@@ -262,6 +262,7 @@ if $ENGINE image inspect "$SPDK_IMAGE" >/dev/null 2>&1; then
 	expect_eq "API answers the moment start returns" 200 "$(ini "curl -s -m 2 -o /dev/null -w '%{http_code}' $API/healthz")"
 	expect_has "it runs the SPDK backend" '"spdk"' "$(ini "curl -s $API/v1/system | jq .backend")"
 	expect_eq "with no capabilities" 0000000000000000 "$(sd "podman exec systemd-nvweaver-spdk awk '/CapEff/{print \$2}' /proc/1/status")"
+	expect_eq "a slow stop isn't killed by Podman's default timeout" 25 "$(sd "podman inspect systemd-nvweaver-spdk --format '{{.Config.StopTimeout}}'")"
 	create "port" /v1/ports "{\"id\":1,\"address\":\"127.0.0.1\",\"service\":$PORT}"
 	create "host" /v1/hosts "{\"nqn\":\"$HOST\"}"
 	create "subsystem" /v1/subsystems "{\"nqn\":\"$SUB\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"

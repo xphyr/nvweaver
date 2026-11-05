@@ -123,11 +123,11 @@ an x86-64 build host, with `TEST_TIMEOUT_SCALE=10`. The code was `aa94560`, plus
 | `vm-e2e` | 129 of 129 | 129 of 129 |
 | Kernel target | 159 of 159 | 159 of 159 |
 | SPDK | 171 of 171, see below | 171 of 171 |
-| systemd | 67 of 67 | **66 of 67** |
+| systemd | 67 of 67 | **66 of 67,** before the Quadlet fix |
 
-- **The A72 failure is probably a real timeout in the Quadlet.** After `systemctl stop` on the SPDK Quadlet, the unit
-  was `failed`, not `inactive`. The VM's journal was deleted with the run, but the same result was reproduced on a real
-  CM4 with the service's CPU limited: see "A real Cortex-A72".
+- **The A72 failure was probably a real timeout in the Quadlet, now fixed.** After `systemctl stop` on the SPDK Quadlet,
+  the unit was `failed`, not `inactive`. The VM's journal was deleted with the run, but the same result was reproduced on
+  a real CM4 with the service's CPU limited, and fixed there: see "A real Cortex-A72".
 - **`-cpu max` SPDK:** the full `-cpu max` run gave 166 passed, 4 failed, from the two test bugs under "Test pitfalls".
   The later re-run gave 171 of 171, but its two process-failure checks passed because `nvmf_tgt` was killed by hand,
   as the fix being tested was itself wrong. The corrected test has only run unaided on A72.
@@ -168,8 +168,20 @@ host connected:
 | 5% | 29.5 seconds | **`failed`, status 137:** "StopSignal SIGTERM failed to stop container in 10 seconds" |
 | 2% | 60.2 seconds | **`failed`, status 137,** and `TimeoutStopSec=30` also ran out |
 
-The Quadlet doesn't set Podman's own stop timeout, which is 10 seconds. So a shutdown that takes longer is killed, well
-before systemd's 30 seconds, and the unit is reported as failed. At normal speed it has plenty of margin.
+Podman's own stop timeout was left at its default of 10 seconds, so a longer shutdown was killed, well before systemd's
+30 seconds, and the unit was reported as failed. The Quadlet now sets `--stop-timeout=25`, and with that:
+
+| CPU limit | Stop took | Unit after stop |
+|---|---|---|
+| None, 3 runs | About 1.1 seconds | `inactive` each time |
+| 20% of a core | 6.8 seconds | `inactive` |
+| 10% | 11 seconds | `inactive` |
+| 5%, 3 runs | 33 to 34 seconds | `inactive` each time |
+| 3% | 72 seconds | `failed`: `TimeoutStopSec=30` ran out, and systemd killed it |
+| 2% | 80 seconds | `failed`, in the same way |
+
+So the limit moved from about 10 seconds of shutdown to about 30, which was left there as a host this short of CPU has
+bigger problems. The emulated A72 run hasn't been repeated with the fix.
 
 Not covered on real Arm: the kernel target on this OS, which needs a different kernel; the plain systemd unit; a Pi 5
 and its 16K-page kernel; a physical initiator, as this one was a VM; physical NVMe; snapshots and clones, which aren't built.

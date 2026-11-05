@@ -78,6 +78,33 @@ jobs:
           path: build/*
           retention-days: 3
 
+  # Arm runners have no KVM, so these suites run directly on the runner, without the VMs. They load
+  # kernel modules there, which is fine as the runner is disposable. Nothing is published from this.
+  arm:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Unit tests
+        run: |
+          go vet ./...
+          go test -race ./...
+      - name: Install the kernel modules
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q "linux-modules-extra-$(uname -r)"
+      - name: Build images
+        run: |
+          sudo podman build -q -t nvweaver:dev -f Containerfile .
+          sudo podman build -q -t nvweaver:spdk -f Containerfile.spdk .
+      - name: Kernel target end to end
+        run: SKIP_BUILD=1 IMAGE=nvweaver:dev ENGINE="sudo podman" ./test/e2e.sh
+      - name: SPDK target end to end
+        run: BACKEND=spdk SKIP_BUILD=1 IMAGE=nvweaver:spdk ENGINE="sudo podman" ./test/e2e.sh
+
   end-to-end:
     needs: build
     runs-on: ubuntu-24.04

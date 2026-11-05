@@ -20,14 +20,16 @@ Work through these in order: each phase depends on the ones before it.
 - [x] Install from a release tarball on a clean machine, using `v0.1.0` on fresh VMs
 - [ ] Prove the Quadlet in the release tarball against a published image, at the next release. The
       `v0.1.0` tarball's Quadlet needs the image tagged by hand, or its `Image=` line changed
-- [ ] Publish cross-platform releases for x86-64 and arm64. This is a goal, but not started: x86-64
-      comes first. Keep new work portable until then
+- [ ] Publish cross-platform releases for x86-64 and arm64, starting with v0.2.0. See decision 27
   - [x] Probe it: `e2e.sh` passes on both targets on a real Arm kernel. See `docs/testing.md`
-  - [ ] Build and publish multi-arch images and an arm64 tarball, with an Arm job in CI. The SPDK
-        image defaults `SPDK_ARCH` to x86, so it needs choosing by architecture
+  - [x] Choose the SPDK baseline by architecture: `Containerfile.spdk` already does
+  - [x] Add an Arm job to CI that runs the unit tests and `e2e.sh` on both targets. It hasn't run yet: it runs on pull
+        requests and on `main`
+  - [ ] For v0.2.0: publish multi-arch images and an arm64 tarball, built natively on Arm runners
+  - [ ] For v0.2.0: say in the README what's supported on Arm. See decision 27
   - [x] Check that `armv8-a+crc` runs on older Arm CPUs: Cortex-A72, emulated and on a real CM4
-  - [ ] Give the SPDK Quadlet a longer Podman stop timeout than its 10-second default, below `TimeoutStopSec`. A slow
-        shutdown is killed and reported as failed. Reproduced on a CM4: see `docs/testing.md`
+  - [x] Give the SPDK Quadlet a longer Podman stop timeout than its 10-second default, below `TimeoutStopSec`. A slow
+        shutdown was killed and reported as failed. Reproduced and fixed on a CM4: see `docs/testing.md`
   - [ ] `test/systemd-e2e.sh` has a fixed `-l 30`, which doesn't scale with `TEST_TIMEOUT_SCALE`
   - [ ] In `e2e.sh`, stop waiting for a reconnect once the host has removed its controller
   - [ ] Arm runners have no KVM, so CI runs `e2e.sh` directly. Decide whether Arm needs the VM suites
