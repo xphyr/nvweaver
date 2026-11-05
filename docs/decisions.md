@@ -257,3 +257,21 @@ there, not as absolute numbers.
 - **Not promised:** a Pi 5 and its 16K-page kernel, which is untested; Arm performance or scale, which aren't measured.
 - **CI runs the suites directly on Arm,** without VMs, as its runners have no KVM. Emulated VMs took over two hours, which
   is too slow for every change, so `TEST_TIMEOUT_SCALE=10` and `LAB_ARCH=aarch64` remain a manual check.
+
+## 28. On SPDK, files are made durable with the sync attribute
+
+- **The problem:** SPDK's AIO bdevs tell hosts there's a write cache, but never honour FUA: nothing in its write path
+  reads the bit. XFS commits its log with a FUA write and relies on it. In a file, the new blocks stay in the target's
+  page cache and filesystem journal until the next flush, so **a power cut corrupted hosts' filesystems**, including files
+  whose `fsync` had finished, in 5 of 8 rounds on a reflink pool. The kernel target honours FUA, and passed.
+- **Chosen:** set the file's sync attribute (`chattr +S`) before SPDK opens it, so that the kernel treats each write as
+  `O_DSYNC`. 8 of 8 rounds were then clean. A filesystem that can't do this is refused, rather than silently unsafe.
+- **The cost:** on the same live volume in VMs, 4k random writes fell from about 5,200 to 1,200 IOPS at queue depth 16, and
+  from about 1,570 to 810 at depth 1. 1M sequential writes fell from about 80 to 64 MB/s. Reads didn't suffer. Flushes
+  are cheap on these disks, so a real disk may lose more.
+- **Rejected:** patching SPDK to honour FUA, which is the proper fix but needs carrying a patch, for now. It's worth reporting
+  upstream. Reporting no write cache to hosts, as they'd then send no flushes at all. An option to turn this off, until
+  someone needs it: a test lab can tolerate slow writes better than a corrupted filesystem that looks like a client's bug.
+- **Still open: block devices on SPDK, including LVM volumes.** They have no such attribute, and FUA is ignored there too. Those
+  writes do reach the device, and passed here, but QEMU's disks don't lose unflushed writes. A real drive with a volatile
+  cache might lose them on a power cut. This is untested, and documented in the README.

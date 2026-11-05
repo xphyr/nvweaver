@@ -94,6 +94,10 @@ func TestLVMCapacity(t *testing.T) {
 	if c, _ = d.Capacity(); len(c.Warnings) != 1 {
 		t.Errorf("a nearly full metadata area should warn: %+v", c)
 	}
+	f.replies["lvs"] = lvsJSON(`"lv_size": "1000", "data_percent": "100.00", "metadata_percent": "3.50", "lv_health_status": "out_of_data"`)
+	if c, _ = d.Capacity(); len(c.Warnings) != 1 || !strings.Contains(c.Warnings[0], "out of space") {
+		t.Errorf("a pool that's out of space should say what that means: %+v", c)
+	}
 	f.replies["lvs"] = lvsJSON(`"lv_size": "1000", "data_percent": "", "metadata_percent": "1"`)
 	if _, err := d.Capacity(); err == nil {
 		t.Error("output it can't understand must be an error, not an empty pool")
@@ -185,6 +189,18 @@ func TestLVMRunningOutOfRoom(t *testing.T) {
 	f.fail["lvcreate"] = fmt.Errorf("Insufficient free space")
 	if _, err := d.Create("nvw-a", 4194304); !errors.Is(err, syscall.ENOSPC) {
 		t.Errorf("create: %v", err)
+	}
+	// As a thin pool that has really filled up words it.
+	f.fail["lvcreate"] = fmt.Errorf("WARNING: Thin pool vg/pool0 is out of data space.\nCannot create new thin volume, free space in thin pool vg/pool0 reached threshold")
+	if _, err := d.Create("nvw-a", 4194304); !errors.Is(err, syscall.ENOSPC) {
+		t.Errorf("create in a full pool: %v", err)
+	}
+	if _, err := d.Snapshot("nvw-a", "nvw-b"); !errors.Is(err, syscall.ENOSPC) {
+		t.Errorf("snapshot in a full pool: %v", err)
+	}
+	f.fail["lvcreate"] = fmt.Errorf("Something else went wrong")
+	if _, err := d.Create("nvw-a", 4194304); errors.Is(err, syscall.ENOSPC) {
+		t.Errorf("not every failure is a full pool: %v", err)
 	}
 }
 

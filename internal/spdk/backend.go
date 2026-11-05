@@ -19,6 +19,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"nvweaver/internal/target"
 )
@@ -357,11 +358,50 @@ func (b *Backend) createBdevs(next *target.State) error {
 			if size := fileBlockSize(ns.DevicePath); size != 0 {
 				params["block_size"] = size
 			}
+			if err := makeWritesDurable(ns.DevicePath); err != nil {
+				return fmt.Errorf("namespace %d of %s: %w", nsid, nqn, err)
+			}
 			if err := b.call("bdev_aio_create", params, nil); err != nil {
 				return err
 			}
 			have[name] = true
 		}
+	}
+	return nil
+}
+
+// From linux/fs.h, the same on x86-64 and arm64.
+const (
+	fsIocGetFlags = 0x80086601
+	fsIocSetFlags = 0x40086602
+	fsSyncFl      = 0x8
+)
+
+// makeWritesDurable sets a file's sync attribute, as chattr +S does. SPDK tells hosts that it has a write cache,
+// but ignores FUA, and a filesystem such as XFS commits its log with a FUA write, then relies on it. On a block
+// device those writes reach the device, but in a file, its new blocks stay in the page cache and the
+// filesystem's journal until the next flush. So a power cut corrupted hosts' filesystems. With this, the kernel
+// treats each write as O_DSYNC. A block device has no such attribute, and is left as it is.
+func makeWritesDurable(path string) error {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil // Anything wrong with the path is for SPDK to report.
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var flags int64
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fsIocGetFlags, uintptr(unsafe.Pointer(&flags))); errno != 0 {
+		return fmt.Errorf("can't make %s safe from a power cut: this filesystem has no sync attribute: %w", path, errno)
+	}
+	if flags&fsSyncFl != 0 {
+		return nil
+	}
+	flags |= fsSyncFl
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fsIocSetFlags, uintptr(unsafe.Pointer(&flags))); errno != 0 {
+		return fmt.Errorf("can't make %s safe from a power cut: %w", path, errno)
 	}
 	return nil
 }

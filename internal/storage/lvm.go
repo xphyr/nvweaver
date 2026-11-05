@@ -131,7 +131,7 @@ func (d *lvmThinDriver) Check() error {
 
 // Capacity implements Driver.
 func (d *lvmThinDriver) Capacity() (Capacity, error) {
-	got, err := d.report(d.lv(d.pool), "lv_size", "data_percent", "metadata_percent", "vg_mda_free", "vg_mda_size")
+	got, err := d.report(d.lv(d.pool), "lv_size", "data_percent", "metadata_percent", "vg_mda_free", "vg_mda_size", "lv_health_status")
 	if err != nil {
 		return Capacity{}, err
 	}
@@ -152,6 +152,9 @@ func (d *lvmThinDriver) Capacity() (Capacity, error) {
 	size, errSize := strconv.ParseInt(got["vg_mda_size"], 10, 64)
 	if errFree == nil && errSize == nil && size > 0 && free*10 < size {
 		c.Warnings = append(c.Warnings, fmt.Sprintf("volume group %s has only %d bytes of its LVM metadata area left, which limits how many more volumes it can hold", d.vg, free))
+	}
+	if got["lv_health_status"] == "out_of_data" {
+		c.Warnings = append(c.Warnings, fmt.Sprintf("thin pool %s is out of space: hosts' writes to new blocks stall for a while, then fail with I/O errors. Extend it with lvextend", d.lv(d.pool)))
 	}
 	return c, nil
 }
@@ -180,10 +183,16 @@ func (d *lvmThinDriver) AlignSize(sizeBytes int64) (int64, error) {
 	return sizeBytes, nil
 }
 
-// noSpace turns LVM's way of saying it's out of room into what callers can recognise.
+// noSpace turns LVM's ways of saying it's out of room into what callers can recognise: "Insufficient free
+// space" from a volume group, and "out of data space" from a thin pool that has filled up.
 func noSpace(err error) error {
-	if err != nil && strings.Contains(err.Error(), "nsufficient") {
-		return fmt.Errorf("%v: %w", err, syscall.ENOSPC)
+	if err == nil {
+		return nil
+	}
+	for _, text := range []string{"nsufficient", "out of data space", "free space in thin pool"} {
+		if strings.Contains(err.Error(), text) {
+			return fmt.Errorf("%v: %w", err, syscall.ENOSPC)
+		}
 	}
 	return err
 }

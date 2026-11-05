@@ -191,6 +191,9 @@ backend_tests() { # BACKEND IMAGE [run args]
 	snapshot_tests "$backend" reflink
 	snapshot_tests "$backend" lvm-thin
 	lvm_tests "$backend" "$image"
+	full_pool_tests "$backend"
+	power_tests "$backend" "$image" lvm-thin
+	power_tests "$backend" "$image" reflink
 }
 
 our_lvs() { t "sudo lvs --noheadings -o lv_name $VG | grep -c nvw-"; }
@@ -411,6 +414,163 @@ lvm_tests() { # BACKEND IMAGE
 	t "sudo lvremove -q -y $VG/someone-elses $VG/not-a-pool"
 }
 
+# A thin pool can promise more than it has, so this really fills one.
+full_pool_tests() { # BACKEND
+	local sub=$NQN:$1-full dev out
+	section "$1, lvm-thin: a thin pool that really fills up"
+	t "sudo lvcreate -q -y --type thin-pool -L 128m -n small $VG"
+	api "adopt a small thin pool" 201 POST /v1/pools "{\"name\":\"full\",\"type\":\"lvm-thin\",\"volume_group\":\"$VG\",\"thin_pool\":\"small\"}"
+	api "a volume can promise more than the pool has" 201 POST /v1/volumes '{"name":"big","size_bytes":536870912}'
+	api "subsystem" 201 POST /v1/subsystems "{\"nqn\":\"$sub\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
+	api "map it" 201 POST "/v1/subsystems/$sub/namespaces" '{"volume":"big"}'
+	out=$(connect "$sub" "-l 600") && ok "host connects" || bad "host connects" "$out"
+	dev=$(ini_dev "$sub")
+	i "sudo rm -f /tmp/full.done; head -c 256M /dev/urandom > /tmp/full; (sudo dd if=/tmp/full of=$dev bs=1M oflag=direct status=none; echo \$? > /tmp/full.done) </dev/null >/dev/null 2>&1 &"
+	for _ in $(seq 1 $((120 * SCALE))); do
+		[ "$(t "sudo lvs --noheadings -o lv_health_status $VG/small | tr -d ' '")" = out_of_data ] && break
+		sleep 0.5
+	done
+	expect_eq "writing past its size fills the pool" out_of_data "$(t "sudo lvs --noheadings -o lv_health_status $VG/small | tr -d ' '")"
+	api "the API still answers" 200 GET /v1/pools/full
+	expect_has "and says what's happening" "out of space" "$(t 'cat /tmp/b')"
+	expect_eq "and that it's full" 100 "$(t 'jq .capacity.used_percent /tmp/b')"
+	api "a new volume is refused as out of room" 507 POST /v1/volumes '{"name":"more","size_bytes":4194304}'
+	api "as is a snapshot" 507 POST /v1/snapshots '{"name":"more","volume":"big"}'
+	expect_eq "and a refusal leaves no intent behind" 0 "$(t "sudo ls \$(sudo podman volume inspect nvweaver-vm-data --format '{{.Mountpoint}}')/intents | wc -l")"
+	for _ in $(seq 1 $((240 * SCALE))); do
+		[ -n "$(i 'cat /tmp/full.done 2>/dev/null')" ] && break
+		sleep 0.5
+	done
+	out=$(i 'cat /tmp/full.done 2>/dev/null')
+	if [ -n "$out" ] && [ "$out" != 0 ]; then ok "the host's write fails, rather than silently losing data"; else bad "the host's write fails, rather than silently losing data" "dd said [$out]"; fi
+	t "sudo lvextend -q -L +512m $VG/small" && ok "extend the pool" || bad "extend the pool"
+	out=$(i "sudo dd if=/tmp/full of=$dev bs=1M oflag=direct status=none; echo \$?")
+	expect_eq "the host can write again, with no reconnect" 0 "$out"
+	expect_eq "and all of it reads back" "$(i "md5sum < /tmp/full | cut -d' ' -f1")" "$(i "sudo dd if=$dev bs=1M count=256 iflag=direct status=none | md5sum | cut -d' ' -f1")"
+	api "the pool no longer warns" 200 GET /v1/pools/full
+	expect_lacks "of being out of space" "out of space" "$(t 'cat /tmp/b')"
+	disconnect "$sub"
+	api "unmap it" 204 DELETE "/v1/subsystems/$sub/namespaces/1"
+	api "remove the subsystem" 204 DELETE "/v1/subsystems/$sub"
+	api "delete the volume" 204 DELETE /v1/volumes/big
+	api "forget the pool" 204 DELETE /v1/pools/full
+	t "sudo lvremove -q -y $VG/small"
+}
+
+flushes_of() { t "awk '{print \$16}' /sys/block/$1/stat"; } # Flush requests a disk has completed.
+
+# Everything in the target's RAM is lost at once, with no sync, while the host carries on. A file whose fsync
+# finished before that must still be there, read back from the target rather than from the host's cache.
+# QEMU's disks don't lose unflushed writes, as a real disk's cache can, so this also checks that a host's flush
+# reaches the disk. Without that, a pass here would say nothing about a real power cut.
+power_tests() { # BACKEND IMAGE POOL-TYPE
+	local backend=$1 image=$2 kind=$3 sub=$NQN:$1-$3-power dev out disk before after idle acked
+	section "$backend, $kind: losing power"
+	if [ "$kind" = reflink ]; then
+		t "sudo podman exec nvweaver-vm mkdir -p /var/lib/nvweaver/power-pool"
+		api "adopt a pool" 201 POST /v1/pools '{"name":"power","type":"reflink","path":"/var/lib/nvweaver/power-pool"}'
+		disk=$(t "lsblk -no PKNAME \$(df --output=source /var/lib/containers | tail -1 | sed 's/\[.*//')")
+	else
+		api "adopt a pool" 201 POST /v1/pools "{\"name\":\"power\",\"type\":\"lvm-thin\",\"volume_group\":\"$VG\",\"thin_pool\":\"pool0\"}"
+		disk=$(t "basename \$(readlink -f $LVM_DISK)")
+	fi
+	api "a volume" 201 POST /v1/volumes '{"name":"pw","size_bytes":1073741824}'
+	api "subsystem" 201 POST /v1/subsystems "{\"nqn\":\"$sub\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
+	api "map it" 201 POST "/v1/subsystems/$sub/namespaces" '{"volume":"pw"}'
+	out=$(connect "$sub" "-l 900") && ok "host connects" || bad "host connects" "$out"
+	dev=$(ini_dev "$sub")
+	i "sudo mkfs.xfs -q -f $dev && sudo mkdir -p /mnt/power && sudo mount $dev /mnt/power && sudo chmod 777 /mnt/power && rm -f /tmp/power.*"
+
+	before=$(flushes_of "$disk")
+	sleep $((2 * SCALE))
+	after=$(flushes_of "$disk")
+	idle=$((after - before))
+	before=$after
+	i 'cd /mnt/power; for n in $(seq 1 20); do dd if=/dev/urandom of=f$n bs=4k count=1 conv=fsync status=none; done'
+	after=$(flushes_of "$disk")
+	if [ $((after - before - idle)) -ge 10 ]; then
+		ok "a host's fsync reaches the disk ($((after - before)) flushes for 20 fsyncs, $idle when idle)"
+	else
+		bad "a host's fsync reaches the disk" "$((after - before)) flushes for 20 fsyncs, $idle when idle"
+	fi
+
+	# The images and the rest of the system aren't what's being tested, and a freshly loaded image hasn't reached the disk.
+	t 'sudo sync'
+	# Each journal line is a file whose fsync has finished. It's on the host, so it survives the target.
+	i "setsid nohup bash -c 'cd /mnt/power; n=0; while [ ! -f /tmp/power.stop ]; do n=\$((n+1)); dd if=/dev/urandom of=w\$n bs=64k count=16 conv=fsync status=none || break; sync . ; md5sum w\$n >> /tmp/power.journal; done; touch /tmp/power.done' </dev/null >/dev/null 2>&1 &"
+	# Each line here is something the service said it did, which comes to this machine as it happens.
+	acked=$(mktemp)
+	t "n=0; while :; do n=\$((n+1)); [ \"\$(curl -s -m 60 -o /dev/null -w '%{http_code}' -X POST $API/v1/volumes -d '{\"name\":\"p'\$n'\",\"size_bytes\":4194304}')\" = 201 ] || break; echo v p\$n; [ \"\$(curl -s -m 60 -o /dev/null -w '%{http_code}' -X POST $API/v1/snapshots -d '{\"name\":\"ps'\$n'\",\"volume\":\"p'\$n'\"}')\" = 201 ] || break; echo s ps\$n; done" >"$acked" 2>/dev/null &
+	local churn=$!
+	for _ in $(seq 1 $((60 * SCALE))); do
+		[ "$(i 'wc -l < /tmp/power.journal 2>/dev/null || echo 0')" -ge 8 ] && [ "$(wc -l <"$acked")" -ge 8 ] && break
+		sleep 0.5
+	done
+	t 'sudo sh -c "echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger"' 2>/dev/null &
+	sleep $((3 * SCALE))
+	local committed confirmed
+	committed=$(i 'wc -l < /tmp/power.journal')
+	kill "$churn" 2>/dev/null
+	wait "$churn" 2>/dev/null
+	confirmed=$(wc -l <"$acked")
+	if [ "$committed" -gt 0 ] && [ "$confirmed" -gt 0 ]; then
+		ok "both were really at work when the power went ($committed files, $confirmed changes)"
+	else
+		bad "both were really at work when the power went" "$committed files, $confirmed changes"
+	fi
+	sleep $((5 * SCALE))
+	for _ in $(seq 1 $((90 * SCALE))); do t true 2>/dev/null && break; sleep 2; done
+	t true 2>/dev/null && ok "the target comes back" || bad "the target comes back"
+	expect_eq "it really rebooted" 0 "$(t "awk '{exit \$1 > 600}' /proc/uptime; echo \$?")"
+	start_service "$backend" "$image"
+	if wait_api; then
+		ok "the service restores its configuration"
+	else
+		bad "the service restores its configuration" "$(t 'sudo podman logs nvweaver-vm 2>&1 | tail -8')"
+		return 1 # What follows would only repeat this failure.
+	fi
+	expect_eq "no intents are left" 0 "$(t "sudo ls \$(sudo podman volume inspect nvweaver-vm-data --format '{{.Mountpoint}}')/intents | wc -l")"
+	out=$(while read -r type name; do
+		case "$type" in
+		v) code=$(t "curl -s -o /dev/null -w '%{http_code}' $API/v1/volumes/$name") ;;
+		s) code=$(t "curl -s -o /dev/null -w '%{http_code}' $API/v1/snapshots/$name") ;;
+		*) continue ;;
+		esac
+		[ "$code" = 200 ] || echo "$name:$code"
+	done <"$acked")
+	rm -f "$acked"
+	expect_eq "everything the service confirmed is there ($confirmed)" "" "$out"
+	api "pool status" 200 GET /v1/pools/power
+	expect_lacks "with nothing left that nothing refers to" "no volume refers" "$(t 'cat /tmp/b')"
+	if [ "$kind" = lvm-thin ]; then
+		expect_eq "LVM holds exactly what the service knows of" "$(t 'jq ".volumes + .snapshots" /tmp/b')" "$(our_lvs)"
+	fi
+
+	for _ in $(seq 1 $((120 * SCALE))); do
+		[ "$(i "for c in /sys/class/nvme/*; do [ \"\$(cat \$c/subsysnqn 2>/dev/null)\" = '$sub' ] && cat \$c/state; done")" = live ] && break
+		sleep 1
+	done
+	expect_eq "the host reconnects by itself" live "$(i "for c in /sys/class/nvme/*; do [ \"\$(cat \$c/subsysnqn 2>/dev/null)\" = '$sub' ] && cat \$c/state; done")"
+	i 'touch /tmp/power.stop'
+	for _ in $(seq 1 $((120 * SCALE))); do [ "$(i '[ -f /tmp/power.done ] && echo yes')" = yes ] && break; sleep 0.5; done
+	expect_eq "and its writer carries on to the end" yes "$(i '[ -f /tmp/power.done ] && echo yes')"
+	# Unmounting drops the host's cache, so these reads have to come from the target.
+	i 'sudo umount /mnt/power' && ok "unmount it" || bad "unmount it"
+	if out=$(i "sudo xfs_repair -n $dev" 2>&1); then ok "the filesystem checks clean"; else bad "the filesystem checks clean" "$(echo "$out" | tail -5)"; fi
+	i "sudo mount $dev /mnt/power" && ok "mount it again" || bad "mount it again"
+	expect_eq "every file whose fsync finished before the power went is intact ($committed)" rc=0 \
+		"$(i "cd /mnt/power && head -n $committed /tmp/power.journal | md5sum -c --quiet >/dev/null 2>&1; echo rc=\$?")"
+	i 'sudo umount /mnt/power'
+	disconnect "$sub"
+
+	api "unmap it" 204 DELETE "/v1/subsystems/$sub/namespaces/1"
+	api "remove the subsystem" 204 DELETE "/v1/subsystems/$sub"
+	for out in $(t "curl -s '$API/v1/volumes?limit=1000' | jq -r '.items[].name'"); do t "curl -s -X DELETE $API/v1/volumes/$out"; done
+	for out in $(t "curl -s '$API/v1/snapshots?limit=1000' | jq -r '.items[].name'"); do t "curl -s -X DELETE $API/v1/snapshots/$out"; done
+	api "forget the pool" 204 DELETE /v1/pools/power
+	if [ "$kind" = lvm-thin ]; then expect_eq "nothing is left in LVM" 0 "$(our_lvs)"; fi
+}
+
 # After a reboot nothing is active but what LVM activates, and the target has lost its configuration.
 lvm_reboot_tests() { # BACKEND IMAGE
 	local sub=$NQN:$1-lvm-reboot dev sum out
@@ -453,6 +613,22 @@ lvm_reboot_tests() { # BACKEND IMAGE
 backend_cleanup() {
 	t 'sudo podman stop -t 25 nvweaver-vm >/dev/null; sudo podman rm -f nvweaver-vm >/dev/null; sudo podman volume rm -f nvweaver-vm-data >/dev/null'
 }
+
+# POWER_ONLY="BACKEND POOL-TYPE ROUNDS" repeats just the power-loss test, as a rare failure needs many rounds.
+if [ -n "${POWER_ONLY:-}" ]; then
+	read -r only_backend only_kind only_rounds <<<"$POWER_ONLY"
+	only_image=localhost/nvweaver:dev
+	[ "$only_backend" = spdk ] && only_image=localhost/nvweaver:spdk
+	start_service "$only_backend" "$only_image"
+	wait_api || exit 1
+	api "port on the link address" 201 POST /v1/ports "{\"id\":1,\"address\":\"$TARGET_IP\",\"service\":$PORT}"
+	api "host" 201 POST /v1/hosts "{\"nqn\":\"$HOST\"}"
+	for _ in $(seq 1 "$only_rounds"); do
+		power_tests "$only_backend" "$only_image" "$only_kind" || break
+	done
+	[ "$fail" = 0 ]
+	exit
+fi
 
 backend_tests nvmet localhost/nvweaver:dev
 

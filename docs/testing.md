@@ -137,7 +137,28 @@ the kernel target under the systemd unit, as `vm-e2e`:
 - **A real reboot,** on the kernel target and the unit: data survived, a snapshot stayed inactive, and it could still be cloned.
 - **Its rules:** sizes rounding up, a thin pool that's missing or isn't one, growing while connected, and other LVs ignored.
 
-Not tested: a full thin pool, physical disks, activating thousands of volumes in this path, and other distributions' LVM.
+Not tested: physical disks, activating thousands of volumes in this path, and other distributions' LVM.
+
+### Losing power
+
+`vm-e2e` cuts the target's power with `echo b > /proc/sysrq-trigger`, which reboots with no sync, while a separate host keeps
+writing. Afterwards, the host unmounts and re-reads, so that what it sees comes from the target, not its own cache. Every file
+whose `fsync` finished before the cut must be intact, and `xfs_repair -n` must find nothing.
+
+| Target | LVM thin | Reflink |
+|---|---|---|
+| Kernel | Pass | Pass |
+| SPDK | Pass | **Corrupted in 5 of 8 rounds, then clean in 8 of 8 with the fix:** see decision 28 |
+
+**What this doesn't show:** QEMU's disks keep every write they've been given, so this loses the target's RAM, but not a disk's
+volatile cache. To make up for some of that, the test also counts flushes on the backing disk, showing that a host's `fsync`
+reaches it. FUA isn't covered by that count, which is the open question for block devices on SPDK in decision 28.
+
+### A thin pool that fills up
+
+On both targets, a host writing past the pool's size stalls for 60 seconds as LVM queues its I/O, and then gets an I/O error.
+The API keeps answering in about 60 ms, warns that the pool is out of space, and refuses new volumes and snapshots with `507`.
+After `lvextend`, the same host writes again, with no reconnect, and all its data reads back.
 
 ### Crash recovery
 
@@ -148,7 +169,6 @@ Not tested: a full thin pool, physical disks, activating thousands of volumes in
   snapshots and deletes, on real files. Everything the client was told succeeded must be there, with no strays. This
   depends on timing, so it may not hit the danger window on a given run. It prints how many changes were in progress:
   on x86 it caught 1 on the kernel target and 3 on SPDK, among 397 and 60 confirmed changes, and all were settled.
-- **Not tested:** power loss, which also tests the disk's and filesystem's flushing. A `kill -9` doesn't.
 
 ### Arm
 
@@ -346,6 +366,9 @@ Checks that passed while proving nothing. Watch for these patterns:
 - **Many short SSH connections:** a test opening a new connection for each step had connections from its machine start
   timing out, while other machines and ping still worked. It cleared within minutes, and didn't recur with one shared
   `ControlMaster` connection. The cause wasn't confirmed, and network changes were being made around the same time.
+- **A power cut straight after `podman load`** loses the image, as nothing has synced it, and the service can't start. This looks
+  like the service failing. The power-loss test syncs the target first. `POWER_ONLY="spdk reflink 8"` repeats just that test.
+- **`pkill -f` over SSH** can match the shell running it, whose command line contains the same text, and end the session.
 - **LVM's warnings don't fail anything.** Inside the unit's sandbox it created volumes correctly while being unable to back
   up its metadata or lock itself in memory, and every test passed until a direct check of the backup file. The unit now
   allows these, and the suite checks them. The check on memory only works because the service logs LVM's warnings.

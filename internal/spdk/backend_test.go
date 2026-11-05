@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	"nvweaver/internal/target"
+	"os"
+	"syscall"
+	"unsafe"
 )
 
 // fake is an SPDK that enforces the rules the backend must respect: a namespace
@@ -414,5 +417,32 @@ func TestLiveChecksDontFetchEverything(t *testing.T) {
 	f.fail["nvmf_get_subsystems"] = &RPCError{Code: -1, Message: "down"}
 	if b.LiveEnabled(subA, 1) || b.LiveEnabledAll()(subA, 1) {
 		t.Error("nothing should be reported live when SPDK can't be asked")
+	}
+}
+
+func TestMakeWritesDurable(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "volume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var flags int64
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fsIocGetFlags, uintptr(unsafe.Pointer(&flags))); errno != 0 {
+		t.Skip("this filesystem has no attributes; the end-to-end suites cover it")
+	}
+	if err := makeWritesDurable(f.Name()); err != nil {
+		t.Skipf("this filesystem won't set it, which is refused: %v", err)
+	}
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fsIocGetFlags, uintptr(unsafe.Pointer(&flags))); errno != 0 {
+		t.Fatal(errno)
+	}
+	if flags&fsSyncFl == 0 {
+		t.Errorf("flags = %#x", flags)
+	}
+	if err := makeWritesDurable(f.Name()); err != nil {
+		t.Errorf("setting it twice: %v", err)
+	}
+	if err := makeWritesDurable("/nonexistent"); err != nil {
+		t.Errorf("a missing path is for SPDK to report: %v", err)
 	}
 }

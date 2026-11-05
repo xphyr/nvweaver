@@ -28,6 +28,9 @@ The major differences between versions. For every change, see the commit history
 ### Fixed
 
 - **The Quadlet in the release tarball now names the published image.** In v0.1.0, it needed the image tagged by hand.
+- **SPDK could corrupt hosts' filesystems in a power cut when using files,** including in v0.1.0. It ignores FUA, which XFS relies
+  on. Files are now set to write synchronously, which fixes that, but makes small writes to files on SPDK several times slower.
+  The kernel target and LVM volumes aren't slowed. See [known limits](README.md#known-limits) for block devices on SPDK.
 - **The SPDK Quadlet no longer reports `failed` after a slow shutdown.** Podman killed it after 10 seconds, and it now
   allows 25.
 - **Listing namespaces on SPDK is much faster at scale,** at about 71 ms instead of 32 seconds with 5,000 volumes.
