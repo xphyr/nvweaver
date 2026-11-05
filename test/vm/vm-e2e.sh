@@ -11,6 +11,8 @@
 #   podman build -t nvweaver:dev -f Containerfile .
 #   podman build -t nvweaver:spdk -f Containerfile.spdk .
 set -u
+# TEST_TIMEOUT_SCALE lengthens the waits, for slow machines such as emulated VMs.
+SCALE=${TEST_TIMEOUT_SCALE:-1}
 
 LAB=$(dirname "$0")/lab.sh
 API=http://127.0.0.1:8420
@@ -41,7 +43,7 @@ api() { # NAME WANT METHOD PATH [JSON]
 }
 
 wait_api() {
-	for _ in $(seq 1 120); do
+	for _ in $(seq 1 $((120 * SCALE))); do
 		[ "$(t "curl -s -m 2 -o /dev/null -w '%{http_code}' $API/healthz" 2>/dev/null)" = 200 ] && return 0
 		sleep 0.5
 	done
@@ -51,7 +53,7 @@ wait_api() {
 # The namespace's block device on the initiator, once it can be opened.
 ini_dev() { # SUBNQN
 	local d
-	for _ in $(seq 1 60); do
+	for _ in $(seq 1 $((60 * SCALE))); do
 		d=$(i "for s in /sys/class/nvme-subsystem/*; do [ \"\$(cat \$s/subsysnqn 2>/dev/null)\" = '$1' ] || continue; for n in \$s/nvme*n*; do [ -b /dev/\$(basename \$n) ] && echo /dev/\$(basename \$n) && exit 0; done; done")
 		if [ -n "$d" ]; then
 			echo "$d"
@@ -80,7 +82,7 @@ wait_active() { # UNIT SECONDS
 reboot_target() {
 	t 'sudo systemctl reboot' 2>/dev/null
 	sleep 5
-	for _ in $(seq 1 90); do
+	for _ in $(seq 1 $((90 * SCALE))); do
 		t true 2>/dev/null && return 0
 		sleep 2
 	done
@@ -244,7 +246,7 @@ t 'systemd-analyze critical-chain nvweaver.service 2>/dev/null | tail -n +3 | he
 expect_has "nvmet-tcp was loaded from inside the sandbox" nvmet_tcp "$(t 'lsmod')"
 expect_has "port is listening on the link address" "$TARGET_IP:$PORT" "$(t 'ss -ltn')"
 LIVE=
-for _ in $(seq 1 60); do
+for _ in $(seq 1 $((60 * SCALE))); do
 	LIVE=$(i "for c in /sys/class/nvme/*; do [ \"\$(cat \$c/subsysnqn 2>/dev/null)\" = '$SSUB' ] && cat \$c/state; done")
 	[ "$LIVE" = live ] && break
 	sleep 2
@@ -290,7 +292,7 @@ reboot_target && ok "VM reboots" || bad "VM reboots"
 wait_active nvweaver-spdk 90 && ok "service started at boot" || bad "service started at boot" "$(t 'sudo journalctl -b -u nvweaver-spdk --no-pager -n 15')"
 expect_eq "first time, without any retries" 0 "$(t 'systemctl show -p NRestarts --value nvweaver-spdk')"
 LIVE=
-for _ in $(seq 1 60); do
+for _ in $(seq 1 $((60 * SCALE))); do
 	LIVE=$(i "for c in /sys/class/nvme/*; do [ \"\$(cat \$c/subsysnqn 2>/dev/null)\" = '$QSUB' ] && cat \$c/state; done")
 	[ "$LIVE" = live ] && break
 	sleep 2

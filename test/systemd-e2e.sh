@@ -6,6 +6,8 @@
 # loads nvmet/nvmet-tcp and creates NVMe devices, then removes them. It does not
 # bind-mount the host's /dev, and masks the systemd units that could change the host.
 set -u
+# TEST_TIMEOUT_SCALE lengthens the waits, for slow machines such as emulated VMs.
+SCALE=${TEST_TIMEOUT_SCALE:-1}
 
 ENGINE=${ENGINE:-sudo podman}
 IMAGE=${IMAGE:-nvweaver:systemd-test}
@@ -50,7 +52,7 @@ ctrl() { ini "for c in /sys/class/nvme/*; do [ \"\$(cat \$c/subsysnqn 2>/dev/nul
 live() { ini "c=\$(for c in /sys/class/nvme/*; do [ \"\$(cat \$c/subsysnqn 2>/dev/null)\" = '$SUB' ] && echo \$c; done | head -1); [ -n \"\$c\" ] && cat \$c/state"; }
 cntlid() { ini "cat /sys/class/nvme/$(ctrl)/cntlid"; }
 wait_live() {
-	for _ in $(seq 1 60); do
+	for _ in $(seq 1 $((60 * SCALE))); do
 		[ "$(live)" = live ] && return 0
 		sleep 0.5
 	done
@@ -60,7 +62,7 @@ dev_of() { ini "for s in /sys/class/nvme-subsystem/*; do [ \"\$(cat \$s/subsysnq
 # A fresh connection's namespace appears shortly after its controller goes live.
 wait_dev() {
 	local d
-	for _ in $(seq 1 60); do
+	for _ in $(seq 1 $((60 * SCALE))); do
 		d=$(dev_of)
 		if [ -n "$d" ] && ini "[ -b /dev/$d ]"; then
 			echo "$d"
@@ -80,7 +82,7 @@ boot() {
 }
 wait_boot() {
 	local s
-	for _ in $(seq 1 60); do
+	for _ in $(seq 1 $((60 * SCALE))); do
 		s=$($ENGINE exec "$TGT" systemctl is-system-running 2>/dev/null)
 		case "$s" in running | degraded) return 0 ;; esac
 		sleep 1
@@ -122,7 +124,7 @@ LOOP=$(ini "losetup -f --show /tmp/loop.img")
 # Every namespace of the subsystem that a host can actually use.
 usable() { ini "for s in /sys/class/nvme-subsystem/*; do [ \"\$(cat \$s/subsysnqn 2>/dev/null)\" = '$SUB' ] || continue; for n in \$s/nvme*n*; do [ -b /dev/\$(basename \$n) ] && basename \$n; done; done"; }
 wait_usable() { # COUNT
-	for _ in $(seq 1 40); do
+	for _ in $(seq 1 $((40 * SCALE))); do
 		[ "$(usable | wc -l)" = "$1" ] && return 0
 		sleep 0.25
 	done

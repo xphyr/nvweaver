@@ -115,19 +115,72 @@ code, in run 41906823419:
 | `/dev/kvm` | **Absent**, so the VM suites can't run there |
 | `nvmet-tcp`, `nvme-tcp` | Present, compressed with zstd, which the image's `modprobe` handled |
 
-`LAB_ARCH=aarch64 test/vm/lab.sh` is written to run emulated Arm VMs on an x86 machine, but hasn't run yet.
+Every suite in emulated Arm VMs, using `LAB_ARCH=aarch64` with images and a Fedora 44 base built under emulation, on
+an x86-64 build host, with `TEST_TIMEOUT_SCALE=10`. The code was `aa94560`, plus the test fixes described below:
 
-Not covered on Arm: emulated disks, a separate initiator, a real install and reboot, SELinux, other
-kernels or distributions, physical Arm hardware, and CPUs older than this one.
+| Suite | `-cpu max` | `-cpu cortex-a72` |
+|---|---|---|
+| `vm-e2e` | 129 of 129 | 129 of 129 |
+| Kernel target | 159 of 159 | 159 of 159 |
+| SPDK | 171 of 171, see below | 171 of 171 |
+| systemd | 67 of 67 | **66 of 67** |
+
+- **The A72 failure is probably a real timeout in the Quadlet.** After `systemctl stop` on the SPDK Quadlet, the unit
+  was `failed`, not `inactive`. The VM's journal was deleted with the run, but the same result was reproduced on a real
+  CM4 with the service's CPU limited: see "A real Cortex-A72".
+- **`-cpu max` SPDK:** the full `-cpu max` run gave 166 passed, 4 failed, from the two test bugs under "Test pitfalls".
+  The later re-run gave 171 of 171, but its two process-failure checks passed because `nvmf_tgt` was killed by hand,
+  as the fix being tested was itself wrong. The corrected test has only run unaided on A72.
+- **Time:** about 143 minutes on `-cpu max`, and 202 on A72. A base image took 59 to 66 minutes, and the SPDK image 22.
+
+### A real Cortex-A72
+
+A Raspberry Pi CM4 with 2 GB, on Raspberry Pi OS (Debian 13, kernel 6.18.50+rpt-rpi-v8, 4K pages, CPU features
+`fp asimd evtstrm crc32 cpuid`), using the SPDK image built under emulation. Its kernel has `NVME_TCP` and `NVME_TARGET`
+switched off, so it's a real host with no kernel target. `e2e.sh` can't run on it, because it needs a local initiator.
+So a throwaway script drove it, with an x86 VM on another machine as the initiator, through QEMU's user networking and
+over a physical 1 Gb network. **43 of 43 passed**, and that script isn't in the repository:
+
+| Check | Result |
+|---|---|
+| `NVWEAVER_BACKEND=auto` with no `nvmet-tcp` | Falls back to SPDK, logs why, and `/v1/system` reports it |
+| Startup | API answering in under 2.5 seconds, measured over SSH |
+| Discovery, access control, and a 128 MiB round trip | Pass |
+| `fio` random writes with `crc32c` verification | Pass |
+| DH-HMAC-CHAP, with no AES or SHA instructions | No key and wrong key refused, right key accepted, data correct. It used `hmac(sha512)` and `ffdhe8192`, and took under 2 seconds |
+| Restart with a host connected | Host reconnected itself; data and identity kept |
+| Reflink pool on XFS, in a loop device | Volume mapped, with correct data |
+| Killing `nvmf_tgt` | Service exits with status 1 |
+| `podman stop` with a host connected | 1.1 seconds, exit status 0 |
+| `dmesg` | No illegal instructions, segfaults or out-of-memory kills |
+| Memory | About 1.25 GB still available after I/O, with 1 GB reserved for SPDK |
+
+Sequential speed was 16 MB/s writing and 20 MB/s reading, which isn't a measure of the service: QEMU's user networking
+and the CM4's eMMC or SD storage are both in the path, and we didn't find which limited it.
+
+The SPDK Quadlet on the same CM4, with no capabilities, in the suite's sequence of start, restart, then stop, with no
+host connected:
+
+| CPU limit | Stop took | Unit after stop |
+|---|---|---|
+| None, 5 runs | About 1.1 seconds | `inactive` each time |
+| 20% of a core | 6.8 seconds | `inactive` |
+| 5% | 29.5 seconds | **`failed`, status 137:** "StopSignal SIGTERM failed to stop container in 10 seconds" |
+| 2% | 60.2 seconds | **`failed`, status 137,** and `TimeoutStopSec=30` also ran out |
+
+The Quadlet doesn't set Podman's own stop timeout, which is 10 seconds. So a shutdown that takes longer is killed, well
+before systemd's 30 seconds, and the unit is reported as failed. At normal speed it has plenty of margin.
+
+Not covered on real Arm: the kernel target on this OS, which needs a different kernel; the plain systemd unit; a Pi 5
+and its 16K-page kernel; a physical initiator, as this one was a VM; physical NVMe; snapshots and clones, which aren't built.
 
 ## Not tested
 
 Deferred until hardware is available, as tracked in `TODO.md`:
 
 - Physical NVMe drives, including passthrough. So far these are emulated by QEMU
-- A physical network. So far: loopback, and QEMU's link between VMs
+- A physical initiator. One target has been tested over a physical network, from a VM: see "A real Cortex-A72"
 - Install and reboot on physical hardware, whose device timing at boot may differ from a VM's
-- A host that really has no `nvmet-tcp`. This was simulated by withholding kernel modules
 
 Not tested for other reasons:
 
@@ -135,7 +188,6 @@ Not tested for other reasons:
 - `compose.yaml`: Compose wasn't available
 - Docker since Podman became the default. It's a fallback: see `TODO.md`
 - SPDK on a real older CPU. Nehalem was under QEMU, and only as far as a running reactor
-- Non-x86-64 builds
 - Scale. Nothing has been measured beyond a handful of objects
 
 ## Benchmarks
@@ -215,9 +267,24 @@ Checks that passed while proving nothing. Watch for these patterns:
   discovery log, and a refusal that isn't that setup error.
 - "A mounted disk is refused" skipped itself where `/boot` is a btrfs subvolume, because `findmnt`
   added a `[/boot]` suffix. It now uses `-v`, and fails if it can't find a disk to test with.
+- The SPDK failure test hid the output of its `kill`, so a kill that never happened looked just like a service that
+  ignores its target dying. The first fix repeated this, calling a `kill` binary the image doesn't have. It now checks
+  that it found the process, uses the shell's builtin, and leaves errors visible.
 
 ## Test pitfalls
 
+- **`/proc/PID/task/TID/children`** lists only that thread's children. Go can start a process from any thread, so
+  reading thread 1 found no `nvmf_tgt` in 1 of 5 starts under emulation. Read `/proc/1/task/*/children`.
+- **`nvme connect -l`:** `-l 5` gives a host one reconnect attempt, after 10 seconds, and then it removes the controller.
+  A slow target restart misses that, and the device is gone. `e2e.sh` now scales this with `TEST_TIMEOUT_SCALE`.
+- **A wait with no check after it:** in `e2e.sh`, after the `KEEP_ON_EXIT` refusal on SPDK, waiting for a host that gave
+  up costs 25 to 60 minutes under emulation, and nothing fails. Long quiet periods there aren't a hang.
+- **Fedora waits 45 seconds for disks** (`DefaultDeviceTimeoutSec`). An emulated A72 misses that and ends in emergency
+  mode, with `lab: tgt did not come up`. `lab.sh` now sets 600 seconds when it builds a base image.
+- **`lab.sh down` deletes the console logs,** so a failed boot leaves no evidence. Copy them first.
+- **Many short SSH connections:** a test opening a new connection for each step had connections from its machine start
+  timing out, while other machines and ping still worked. It cleared within minutes, and didn't recur with one shared
+  `ControlMaster` connection. The cause wasn't confirmed, and network changes were being made around the same time.
 - **Disk names:** don't assume `nvme0n1` is namespace 1 of a subsystem with several. The names
   appear not to follow NSID, though this was inferred rather than confirmed.
 - **BusyBox:** `head` rejects `16M`, and `stat -f -c %T` can't name overlayfs, so compare the

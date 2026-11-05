@@ -228,3 +228,15 @@ there, not as absolute numbers.
 - **For the CSI driver:** its controller and node plugin run in the cluster and reach this machine over the network, so
   the API's TLS and token matter.
 
+
+## 26. The transport belongs to the port, and NVMe/RDMA is deferred
+
+- **Chosen:** ports get an optional `transport`, defaulting to `tcp`, and `capabilities.transports` says what can be
+  used. A transport that can't be used is refused. Clients read the transport from the port. See `docs/storage-api.md`.
+- **Why now:** adding the field later wouldn't break the API, but the CLI and CSI driver could be written assuming TCP.
+  So it arrives before them, accepting only `tcp`.
+- **Why not on the subsystem or volume:** a subsystem refers to ports already, so this lets one be reached over two
+  transports, and storage needs no changes.
+- **RDMA itself is deferred until after the CSI driver:** nothing on the roadmap depends on it, and the links here are
+  1 Gb Ethernet with no RDMA NICs, so its benefits couldn't be measured. Both targets support it underneath. The
+  main unknown is whether SPDK's RDMA transport works with the `--no-huge` and interrupt mode that we use. Not tested.

@@ -29,7 +29,7 @@ for image in dev spdk systemd-test; do
 done
 "$LAB" sync tgt </dev/null || exit 1
 
-in_vm() { "$LAB" ssh tgt "cd nvweaver && SKIP_BUILD=1 $1" </dev/null; }
+in_vm() { "$LAB" ssh tgt "cd nvweaver && SKIP_BUILD=1 TEST_TIMEOUT_SCALE=${TEST_TIMEOUT_SCALE:-1} $1" </dev/null; }
 in_vm "./test/e2e.sh" >"$RESULTS/nvmet.log" 2>&1
 report kernel $? "$RESULTS/nvmet.log"
 in_vm "BACKEND=spdk ./test/e2e.sh" >"$RESULTS/spdk.log" 2>&1

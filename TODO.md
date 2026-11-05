@@ -25,7 +25,11 @@ Work through these in order: each phase depends on the ones before it.
   - [x] Probe it: `e2e.sh` passes on both targets on a real Arm kernel. See `docs/testing.md`
   - [ ] Build and publish multi-arch images and an arm64 tarball, with an Arm job in CI. The SPDK
         image defaults `SPDK_ARCH` to x86, so it needs choosing by architecture
-  - [ ] Check that `armv8-a+crc` runs on older Arm CPUs. So far it has only run on a Neoverse-N2
+  - [x] Check that `armv8-a+crc` runs on older Arm CPUs: Cortex-A72, emulated and on a real CM4
+  - [ ] Give the SPDK Quadlet a longer Podman stop timeout than its 10-second default, below `TimeoutStopSec`. A slow
+        shutdown is killed and reported as failed. Reproduced on a CM4: see `docs/testing.md`
+  - [ ] `test/systemd-e2e.sh` has a fixed `-l 30`, which doesn't scale with `TEST_TIMEOUT_SCALE`
+  - [ ] In `e2e.sh`, stop waiting for a reconnect once the host has removed its controller
   - [ ] Arm runners have no KVM, so CI runs `e2e.sh` directly. Decide whether Arm needs the VM suites
 - [ ] Pin base images in the Containerfiles by digest, with automated updates
 - [x] Add a `LICENSE` (MIT)
@@ -70,13 +74,15 @@ and CLI once, against the result.
 - [x] Add the volume model: volumes own their identity, and map into subsystems
 - [ ] Add snapshots and clones
 - [ ] Leave room in the API for group snapshots, without building them yet
+- [ ] Add `transport` to ports, accepting only `tcp` for now, and `capabilities.transports`, before the CLI and
+      CSI driver are written against the API. See "Transports" in `docs/storage-api.md`
 - [ ] Later: creating pools from raw disks, behind an explicit confirmation
 
 ## 3. API foundations
 
 - [ ] Add TLS to the API, needed before the web UI or CSI driver use it over a network
 - [ ] Create a shared Go API client from the spec, for the CLI and CSI driver to use
-- [ ] Add an endpoint showing connected hosts
+- [ ] Add an endpoint showing connected hosts, including each connection's transport
 - [ ] Add an endpoint listing available block devices. Pools are adopted for now, so nothing needs it yet
 
 ## 4. Command line utility
@@ -105,7 +111,8 @@ Production-like scale is a requirement, so measure this before building on it.
 
 - [ ] Create a Kubernetes CSI driver that works with the API to handle dynamic
       provisioning
-  - [ ] Controller, and a privileged node plugin (`nvme connect`, format, mount)
+  - [ ] Controller, and a privileged node plugin (`nvme connect`, format, mount), which takes the transport
+        from the port rather than assuming TCP
   - [ ] Make volume creation idempotent by name in the API, because CSI retries calls
   - [ ] Use the snapshot and cloning features
   - [ ] Map volumes into per-node subsystems, and each shared volume into its own subsystem
@@ -122,6 +129,14 @@ Production-like scale is a requirement, so measure this before building on it.
 
 - [ ] Test the suites against Docker. Podman is the supported engine and Docker a fallback,
       and nothing has been run against Docker since Podman became the default
+- [ ] Support NVMe/RDMA, after the CSI driver. Both targets support it underneath. See decision 26
+  - [ ] Test first whether SPDK's RDMA transport works with `--no-huge` and interrupt mode, as that decides how much
+        else changes
+  - [ ] Kernel target: set `addr_trtype` from the port, and load `nvmet-rdma`
+  - [ ] SPDK: build with RDMA instead of `--without-rdma`, and create the transport and listeners from the port
+  - [ ] Containers: `/dev/infiniband` and a higher memory-lock limit
+  - [ ] Run the suites over Soft-RoCE (`rdma_rxe`) in the VMs, which proves the protocol but not the performance
+  - [ ] Real RDMA NICs, added to the deferred hardware tests once they're available
 
 ## Enterprise features to consider
 
@@ -155,4 +170,14 @@ network-attached NVMe namespaces.
       loopback
 - [ ] Install on a real host and reboot, to prove the boot ordering. So far systemd has
       only been tested in a container
-- [ ] Test on a host that really has no `nvmet-tcp`, which has only been simulated
+- [x] Test on a host that really has no `nvmet-tcp`: a Raspberry Pi CM4, where SPDK took over. See `docs/testing.md`
+- [ ] Finish testing on real Raspberry Pis, on a 64-bit OS:
+  - [x] CM4 (Cortex-A72, no AES or SHA) with SPDK, over a real network: 43 of 43. See `docs/testing.md`
+  - [ ] Add that network test to the repository: it needs an `e2e.sh` that can use a remote initiator
+  - [x] Run the SPDK Quadlet on the CM4
+  - [ ] Run the plain systemd unit on the CM4
+  - [ ] Pi 5 (Cortex-A76): Raspberry Pi OS defaults to a 16K-page kernel, while our VMs use 4K, which
+        may matter to SPDK and DPDK
+  - [ ] The kernel target on a Pi: Raspberry Pi OS's kernel has `NVME_TCP` and `NVME_TARGET` off, so it needs a different
+        kernel or a module build. Only worth doing if the kernel target should be supported on Pis
+  - [ ] Real storage: USB disks on a Pi 4, and PCIe NVMe on a CM4 carrier board or a Pi 5

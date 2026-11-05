@@ -72,7 +72,7 @@ cpu() { ticks 1; }
 
 # With nothing connected or running: what the target costs a shared host at rest.
 if [ "$BACKEND" = spdk ]; then
-	SPDK_PID=$($ENGINE exec "$TGT" sh -c 'cat /proc/1/task/1/children' | awk '{print $1}')
+	SPDK_PID=$($ENGINE exec "$TGT" sh -c 'cat /proc/1/task/*/children' | awk '{print $1}')
 	I0=$(ticks "$SPDK_PID")
 	sleep 10
 	I1=$(ticks "$SPDK_PID")

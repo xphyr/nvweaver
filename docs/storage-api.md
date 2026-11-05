@@ -155,6 +155,28 @@ the host itself, so this matters most for a host that's misbehaving or unreachab
 of these, neither tested yet: detach the subsystem from its port and reattach it, which drops every host and
 lets only allowed ones return, or remove the namespace, which also affects the other hosts.
 
+## Transports
+
+Only NVMe/TCP is supported today, and NVMe/RDMA may follow. The transport belongs to the port and nowhere else, so
+adding one doesn't change pools, volumes, snapshots, subsystems or hosts:
+
+```
+POST /v1/ports     {"id": 3, "address": "192.0.2.10", "service": 4420, "transport": "tcp"}
+GET  /v1/system    capabilities: {"transports": ["tcp"], ...}
+```
+
+- **`transport` is optional and defaults to `tcp`,** in requests and in saved state, so existing clients and
+  configuration keep working unchanged. Responses always include it.
+- **A transport this service can't use is refused with `422`,** never ignored. `capabilities.transports` lists what
+  this backend can use on this host, which for RDMA would depend on the host's hardware and the image.
+- **A subsystem can be on ports of different transports,** because it refers to ports by ID. So one volume could be
+  reached over TCP and RDMA at once.
+- **Settings that only apply to some transports stay on the port,** and are refused on the others. NVMe TLS, if added,
+  is one: the NVMe specification defines it for TCP only.
+- **Clients find the transport from the port.** The CLI and CSI driver read it to build `nvme connect -t`, rather than
+  assuming TCP. Volume responses don't repeat it: `mapped_to` leads to the subsystem, and that to its ports.
+- **The connected-hosts endpoint** in phase 3 should report each connection's transport.
+
 ## Things that stay as they are
 
 - **`device_path` and `file` namespaces** don't change, with the identity on the namespace. `file` could
@@ -191,6 +213,7 @@ lets only allowed ones return, or remove the namespace, which also affects the o
 - Limits on overcommitment, or per-pool volume sizes
 - Importing existing LVs or files as volumes
 - Group snapshots
+- NVMe/RDMA itself. Only the API leaves room for it: see [Transports](#transports)
 
 ## Decisions
 

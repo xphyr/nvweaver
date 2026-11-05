@@ -129,7 +129,8 @@ cmd_base() {
 
 	# kernel-modules and -extra must match the running kernel, hence upgrading the
 	# kernel with them. Identity is removed at the end, so that clones don't share a
-	# machine ID or, as cloned hosts commonly do, a hostnqn.
+	# machine ID or, as cloned hosts commonly do, a hostnqn. Fedora waits only 45 seconds for
+	# disks, which an emulated Cortex-A72 misses, ending in emergency mode.
 	cat >"$LAB_DIR/base-user-data" <<EOF
 #cloud-config
 disable_root: true
@@ -140,6 +141,8 @@ users:
     ssh_authorized_keys:
       - $(cat "$KEY.pub")
 runcmd:
+  - mkdir -p /etc/systemd/system.conf.d
+  - printf '[Manager]\nDefaultDeviceTimeoutSec=600\n' > /etc/systemd/system.conf.d/90-nvweaver-lab.conf
   - dnf -y upgrade --refresh
   - dnf -y install kernel-modules kernel-modules-extra podman nvme-cli fio make jq curl rsync lvm2 xfsprogs tar
   - rm -f /etc/nvme/hostnqn /etc/nvme/hostid
@@ -152,7 +155,7 @@ runcmd:
 EOF
 	make_seed "$LAB_DIR/base-seed.iso" base "$LAB_DIR/base-user-data"
 	echo "Provisioning the base image; this upgrades Fedora and takes several minutes"
-	"${QEMU[@]}" -name nvweaver-lab-base -machine "$MACHINE,accel=$ACCEL" -cpu "$LAB_CPU" \
+	"${QEMU[@]}" -name nvweaver-lab-base -machine "$MACHINE" -accel "$ACCEL" -cpu "$LAB_CPU" \
 		-smp "$LAB_CPUS" -m "$LAB_MEM_MB" -display none -daemonize \
 		-pidfile "$LAB_DIR/base.pid" -serial "file:$LAB_DIR/base-console.log" \
 		-drive "file=$building,if=virtio,format=qcow2" \
@@ -221,7 +224,7 @@ start_vm() { # NAME SSH-PORT MAC ADDRESS LINK-OPTS [extra QEMU args...]
 	vm_user_data "$RUN/$name-user-data"
 	vm_network "$RUN/$name-network" "$mac" "$addr"
 	make_seed "$RUN/$name-seed.iso" "$name" "$RUN/$name-user-data" "$RUN/$name-network"
-	"${QEMU[@]}" -name "nvweaver-lab-$name" -machine "$MACHINE,accel=$ACCEL" -cpu "$LAB_CPU" \
+	"${QEMU[@]}" -name "nvweaver-lab-$name" -machine "$MACHINE" -accel "$ACCEL" -cpu "$LAB_CPU" \
 		-smp "$LAB_CPUS" -m "$LAB_MEM_MB" -display none -daemonize \
 		-pidfile "$RUN/$name.pid" -serial "file:$RUN/$name-console.log" \
 		-drive "file=$disk,if=none,id=root,format=qcow2,cache=unsafe" \

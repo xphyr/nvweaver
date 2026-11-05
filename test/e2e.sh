@@ -12,6 +12,8 @@
 # BACKEND=nvmet (default) or BACKEND=spdk picks the target implementation. Checks
 # that differ between them are marked below; everything else must pass on both.
 set -u
+# TEST_TIMEOUT_SCALE lengthens the waits, for slow machines such as emulated VMs.
+SCALE=${TEST_TIMEOUT_SCALE:-1}
 
 ENGINE=${ENGINE:-sudo podman}
 BACKEND=${BACKEND:-nvmet}
@@ -74,7 +76,7 @@ api() {
 }
 
 connect() { # HOSTNQN HOSTID SUBNQN PORT [extra]
-	ini "nvme connect -t tcp -a 127.0.0.1 -s $4 -n $3 --hostnqn=$1 --hostid=$2 -l 5 ${5:-}" 2>&1
+	ini "nvme connect -t tcp -a 127.0.0.1 -s $4 -n $3 --hostnqn=$1 --hostid=$2 -l $((5 * SCALE)) ${5:-}" 2>&1
 }
 disconnect() { ini "nvme disconnect -n $1 >/dev/null 2>&1"; }
 discover() { ini "nvme discover -t tcp -a 127.0.0.1 -s $2 --hostnqn=$1 --hostid=$3" 2>&1; }
@@ -98,7 +100,7 @@ live_paths() {
 }
 wait_dev() {
 	local d
-	for _ in $(seq 1 20); do
+	for _ in $(seq 1 $((20 * SCALE))); do
 		d=$(blockdev_of "$1")
 		if [ -n "$d" ] && ini "[ -b $d ]"; then
 			echo "$d"
@@ -115,7 +117,7 @@ start_target() { # [keep-on-exit]
 		-e NVWEAVER_LISTEN=127.0.0.1:18420 -e NVWEAVER_KEEP_ON_EXIT="${1:-false}" \
 		-e NVWEAVER_BACKEND="$BACKEND" \
 		"$IMAGE" >/dev/null || return 1
-	for _ in $(seq 1 40); do
+	for _ in $(seq 1 $((40 * SCALE))); do
 		[ "$(ini "curl -s -o /dev/null -w '%{http_code}' $API/healthz")" = 200 ] && return 0
 		sleep 0.25
 	done
@@ -432,7 +434,7 @@ $ENGINE stop -t 20 "$TGT" >/dev/null
 KEEP=true
 [ "$BACKEND" = spdk ] && KEEP=false
 start_target $KEEP || bad "restart"
-for _ in $(seq 1 60); do [ "$(live_paths "$SA")" = 1 ] && break; sleep 0.5; done
+for _ in $(seq 1 $((60 * SCALE))); do [ "$(live_paths "$SA")" = 1 ] && break; sleep 0.5; done
 expect_eq "host reconnected by itself" 1 "$(live_paths "$SA")"
 expect_eq "data survived" "$SUM" "$(ini "dd if=$DA bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
 expect_eq "serial, UUID and NGUID unchanged" "$ID_BEFORE" "$(call GET "/v1/subsystems/$SA" | tail -n +2)"
@@ -469,7 +471,7 @@ else
 	expect_has "refused on SPDK, whose data path stops with the container" "cannot work with the spdk backend" "$(cat /tmp/nvweaver-e2e.$$)"
 	rm -f /tmp/nvweaver-e2e.$$
 	start_target false || bad "restart"
-	for _ in $(seq 1 60); do [ "$(live_paths "$SA")" = 1 ] && break; sleep 0.5; done
+	for _ in $(seq 1 $((60 * SCALE))); do [ "$(live_paths "$SA")" = 1 ] && break; sleep 0.5; done
 fi
 
 section "Teardown"
@@ -494,8 +496,12 @@ else
 	$ENGINE logs "$TGT" 2>&1 | grep -q 'target configuration removed' && ok "configuration was removed" || bad "configuration was removed"
 	section "SPDK process failure"
 	start_target false || bad "start"
-	$ENGINE exec "$TGT" sh -c 'kill -9 $(cat /proc/1/task/1/children)' >/dev/null 2>&1
-	for _ in $(seq 1 40); do [ "$($ENGINE inspect "$TGT" --format '{{.State.Running}}')" = false ] && break; sleep 0.25; done
+	# A child belongs to the thread that started it, and Go can use any thread, so read them all.
+	SPDK_PID=$($ENGINE exec "$TGT" sh -c 'cat /proc/1/task/*/children' 2>/dev/null | tr -d ' \n')
+	if [ -n "$SPDK_PID" ]; then ok "found nvmf_tgt to kill"; else bad "found nvmf_tgt to kill" "the service has no child process"; fi
+	# The image has no kill binary, only the shell's builtin. Errors stay visible, to explain a failure below.
+	$ENGINE exec "$TGT" sh -c "kill -9 $SPDK_PID"
+	for _ in $(seq 1 $((40 * SCALE))); do [ "$($ENGINE inspect "$TGT" --format '{{.State.Running}}')" = false ] && break; sleep 0.25; done
 	expect_eq "service exits so a restart policy can recover" false "$($ENGINE inspect "$TGT" --format '{{.State.Running}}')"
 	expect_eq "with a failure status" 1 "$($ENGINE inspect "$TGT" --format '{{.State.ExitCode}}')"
 
@@ -507,7 +513,7 @@ else
 			$ENGINE rm -f "$TGT" >/dev/null 2>&1
 			$ENGINE run -d --name "$TGT" --privileged --network host -v /dev:/dev -v "$VOL:/var/lib/nvweaver" \
 				-e NVWEAVER_LISTEN=127.0.0.1:18420 -e NVWEAVER_BACKEND="$backend" "$@" "$IMAGE" >/dev/null || return 1
-			for _ in $(seq 1 40); do
+			for _ in $(seq 1 $((40 * SCALE))); do
 				[ "$(ini "curl -s -o /dev/null -w '%{http_code}' $API/healthz")" = 200 ] && return 0
 				sleep 0.25
 			done
