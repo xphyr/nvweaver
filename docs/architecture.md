@@ -53,6 +53,10 @@ below it, never through this process.
 4. Save the state to `state.json`, atomically with fsync. Commit it in memory.
 5. If step 3 or 4 fails, reconcile back to the old state and return the error.
 
+A change to a pool can't be saved together with `state.json`, so it's recorded first, in `intents/` under the data
+directory. See `internal/api/intent.go`. On startup, each recorded name is settled by one rule: if the saved state refers
+to it, the storage is wanted, and otherwise it's removed. An interrupted grow is finished, as undoing it could lose data.
+
 So a request either happens completely or not at all. On startup, the saved state is
 applied the same way, with an empty state as the starting point.
 

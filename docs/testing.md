@@ -104,7 +104,7 @@ and `/etc/lvm/archive` reached 375 MB.
 ### Snapshots and clones
 
 On reflink, on both targets, checked two ways, as a status code proves little here. The x86 suites gave `vm-e2e` 229,
-kernel 196, SPDK 208 and systemd 68, with no failures. The first three include these checks.
+kernel 207, SPDK 219 and systemd 68, with no failures. The first three include these checks.
 
 **As raw data, in `e2e.sh`:** a host writes 16 MiB, the volume is snapshotted while the host is connected, and the host
 overwrites part of it. The checksums then show that the snapshot holds the old data, that a clone seen by a host holds
@@ -124,6 +124,17 @@ the snapshot's data and not the volume's, and that writing to one changes neithe
 
 Limits: one snapshot under load per run, so a rare race might not show; XFS only; reflink on btrfs in the VMs, and XFS as
 a reflink pool only on the CM4, without snapshots; nothing with applications such as databases, or a real power loss.
+
+### Crash recovery
+
+- **At each exact point, in `internal/api/intent_test.go`:** a request is stopped after recording its intent, after
+  changing the pool, or after saving, for creating a volume, clone or snapshot, deleting a volume or snapshot, and growing.
+  Each time, the pool must hold exactly what the state refers to. With recovery turned off, these tests fail.
+- **With `kill -9`, in `e2e.sh`, on both targets:** three rounds of killing the service during a stream of creates,
+  snapshots and deletes, on real files. Everything the client was told succeeded must be there, with no strays. This
+  depends on timing, so it may not hit the danger window on a given run. It prints how many changes were in progress:
+  on x86 it caught 1 on the kernel target and 3 on SPDK, among 397 and 60 confirmed changes, and all were settled.
+- **Not tested:** power loss, which also tests the disk's and filesystem's flushing. A `kill -9` doesn't.
 
 ### Arm
 

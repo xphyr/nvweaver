@@ -206,6 +206,10 @@ there, not as absolute numbers.
 - **Chosen:** an intent log for pool operations, and a separate internal name for each volume.
 - **Why:** today we apply and then save, which is fine for configuration we can re-apply, but a crash
   between `lvcreate` and the save would orphan storage. Trident does the same with transactions.
+- **Built as:** one small, fsynced file for each change in progress, so the cost doesn't grow with volumes. Recovery
+  compares each name with the saved state, rather than replaying steps, so it works the same for every pool type.
+- **Rejected:** rolling back a grow, as a host may already have used the space. It's finished instead, so a client whose
+  request was interrupted may find that it took effect, as with any create.
 
 ## 24. The scale target is 5,000 volumes across 100 node subsystems
 

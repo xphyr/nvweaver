@@ -526,6 +526,54 @@ fi
 section "Teardown"
 disconnect "$SA"
 disconnect "$SB"
+
+section "A crash while a pool is changing"
+KPOOL=/var/lib/nvweaver/kill-pool
+$ENGINE exec "$TGT" mkdir -p "$KPOOL"
+out=$(call POST /v1/pools "{\"name\":\"kp\",\"type\":\"reflink\",\"path\":\"$KPOOL\"}")
+if [ "${out%%$'\n'*}" != 201 ] && echo "$out" | grep -q "doesn't support reflink"; then
+	echo "  skip  this machine's filesystem has no reflink"
+else
+	expect_eq "adopt a pool" 201 "${out%%$'\n'*}"
+	ini "rm -f /tmp/kill.*"
+	IN_PROGRESS=0
+	for round in 1 2 3; do
+		# Each line is something the service said it did, so it must still be true afterwards.
+		ini "(n=0; while :; do n=\$((n+1)); v=k$round-\$n
+			[ \"\$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST $API/v1/volumes -d '{\"name\":\"'\$v'\",\"size_bytes\":4096}')\" = 201 ] || break
+			[ \"\$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST $API/v1/snapshots -d '{\"name\":\"s'\$v'\",\"volume\":\"'\$v'\"}')\" = 201 ] || break
+			echo s\$v >> /tmp/kill.snapshots
+			if [ \$((n % 2)) = 0 ]; then
+				[ \"\$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X DELETE $API/v1/volumes/\$v)\" = 204 ] || break
+				echo \$v >> /tmp/kill.deleted
+			else
+				echo \$v >> /tmp/kill.volumes
+			fi
+		done; touch /tmp/kill.done$round) >/dev/null 2>&1 &"
+		sleep $((2 * SCALE))
+		$ENGINE kill -s KILL "$TGT" >/dev/null
+		for _ in $(seq 1 $((60 * SCALE))); do [ "$(ini "[ -f /tmp/kill.done$round ] && echo yes")" = yes ] && break; sleep 0.5; done
+		n=$($ENGINE run --rm --pull=never --entrypoint sh -v "$VOL:/d" "$IMAGE" -c 'ls /d/intents | wc -l')
+		IN_PROGRESS=$((IN_PROGRESS + n))
+		start_target false || bad "restart after a crash"
+	done
+	echo "  (changes in progress at the moment of the crash: $IN_PROGRESS)"
+	DONE=$(ini "cat /tmp/kill.snapshots /tmp/kill.volumes 2>/dev/null | wc -l")
+	if [ "$DONE" -gt 0 ]; then ok "the service was really doing work when killed ($DONE changes confirmed)"; else bad "the service was really doing work when killed"; fi
+	expect_eq "no intents are left" 0 "$($ENGINE exec "$TGT" sh -c 'ls /var/lib/nvweaver/intents | wc -l')"
+	expect_eq "every volume it confirmed is there" "" "$(ini "for v in \$(cat /tmp/kill.volumes 2>/dev/null); do [ \"\$(curl -s -o /dev/null -w '%{http_code}' $API/v1/volumes/\$v)\" = 200 ] || echo \$v; done")"
+	expect_eq "every snapshot it confirmed is there" "" "$(ini "for v in \$(cat /tmp/kill.snapshots 2>/dev/null); do [ \"\$(curl -s -o /dev/null -w '%{http_code}' $API/v1/snapshots/\$v)\" = 200 ] || echo \$v; done")"
+	expect_eq "and no volume it deleted" "" "$(ini "for v in \$(cat /tmp/kill.deleted 2>/dev/null); do [ \"\$(curl -s -o /dev/null -w '%{http_code}' $API/v1/volumes/\$v)\" = 404 ] || echo \$v; done")"
+	api "pool status" 200 GET /v1/pools/kp
+	expect_eq "no file is left that nothing refers to" 0 "$(ini "jq '[.warnings[] | select(contains(\"no volume refers\"))] | length' /tmp/body")"
+	expect_eq "the pool holds one file for each" "$(ini "jq '.volumes + .snapshots' /tmp/body")" "$($ENGINE exec "$TGT" sh -c "ls $KPOOL | grep -c img")"
+	for v in $(ini "curl -s '$API/v1/volumes?limit=1000' | jq -r '.items[].name'"); do call DELETE "/v1/volumes/$v" >/dev/null; done
+	for v in $(ini "curl -s '$API/v1/snapshots?limit=1000' | jq -r '.items[].name'"); do call DELETE "/v1/snapshots/$v" >/dev/null; done
+	expect_eq "it all deletes" 0 "$($ENGINE exec "$TGT" sh -c "ls $KPOOL | grep -c img")"
+	api "forget the pool" 204 DELETE /v1/pools/kp
+fi
+
+section "Teardown continues"
 if [ "$BACKEND" = nvmet ]; then
 	FOREIGN=$NQN:not-ours
 	ini "mount -t configfs configfs /mnt && mkdir /mnt/nvmet/subsystems/$FOREIGN"

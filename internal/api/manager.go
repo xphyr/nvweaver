@@ -25,9 +25,12 @@ type Manager struct {
 	state     *target.State
 	statePath string
 	volumeDir string
+	intentDir string
 	log       *slog.Logger
 	// newDriver returns the driver for a pool. Tests substitute a fake.
 	newDriver func(*target.Pool) (storage.Driver, error)
+	// crash stops a request at a named point. Only tests set it.
+	crash func(point string)
 }
 
 // NewManager loads any saved state and applies it to the kernel. Attributes
@@ -39,10 +42,14 @@ func NewManager(b target.Backend, dataDir string, log *slog.Logger) (*Manager, e
 		state:     target.NewState(),
 		statePath: filepath.Join(dataDir, "state.json"),
 		volumeDir: filepath.Join(dataDir, "volumes"),
+		intentDir: filepath.Join(dataDir, "intents"),
 		log:       log,
 		newDriver: storage.New,
 	}
 	if err := os.MkdirAll(m.volumeDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create data directory: %w", err)
+	}
+	if err := os.MkdirAll(m.intentDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
 	saved, err := os.ReadFile(m.statePath)
@@ -109,8 +116,13 @@ func (m *Manager) save(s *target.State) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(m.statePath)
-	tmp, err := os.CreateTemp(dir, ".state-*")
+	return writeDurably(m.statePath, b)
+}
+
+// writeDurably replaces a file atomically, so that it survives a crash once this returns.
+func writeDurably(path string, b []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
 		return err
 	}
@@ -126,7 +138,7 @@ func (m *Manager) save(s *target.State) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp.Name(), m.statePath); err != nil {
+	if err := os.Rename(tmp.Name(), path); err != nil {
 		return err
 	}
 	d, err := os.Open(dir)

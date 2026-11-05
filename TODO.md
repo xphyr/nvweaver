@@ -54,7 +54,7 @@ and CLI once, against the result.
 - [x] Benchmark the current API early, to give the design real numbers: see `docs/testing.md`
 - [ ] Replace the full reconcile with an incremental one, batched per subsystem, so that the target
       of 5,000 volumes across 100 node subsystems is reachable
-- [ ] Add an intent log for pool operations, and internal names for volumes
+- [x] Add an intent log for pool operations, and internal names for volumes
 - [ ] Make removing a host force its connections off on the kernel target, and test the effect on other hosts
 - [x] Fix SPDK's slow list, which fetched its entire configuration for each namespace
 - [ ] Check `fs.aio-max-nr` on SPDK at startup, and give a clear error. Each volume needs 128 per core

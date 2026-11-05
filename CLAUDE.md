@@ -72,6 +72,7 @@ Update these in the same commit as the work they describe:
 - A test result, a new pitfall, or a failed experiment: `docs/testing.md`
 - A structural change: `docs/architecture.md`
 - Finished or newly found work: `TODO.md`
+- A major change that users would notice: `ReleaseNotes.md`
 
 Report only what was actually run. A check that can't fail is worse than no check: this
 project has already had false passes, listed in `docs/testing.md`.

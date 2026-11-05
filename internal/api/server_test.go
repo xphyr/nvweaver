@@ -3,8 +3,10 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +33,7 @@ type env struct {
 	http http.Handler
 	// pools fakes the storage on disk, surviving a restart of the service.
 	pools *fakePools
+	m     *Manager
 }
 
 // fakePools is pool storage without needing a filesystem that has reflink.
@@ -39,6 +42,9 @@ type fakePools struct {
 	files     map[string]int64
 	checkErr  error
 	createErr error
+	deleteErr error
+	growErr   error
+	capErr    error
 }
 
 func (f *fakePools) driver(p *target.Pool) (storage.Driver, error) {
@@ -52,7 +58,7 @@ type fakeDriver struct{ *fakePools }
 
 func (d fakeDriver) Check() error { return d.checkErr }
 func (d fakeDriver) Capacity() (storage.Capacity, error) {
-	return storage.Capacity{TotalBytes: 1000, UsedBytes: 900}, nil
+	return storage.Capacity{TotalBytes: 1000, UsedBytes: 900}, d.capErr
 }
 func (d fakeDriver) Create(internal string, size int64) (string, error) {
 	if d.createErr != nil {
@@ -69,10 +75,19 @@ func (d fakeDriver) Create(internal string, size int64) (string, error) {
 	return path, nil
 }
 func (d fakeDriver) Delete(internal string) error {
+	if d.deleteErr != nil {
+		return d.deleteErr
+	}
 	delete(d.files, internal)
-	return os.Remove(filepath.Join(d.dir, internal))
+	if err := os.Remove(filepath.Join(d.dir, internal)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 func (d fakeDriver) Grow(internal string, size int64) error {
+	if d.growErr != nil {
+		return d.growErr
+	}
 	d.files[internal] = size
 	return nil
 }
@@ -124,6 +139,8 @@ func (e *env) start() {
 		e.pools = &fakePools{dir: e.t.TempDir(), files: map[string]int64{}}
 	}
 	m.newDriver = e.pools.driver
+	m.Recover()
+	e.m = m
 	e.http = NewServer(m, "").Handler()
 }
 

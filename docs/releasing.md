@@ -2,6 +2,8 @@
 
 ## Making a release
 
+First, update [ReleaseNotes.md](../ReleaseNotes.md): move what shipped out of "not yet released", and give it the version.
+
 ```sh
 git tag -s v0.1.0 -m "nvweaver 0.1.0"
 git push origin v0.1.0

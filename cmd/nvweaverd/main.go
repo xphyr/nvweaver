@@ -76,6 +76,7 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	mgr.Recover()
 
 	apiServer := api.NewServer(mgr, token)
 	apiServer.Version = version
