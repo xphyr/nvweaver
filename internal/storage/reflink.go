@@ -76,6 +76,12 @@ func clone(src, dst *os.File) error {
 	return nil
 }
 
+// AlignSize implements Driver.
+func (d *reflinkDriver) AlignSize(sizeBytes int64) (int64, error) { return sizeBytes, nil }
+
+// Activate implements Driver: a file needs nothing.
+func (d *reflinkDriver) Activate() error { return nil }
+
 // Capacity implements Driver.
 func (d *reflinkDriver) Capacity() (Capacity, error) {
 	var st syscall.Statfs_t

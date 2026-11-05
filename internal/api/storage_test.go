@@ -476,3 +476,27 @@ func TestPortsSavedBeforeTransportsExistedAreTCP(t *testing.T) {
 		t.Errorf("transport = %q", st.Ports[1].Transport)
 	}
 }
+
+func TestSizesThePoolRoundsUp(t *testing.T) {
+	e := newEnv(t)
+	e.pools.alignTo = 4194304
+	e.pool()
+	got := e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4096}, 201)
+	if got["size_bytes"] != float64(4194304) {
+		t.Errorf("a volume reports its real size: %v", got["size_bytes"])
+	}
+	// CSI retries with what it first asked for, which must still match.
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4096}, 200)
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4194304}, 200)
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 8388608}, 409)
+	// A clone's size is rounded before comparing it with the source.
+	e.do("POST", "/v1/volumes", obj{"name": "c", "source": obj{"volume": "v"}, "size_bytes": 4096}, 201)
+	// Growing within an extent changes nothing, and beyond it rounds up.
+	if got := e.do("PATCH", "/v1/volumes/v", obj{"size_bytes": 4194304}, 200); got["size_bytes"] != float64(4194304) {
+		t.Errorf("size_bytes = %v", got["size_bytes"])
+	}
+	if got := e.do("PATCH", "/v1/volumes/v", obj{"size_bytes": 4198400}, 200); got["size_bytes"] != float64(8388608) {
+		t.Errorf("size_bytes = %v", got["size_bytes"])
+	}
+	e.consistent()
+}

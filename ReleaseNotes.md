@@ -6,8 +6,8 @@ The major differences between versions. For every change, see the commit history
 
 ### Added
 
-- **Storage pools.** Adopt a directory on XFS or btrfs as a reflink pool, without nvweaver ever initializing a disk. See
-  [docs/pools.md](docs/pools.md). LVM thin pools are planned.
+- **Storage pools.** Adopt an existing LVM thin pool, or a directory on XFS or btrfs as a reflink pool, without nvweaver
+  ever initializing a disk. See [docs/pools.md](docs/pools.md). In a container, LVM pools need `--pid=host`.
 - **Volumes.** Create, grow and delete volumes in a pool, and map them into subsystems. A volume keeps its UUID, NGUID and
   data when it moves to another subsystem. Lists come a page at a time.
 - **Snapshots and clones.** Instant, read-only snapshots, which work while a host is writing, and can outlive their volume.

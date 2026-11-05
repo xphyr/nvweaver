@@ -143,11 +143,18 @@ func TestSpecDescribesResponses(t *testing.T) {
 	send("POST", "/v1/volumes", `{"name":"v","size_bytes":4096,"labels":{"a":"b"}}`, 201)
 	send("POST", "/v1/volumes", `{"name":"w","size_bytes":4096}`, 201)
 	send("POST", "/v1/subsystems/"+sub+"/namespaces", `{"nsid":2,"volume":"v"}`, 201)
+	send("POST", "/v1/snapshots", `{"name":"s","volume":"w"}`, 201)
+	send("POST", "/v1/snapshots", `{"name":"t","volume":"w"}`, 201)
 
 	// A passthrough subsystem is the only way to get passthru_device, which needs a real
 	// controller to create, so it is allowed to be absent here.
 	// A namespace has managed_file or volume, depending on its backing: both are checked below.
-	optional := map[string][]string{"Subsystem": {"passthru_device"}, "Namespace": {"volume", "managed_file"}}
+	// A pool has path or volume_group and thin_pool, depending on its type: LVM needs real commands.
+	optional := map[string][]string{
+		"Subsystem": {"passthru_device"},
+		"Namespace": {"volume", "managed_file"},
+		"Pool":      {"volume_group", "thin_pool"},
+	}
 
 	for _, c := range []struct {
 		schema string
@@ -162,6 +169,8 @@ func TestSpecDescribesResponses(t *testing.T) {
 		{"Pool", send("GET", "/v1/pools/p", "", 200)},
 		{"Volume", send("GET", "/v1/volumes/v", "", 200)},
 		{"VolumePage", send("GET", "/v1/volumes?limit=1", "", 200)},
+		{"Snapshot", send("GET", "/v1/snapshots/s", "", 200)},
+		{"SnapshotPage", send("GET", "/v1/snapshots?limit=1", "", 200)},
 		{"Health", send("GET", "/healthz", "", 200)},
 		{"Error", send("GET", "/v1/ports/9", "", 404)},
 	} {

@@ -22,6 +22,8 @@ NQN=nqn.2026-11.net.xphyr.vm
 NVME=/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_NVWEAVER0001
 SATA=/dev/disk/by-id/ata-QEMU_HARDDISK_NVWEAVERSATA
 VIRTIO=/dev/disk/by-id/virtio-NVWEAVERVIRTIO
+LVM_DISK=/dev/disk/by-id/virtio-NVWEAVERLVM
+VG=nvwlab
 pass=0
 fail=0
 
@@ -114,15 +116,22 @@ HOST=$(i 'cat /etc/nvme/hostnqn')
 expect_has "VMs have different host identities" nqn. "$HOST"
 [ "$HOST" != "$(t 'cat /etc/nvme/hostnqn')" ] && ok "and they differ" || bad "and they differ"
 expect_eq "SELinux is enforcing on the target" Enforcing "$(t getenforce)"
+t "sudo pvcreate -q -y --metadatasize 16m $LVM_DISK && sudo vgcreate -q $VG $LVM_DISK && sudo lvcreate -q -y --type thin-pool -L 6G --poolmetadatasize 256m -n pool0 $VG" &&
+	ok "create a thin pool to adopt" || bad "create a thin pool to adopt"
 expect_eq "initiator can reach the target only over the link" "$TARGET_IP" "$(i "ip -o route get $TARGET_IP | sed -E 's/.* dev lab0 .*/$TARGET_IP/'")"
+
+# --pid=host is what lets the service use the host's LVM.
+start_service() { # BACKEND IMAGE
+	t "sudo podman rm -f nvweaver-vm >/dev/null 2>&1; sudo podman run -d --pull=never --name nvweaver-vm --privileged --network host --pid=host \
+		-v /lib/modules:/lib/modules:ro -v /dev:/dev -v nvweaver-vm-data:/var/lib/nvweaver \
+		-e NVWEAVER_BACKEND=$1 $2 >/dev/null"
+}
 
 backend_tests() { # BACKEND IMAGE [run args]
 	local backend=$1 image=$2 name disk sub dev sum
 	shift 2
 	section "$backend: every disk type, from a separate initiator"
-	t "sudo podman run -d --pull=never --name nvweaver-vm --privileged --network host \
-		-v /lib/modules:/lib/modules:ro -v /dev:/dev -v nvweaver-vm-data:/var/lib/nvweaver \
-		-e NVWEAVER_BACKEND=$backend $image >/dev/null"
+	start_service "$backend" "$image"
 	wait_api && ok "service starts" || bad "service starts" "$(t 'sudo podman logs nvweaver-vm 2>&1 | tail -5')"
 	api "port on the link address" 201 POST /v1/ports "{\"id\":1,\"address\":\"$TARGET_IP\",\"service\":$PORT}"
 	api "host" 201 POST /v1/hosts "{\"nqn\":\"$HOST\"}"
@@ -179,17 +188,27 @@ backend_tests() { # BACKEND IMAGE [run args]
 		disconnect "$sub"
 	done
 	api "a disk can't be exported twice" 409 POST "/v1/subsystems/$NQN:$backend-file/namespaces" "{\"nsid\":2,\"device_path\":\"$NVME\"}"
-	snapshot_tests "$backend"
+	snapshot_tests "$backend" reflink
+	snapshot_tests "$backend" lvm-thin
+	lvm_tests "$backend" "$image"
 }
+
+our_lvs() { t "sudo lvs --noheadings -o lv_name $VG | grep -c nvw-"; }
+pool_data_percent() { t "sudo sync; sudo lvs --noheadings -o data_percent $VG/pool0 | tr -d ' '"; }
 
 # What a client relies on a snapshot for: real files on a real filesystem, including one taken while
 # they're being written. A file whose fsync finished before the snapshot was asked for must be in it.
-snapshot_tests() { # BACKEND
-	local backend=$1 sub=$NQN:$1-snap sub_a=$NQN:$1-clone-a sub_b=$NQN:$1-clone-b
-	local dev dev_a dev_b out written committed
-	section "$backend: snapshots and clones, checked as real files on a real filesystem"
-	t "sudo podman exec nvweaver-vm mkdir -p /var/lib/nvweaver/snap-pool"
-	api "adopt a pool" 201 POST /v1/pools '{"name":"snap","type":"reflink","path":"/var/lib/nvweaver/snap-pool"}'
+snapshot_tests() { # BACKEND POOL-TYPE
+	local backend=$1 kind=$2 sub=$NQN:$1-$2-snap sub_a=$NQN:$1-$2-clone-a sub_b=$NQN:$1-$2-clone-b
+	local dev dev_a dev_b out written committed pool_dir="" before=""
+	section "$backend, $kind: snapshots and clones, checked as real files on a real filesystem"
+	if [ "$kind" = reflink ]; then
+		t "sudo podman exec nvweaver-vm mkdir -p /var/lib/nvweaver/snap-pool"
+		api "adopt a pool" 201 POST /v1/pools '{"name":"snap","type":"reflink","path":"/var/lib/nvweaver/snap-pool"}'
+		pool_dir=$(t "sudo podman volume inspect nvweaver-vm-data --format '{{.Mountpoint}}'")/snap-pool
+	else
+		api "adopt a pool" 201 POST /v1/pools "{\"name\":\"snap\",\"type\":\"lvm-thin\",\"volume_group\":\"$VG\",\"thin_pool\":\"pool0\"}"
+	fi
 	api "create a volume" 201 POST /v1/volumes '{"name":"fs","size_bytes":1073741824}'
 	for entry in "$sub:" "$sub_a:" "$sub_b:"; do
 		api "subsystem ${entry%:*}" 201 POST /v1/subsystems "{\"nqn\":\"${entry%:*}\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
@@ -206,21 +225,33 @@ snapshot_tests() { # BACKEND
 	i 'rm -f /tmp/snap.*; cd /mnt/snap && for n in $(seq 1 32); do head -c 8M /dev/urandom > base$n; done && sync -f . && md5sum base* > /tmp/snap.manifest'
 	expect_eq "write 256 MiB of files, and record their checksums" 32 "$(i 'wc -l < /tmp/snap.manifest')"
 
+	[ "$kind" = lvm-thin ] && before=$(pool_data_percent)
 	api "snapshot it with the filesystem mounted" 201 POST /v1/snapshots '{"name":"snap-a","volume":"fs"}'
 	api "clone that snapshot" 201 POST /v1/volumes '{"name":"clone-a","source":{"snapshot":"snap-a"}}'
 	local a_internal
 	a_internal=$(t "jq -r .internal_name /tmp/b")
-	local pool_dir
-	pool_dir=$(t "sudo podman volume inspect nvweaver-vm-data --format '{{.Mountpoint}}'")/snap-pool
-	# Total, exclusive and shared bytes, for a clone that nothing has written to yet.
-	out=$(t "sync; sudo btrfs filesystem du --raw $pool_dir/$a_internal.img | tail -1")
-	local total exclusive
-	total=$(echo "$out" | awk '{print $1}')
-	exclusive=$(echo "$out" | awk '{print $2}')
-	if [ "${total:-0}" -ge 268435456 ] && [ "${exclusive:-1073741824}" -lt 16777216 ]; then
-		ok "the clone shares its data, rather than copying it ($total bytes, $exclusive its own)"
+	if [ "$kind" = reflink ]; then
+		# Total, exclusive and shared bytes, for a clone that nothing has written to yet.
+		out=$(t "sync; sudo btrfs filesystem du --raw $pool_dir/$a_internal.img | tail -1")
+		local total exclusive
+		total=$(echo "$out" | awk '{print $1}')
+		exclusive=$(echo "$out" | awk '{print $2}')
+		if [ "${total:-0}" -ge 268435456 ] && [ "${exclusive:-1073741824}" -lt 16777216 ]; then
+			ok "the clone shares its data, rather than copying it ($total bytes, $exclusive its own)"
+		else
+			bad "the clone shares its data, rather than copying it" "btrfs says: $out"
+		fi
 	else
-		bad "the clone shares its data, rather than copying it" "btrfs says: $out"
+		# A full copy of the 256 MiB of files would take over 4% of this pool.
+		out=$(pool_data_percent)
+		if [ -n "$before" ] && [ -n "$out" ] && awk "BEGIN { exit !($before > 3 && $out - $before < 1) }"; then
+			ok "the clone shares its data, rather than copying it (the pool went from $before% to $out%)"
+		else
+			bad "the clone shares its data, rather than copying it" "the pool went from $before% to $out%"
+		fi
+		expect_eq "the snapshot stays inactive until it's needed" "" "$(t "sudo lvs --noheadings -o lv_active $VG/\$(curl -s $API/v1/snapshots/snap-a | jq -r .internal_name) | tr -d ' '")"
+		expect_eq "and is read-only" r "$(t "sudo lvs --noheadings -o lv_attr $VG/\$(curl -s $API/v1/snapshots/snap-a | jq -r .internal_name) | tr -d ' ' | cut -c2")"
+		expect_eq "the clone is active" active "$(t "sudo lvs --noheadings -o lv_active $VG/$a_internal | tr -d ' '")"
 	fi
 
 	# Writes under load. Each line in the journal is a file that fsync has finished for.
@@ -300,8 +331,123 @@ snapshot_tests() { # BACKEND
 	for s in "$sub" "$sub_a" "$sub_b"; do
 		api "remove subsystem" 204 DELETE "/v1/subsystems/$s"
 	done
-	expect_eq "the pool's files are gone" 0 "$(t "sudo ls $pool_dir | grep -c img")"
+	if [ "$kind" = reflink ]; then
+		expect_eq "the pool's files are gone" 0 "$(t "sudo ls $pool_dir | grep -c img")"
+	else
+		expect_eq "the pool's volumes are gone" 0 "$(our_lvs)"
+	fi
 	api "forget the pool" 204 DELETE /v1/pools/snap
+}
+
+# What's particular to LVM: its rules on sizes, what else is in the volume group, and crashing.
+lvm_tests() { # BACKEND IMAGE
+	local backend=$1 image=$2 sub=$NQN:$1-lvm dev out
+	section "$backend, lvm-thin: what's particular to LVM"
+	api "a thin pool that doesn't exist is refused" 422 POST /v1/pools "{\"name\":\"l\",\"type\":\"lvm-thin\",\"volume_group\":\"$VG\",\"thin_pool\":\"nosuch\"}"
+	t "sudo lvcreate -q -y -L 8m -n not-a-pool $VG"
+	api "nor can it adopt what isn't a thin pool" 422 POST /v1/pools "{\"name\":\"l\",\"type\":\"lvm-thin\",\"volume_group\":\"$VG\",\"thin_pool\":\"not-a-pool\"}"
+	api "adopt the thin pool" 201 POST /v1/pools "{\"name\":\"l\",\"type\":\"lvm-thin\",\"volume_group\":\"$VG\",\"thin_pool\":\"pool0\",\"warning_percent\":99}"
+	expect_eq "it reports real capacity" 6442450944 "$(t 'jq .capacity.total_bytes /tmp/b')"
+	expect_eq "and metadata use" true "$(t 'jq ".capacity.metadata_used_percent > 0" /tmp/b')"
+	api "a small volume" 201 POST /v1/volumes '{"name":"small","size_bytes":4096}'
+	expect_eq "reports the size LVM really gave it" 4194304 "$(t 'jq .size_bytes /tmp/b')"
+	expect_eq "which is what's on disk" 4194304 "$(t "sudo blockdev --getsize64 \$(jq -r .device_path /tmp/b)")"
+	api "asking again with the original size finds it" 200 POST /v1/volumes '{"name":"small","size_bytes":4096}'
+	api "the same name at another size is a conflict" 409 POST /v1/volumes '{"name":"small","size_bytes":8388608}'
+	api "subsystem" 201 POST /v1/subsystems "{\"nqn\":\"$sub\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
+	api "map it" 201 POST "/v1/subsystems/$sub/namespaces" '{"volume":"small"}'
+	out=$(connect "$sub") && ok "host connects" || bad "host connects" "$out"
+	dev=$(ini_dev "$sub")
+	expect_eq "and sees that size" 4194304 "$(i "sudo blockdev --getsize64 $dev")"
+	api "grow it while connected" 200 PATCH /v1/volumes/small '{"size_bytes":8388608}'
+	sleep $((2 * SCALE))
+	expect_eq "and the host sees the new size" 8388608 "$(i "sudo blockdev --getsize64 $dev")"
+	api "a mapped volume can't be deleted" 409 DELETE /v1/volumes/small
+	disconnect "$sub"
+	api "unmap it" 204 DELETE "/v1/subsystems/$sub/namespaces/1"
+	api "remove the subsystem" 204 DELETE "/v1/subsystems/$sub"
+
+	t "sudo lvcreate -q -y --thin -V 4m -n nvw-stray $VG/pool0; sudo lvcreate -q -y --thin -V 4m -n someone-elses $VG/pool0"
+	api "pool status" 200 GET /v1/pools/l
+	out=$(t 'cat /tmp/b')
+	expect_has "reports a volume nothing refers to" nvw-stray "$out"
+	expect_lacks "but ignores what isn't ours" someone-elses "$out"
+	t "sudo lvremove -q -y $VG/nvw-stray"
+	api "delete the volume" 204 DELETE /v1/volumes/small
+	expect_eq "it's gone" 0 "$(our_lvs)"
+
+	# Everything the service said it did must still be true after a crash, with nothing left over.
+	local round in_progress=0 n
+	t 'rm -f /tmp/kill.*'
+	for round in 1 2 3; do
+		t "(n=0; while :; do n=\$((n+1)); v=k$round-\$n
+			[ \"\$(curl -s -m 60 -o /dev/null -w '%{http_code}' -X POST $API/v1/volumes -d '{\"name\":\"'\$v'\",\"size_bytes\":4194304}')\" = 201 ] || break
+			[ \"\$(curl -s -m 60 -o /dev/null -w '%{http_code}' -X POST $API/v1/snapshots -d '{\"name\":\"s'\$v'\",\"volume\":\"'\$v'\"}')\" = 201 ] || break
+			echo s\$v >> /tmp/kill.snapshots
+			echo \$v >> /tmp/kill.volumes
+		done; touch /tmp/kill.done$round) >/dev/null 2>&1 &"
+		sleep $((3 * SCALE))
+		t 'sudo podman kill -s KILL nvweaver-vm >/dev/null'
+		for _ in $(seq 1 $((60 * SCALE))); do [ "$(t "[ -f /tmp/kill.done$round ] && echo yes")" = yes ] && break; sleep 0.5; done
+		n=$(t "sudo ls \$(sudo podman volume inspect nvweaver-vm-data --format '{{.Mountpoint}}')/intents | wc -l")
+		in_progress=$((in_progress + n))
+		start_service "$backend" "$image"
+		wait_api || bad "service restarts after a crash" "$(t 'sudo podman logs nvweaver-vm 2>&1 | tail -5')"
+	done
+	echo "  (changes in progress at the moment of the crash: $in_progress)"
+	out=$(t 'cat /tmp/kill.volumes /tmp/kill.snapshots 2>/dev/null | wc -l')
+	if [ "$out" -gt 0 ]; then ok "the service was really doing work when killed ($out changes confirmed)"; else bad "the service was really doing work when killed"; fi
+	expect_eq "after crashes, no intents are left" 0 "$(t "sudo ls \$(sudo podman volume inspect nvweaver-vm-data --format '{{.Mountpoint}}')/intents | wc -l")"
+	expect_eq "every volume it confirmed is there" "" "$(t "for v in \$(cat /tmp/kill.volumes 2>/dev/null); do [ \"\$(curl -s -o /dev/null -w '%{http_code}' $API/v1/volumes/\$v)\" = 200 ] || echo \$v; done")"
+	expect_eq "every snapshot it confirmed is there" "" "$(t "for v in \$(cat /tmp/kill.snapshots 2>/dev/null); do [ \"\$(curl -s -o /dev/null -w '%{http_code}' $API/v1/snapshots/\$v)\" = 200 ] || echo \$v; done")"
+	api "pool status after the crashes" 200 GET /v1/pools/l
+	expect_eq "LVM holds exactly what the service knows of" "$(t 'jq ".volumes + .snapshots" /tmp/b')" "$(our_lvs)"
+	expect_lacks "with nothing left that nothing refers to" "no volume refers" "$(t 'cat /tmp/b')"
+	for n in $(t "curl -s '$API/v1/volumes?limit=1000' | jq -r '.items[].name'"); do t "curl -s -X DELETE $API/v1/volumes/$n"; done
+	for n in $(t "curl -s '$API/v1/snapshots?limit=1000' | jq -r '.items[].name'"); do t "curl -s -X DELETE $API/v1/snapshots/$n"; done
+	expect_eq "it all deletes" 0 "$(our_lvs)"
+	api "forget the pool" 204 DELETE /v1/pools/l
+	expect_eq "forgetting it changes nothing in LVM" "someone-elses" "$(t "sudo lvs --noheadings -o lv_name $VG | tr -d ' ' | grep -v -e pool0 -e not-a-pool | head -1")"
+	t "sudo lvremove -q -y $VG/someone-elses $VG/not-a-pool"
+}
+
+# After a reboot nothing is active but what LVM activates, and the target has lost its configuration.
+lvm_reboot_tests() { # BACKEND IMAGE
+	local sub=$NQN:$1-lvm-reboot dev sum out
+	section "$1, lvm-thin: a real reboot of the target"
+	api "adopt the thin pool" 201 POST /v1/pools "{\"name\":\"r\",\"type\":\"lvm-thin\",\"volume_group\":\"$VG\",\"thin_pool\":\"pool0\"}"
+	api "a volume" 201 POST /v1/volumes '{"name":"rv","size_bytes":67108864}'
+	api "subsystem" 201 POST /v1/subsystems "{\"nqn\":\"$sub\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
+	api "map it" 201 POST "/v1/subsystems/$sub/namespaces" '{"volume":"rv"}'
+	out=$(connect "$sub") && ok "host connects" || bad "host connects" "$out"
+	dev=$(ini_dev "$sub")
+	sum=$(i "md5sum < /tmp/p | cut -d' ' -f1")
+	i "sudo dd if=/tmp/p of=$dev bs=1M oflag=direct status=none"
+	api "snapshot it" 201 POST /v1/snapshots '{"name":"rs","volume":"rv"}'
+	disconnect "$sub"
+	reboot_target && ok "VM reboots" || bad "VM reboots"
+	start_service "$1" "$2"
+	wait_api && ok "service restores its configuration" || bad "service restores its configuration" "$(t 'sudo podman logs nvweaver-vm 2>&1 | tail -8')"
+	out=$(connect "$sub") && ok "host connects again" || bad "host connects again" "$out"
+	dev=$(ini_dev "$sub")
+	expect_eq "the volume's data survived" "$sum" "$(sum_of i "$dev")"
+	disconnect "$sub"
+	api "the snapshot is still there" 200 GET /v1/snapshots/rs
+	expect_eq "and still inactive" "" "$(t "sudo lvs --noheadings -o lv_active $VG/\$(jq -r .internal_name /tmp/b) | tr -d ' '")"
+	api "clone it after the reboot" 201 POST /v1/volumes '{"name":"rc","source":{"snapshot":"rs"}}'
+	api "unmap the volume" 204 DELETE "/v1/subsystems/$sub/namespaces/1"
+	api "map the clone" 201 POST "/v1/subsystems/$sub/namespaces" '{"volume":"rc"}'
+	out=$(connect "$sub") && ok "host connects to the clone" || bad "host connects to the clone" "$out"
+	dev=$(ini_dev "$sub")
+	expect_eq "and it has the snapshot's data" "$sum" "$(sum_of i "$dev")"
+	disconnect "$sub"
+	api "unmap the clone" 204 DELETE "/v1/subsystems/$sub/namespaces/1"
+	api "remove the subsystem" 204 DELETE "/v1/subsystems/$sub"
+	api "delete the volume" 204 DELETE /v1/volumes/rv
+	api "delete the clone" 204 DELETE /v1/volumes/rc
+	api "delete the snapshot" 204 DELETE /v1/snapshots/rs
+	api "forget the pool" 204 DELETE /v1/pools/r
+	expect_eq "nothing is left in LVM" 0 "$(our_lvs)"
 }
 
 backend_cleanup() {
@@ -331,6 +477,7 @@ else
 fi
 disconnect "$PSUB"
 api "remove passthrough subsystem" 204 DELETE "/v1/subsystems/$PSUB"
+lvm_reboot_tests nvmet localhost/nvweaver:dev
 backend_cleanup
 
 backend_tests spdk localhost/nvweaver:spdk
@@ -357,6 +504,21 @@ SDEV=$(ini_dev "$SSUB")
 SUM=$(i "md5sum < /tmp/p | cut -d' ' -f1")
 i "sudo dd if=/tmp/p of=$SDEV bs=1M oflag=direct status=none"
 expect_eq "data round trip" "$SUM" "$(sum_of i "$SDEV")"
+LSUB=$NQN:service-lvm
+api "adopt the thin pool, with no container involved" 201 POST /v1/pools "{\"name\":\"svc\",\"type\":\"lvm-thin\",\"volume_group\":\"$VG\",\"thin_pool\":\"pool0\"}"
+api "a volume" 201 POST /v1/volumes '{"name":"sv","size_bytes":67108864}'
+api "a snapshot" 201 POST /v1/snapshots '{"name":"ss","volume":"sv"}'
+api "a clone" 201 POST /v1/volumes '{"name":"sc","source":{"snapshot":"ss"}}'
+api "subsystem for it" 201 POST /v1/subsystems "{\"nqn\":\"$LSUB\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
+api "map the clone" 201 POST "/v1/subsystems/$LSUB/namespaces" '{"volume":"sc"}'
+out=$(connect "$LSUB" "-l 300 -c 5") && ok "host connects to it" || bad "host connects to it" "$out"
+LDEV=$(ini_dev "$LSUB")
+i "sudo dd if=/tmp/p of=$LDEV bs=1M oflag=direct status=none"
+expect_eq "data round trip on an LVM volume" "$SUM" "$(sum_of i "$LDEV")"
+# LVM carries on without these, so nothing else here would notice that the sandbox had stopped them.
+expect_eq "the sandbox lets LVM back up its metadata" yes "$(t "sudo grep -q \$(curl -s $API/v1/volumes/sc | jq -r .internal_name) /etc/lvm/backup/$VG && echo yes || echo no")"
+expect_lacks "and lock itself in memory" "mlock failed" "$(t "curl -s -X POST $API/v1/volumes -d '{\"name\":\"sm\",\"size_bytes\":4194304}' >/dev/null; sudo journalctl -u nvweaver --no-pager -n 200")"
+api "delete that volume" 204 DELETE /v1/volumes/sm
 
 section "systemd: real reboot of the target"
 BOOT1=$(t 'cat /proc/sys/kernel/random/boot_id')
@@ -377,6 +539,15 @@ done
 expect_eq "host reconnected by itself" live "$LIVE"
 SDEV=$(ini_dev "$SSUB")
 expect_eq "data survived the reboot" "$SUM" "$(sum_of i "$SDEV")"
+LIVE=
+for _ in $(seq 1 $((60 * SCALE))); do
+	LIVE=$(i "for c in /sys/class/nvme/*; do [ \"\$(cat \$c/subsysnqn 2>/dev/null)\" = '$LSUB' ] && cat \$c/state; done")
+	[ "$LIVE" = live ] && break
+	sleep 2
+done
+expect_eq "host reconnected to the LVM volume" live "$LIVE"
+LDEV=$(ini_dev "$LSUB")
+expect_eq "its data survived the reboot" "$SUM" "$(sum_of i "$LDEV")"
 expect_eq "no SELinux denials" "" "$(selinux_denials)"
 disconnect_all
 

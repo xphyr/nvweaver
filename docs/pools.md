@@ -4,15 +4,14 @@ A pool is where nvweaver allocates volumes from. nvweaver adopts a pool that you
 created, and never initializes a disk itself, because that destroys what is on it. This page
 explains how to create a pool that will work well.
 
-> **Status:** nvweaver can adopt reflink pools. LVM thin pools are being built, and the steps below are
-> the preparation they will need. Unless a section says otherwise, the commands were run on Fedora 44
-> VMs with LVM 2.03 and emulated disks, not physical drives.
+> **Status:** nvweaver can adopt both types. Unless a section says otherwise, the commands were run on Fedora 44 VMs with
+> LVM 2.03 and emulated disks, not physical drives.
 
 | | LVM thin | Reflink files |
 |---|---|---|
 | **Volumes are** | Block devices | Files on a filesystem |
 | **Needs** | A disk or partition you can dedicate, and root | A directory on XFS or btrfs |
-| **Works with** | The kernel target; SPDK if the service can run LVM | Both targets, including SPDK with no capabilities |
+| **Works with** | Both targets. In a container, it must be privileged, with `--pid=host` | Both targets, including SPDK with no capabilities |
 | **Snapshot** | Thin snapshot | Reflink copy |
 | **Choose it for** | Behaviour closest to an array | Simplicity, and no extra privileges |
 
@@ -62,8 +61,8 @@ pool needs its data size, plus twice the metadata size, plus the metadata area. 
 By default, LVM saves a copy of its metadata in `/etc/lvm/archive` on every change. That reached
 375 MB in 2,028 files after 1,000 volumes. With archiving off, it stayed at 12 KB.
 
-nvweaver will turn this off for its own commands (`--config backup/archive=0`), and that's what we
-tested. Check `/etc/lvm/archive` occasionally if you also run LVM commands yourself, and see
+nvweaver turns this off for its own commands (`--config backup/archive=0`). It keeps LVM's single backup
+of the current metadata, in `/etc/lvm/backup`. Check `/etc/lvm/archive` occasionally if you also run LVM commands yourself, and see
 `archive` in `lvm.conf` for how much it keeps.
 
 ### Don't let a thin pool fill up
@@ -86,18 +85,32 @@ sudo lvextend --poolmetadatasize +1G nvweaver/pool0
 LVM can also extend a pool automatically, with `thin_pool_autoextend_threshold` in `lvm.conf`, which
 relies on `dmeventd`. We haven't tested the automatic extension or these `lvextend` commands.
 
+### Adopt it
+
+```sh
+curl -X POST $API/v1/pools -d '{"name":"fast","type":"lvm-thin","volume_group":"nvweaver","thin_pool":"pool0"}'
+curl -X POST $API/v1/volumes -d '{"name":"vol1","size_bytes":10737418240}'
+curl -X POST $API/v1/subsystems/$SUB/namespaces -d '{"volume":"vol1"}'
+```
+
+Adopting checks that the thin pool exists, and changes nothing. Forgetting the pool doesn't either. Anything in the volume
+group not named `nvw-...` is ignored, so it can be shared with other uses.
+
 ### Things to know
 
-- **Thin snapshots aren't active by default.** They have the `k` flag and no device node until
-  activated with `lvchange -ay -K`. nvweaver will handle this.
+- **Thin snapshots aren't active by default.** They have the `k` flag and no device node until activated. nvweaver leaves
+  them that way, which keeps boot faster, and makes clones active.
+- **Sizes round up to whole extents,** 4 MiB by default. A volume reports its real size, and a retry with the size first
+  asked for still matches.
 - **Boot takes longer with many volumes.** Activating 5,000 volumes took 55 seconds, and deactivating
   them 28, in a VM. Creating a volume went from 0.11 seconds at 500 volumes to 0.45 at 5,000.
 - **Avoid other LVM on the same host seeing clients' data.** If a client puts LVM on a volume, the
   target host could see it. Fedora's LVM only uses disks in its devices file
   (`/etc/lvm/devices/system.devices`), which should prevent that. On a system without one, set
   `global_filter` in `lvm.conf`. We haven't tested either case.
-- **Containers:** LVM is awkward inside a container, because of udev and locking. Run the service
-  directly under systemd when using this pool type.
+- **Containers:** the service uses the host's own `lvm`, so the host needs `lvm2`. In a container, run it with
+  `--privileged --pid=host -v /dev:/dev`, and it goes through `nsenter`. Under the systemd unit, it just runs `lvm`. The SPDK
+  Quadlet has no capabilities, so it can't use this pool type.
 
 ## Reflink files
 

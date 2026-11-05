@@ -26,10 +26,14 @@ TimeoutStopSec=30
 # PrivateDevices and ProtectClock. See "Running under systemd" in the README
 # before tightening any of this.
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_MODULE CAP_NET_BIND_SERVICE
+# CAP_IPC_LOCK and CAP_SYS_NICE are for LVM, which locks itself in memory while devices are suspended.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_MODULE CAP_NET_BIND_SERVICE CAP_IPC_LOCK CAP_SYS_NICE
+LimitMEMLOCK=infinity
 AmbientCapabilities=
 # Not strict: file-backed namespaces can be on any writable filesystem.
 ProtectSystem=full
+# LVM saves a backup of a volume group's metadata here on every change. Without this, it silently doesn't.
+ReadWritePaths=-/etc/lvm
 ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelLogs=yes

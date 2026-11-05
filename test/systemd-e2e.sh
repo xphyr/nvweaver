@@ -160,7 +160,7 @@ PID=$(prop MainPID)
 expect_eq "no new privileges" 1 "$(sd "awk '/NoNewPrivs/{print \$2}' /proc/$PID/status")"
 CAPS=$(sd "awk '/CapBnd/{print \$2}' /proc/$PID/status")
 # CAP_SYS_ADMIN (21), CAP_SYS_MODULE (16), CAP_NET_BIND_SERVICE (10).
-expect_eq "only the three capabilities it needs" 0000000000210400 "$CAPS"
+expect_eq "only the capabilities it needs" 0000000000a14400 "$CAPS"
 sd "systemd-analyze security --no-pager $UNIT 2>/dev/null | tail -1" | sed 's/^/        /'
 
 section "Configuration and data"

@@ -40,6 +40,8 @@ type Pool struct {
 	Name           string            `json:"name"`
 	Type           string            `json:"type"`
 	Path           string            `json:"path,omitempty"`
+	VolumeGroup    string            `json:"volume_group,omitempty"`
+	ThinPool       string            `json:"thin_pool,omitempty"`
 	Labels         map[string]string `json:"labels,omitempty"`
 	WarningPercent int               `json:"warning_percent"`
 }

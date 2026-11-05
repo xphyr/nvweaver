@@ -103,8 +103,8 @@ and `/etc/lvm/archive` reached 375 MB.
 
 ### Snapshots and clones
 
-On reflink, on both targets, checked two ways, as a status code proves little here. The x86 suites gave `vm-e2e` 229,
-kernel 207, SPDK 219 and systemd 68, with no failures. The first three include these checks.
+On reflink and LVM thin, on both targets, checked two ways, as a status code proves little here. These checks are in
+`vm-e2e`, the kernel suite and the SPDK suite.
 
 **As raw data, in `e2e.sh`:** a host writes 16 MiB, the volume is snapshotted while the host is connected, and the host
 overwrites part of it. The checksums then show that the snapshot holds the old data, that a clone seen by a host holds
@@ -124,6 +124,20 @@ the snapshot's data and not the volume's, and that writing to one changes neithe
 
 Limits: one snapshot under load per run, so a rare race might not show; XFS only; reflink on btrfs in the VMs, and XFS as
 a reflink pool only on the CM4, without snapshots; nothing with applications such as databases, or a real power loss.
+
+### LVM thin
+
+On Fedora 44 VMs with an emulated disk, on both targets, with a container using the host's `lvm` through `nsenter`, and on
+the kernel target under the systemd unit, as `vm-e2e`:
+
+- **The same real-file snapshot checks as reflink,** including under load. A clone left the pool at the same usage, 4.70%
+  before and after, where a full copy of the files would have added over 4%.
+- **`kill -9`:** three rounds per target, catching 2 and 3 changes in progress among 132 and 74 confirmed. LVM then held
+  exactly what the service knew of.
+- **A real reboot,** on the kernel target and the unit: data survived, a snapshot stayed inactive, and it could still be cloned.
+- **Its rules:** sizes rounding up, a thin pool that's missing or isn't one, growing while connected, and other LVs ignored.
+
+Not tested: a full thin pool, physical disks, activating thousands of volumes in this path, and other distributions' LVM.
 
 ### Crash recovery
 
@@ -332,6 +346,9 @@ Checks that passed while proving nothing. Watch for these patterns:
 - **Many short SSH connections:** a test opening a new connection for each step had connections from its machine start
   timing out, while other machines and ping still worked. It cleared within minutes, and didn't recur with one shared
   `ControlMaster` connection. The cause wasn't confirmed, and network changes were being made around the same time.
+- **LVM's warnings don't fail anything.** Inside the unit's sandbox it created volumes correctly while being unable to back
+  up its metadata or lock itself in memory, and every test passed until a direct check of the backup file. The unit now
+  allows these, and the suite checks them. The check on memory only works because the service logs LVM's warnings.
 - **Skipped reflink tests:** Go's temporary directory may be tmpfs, where `internal/storage`'s reflink tests skip
   themselves and `go test` still says `ok`. Use `TMPDIR` on btrfs or XFS, and `-v` to see that they ran.
 - **Disk names:** don't assume `nvme0n1` is namespace 1 of a subsystem with several. The names

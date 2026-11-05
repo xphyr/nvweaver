@@ -36,6 +36,8 @@ type capacityView struct {
 	UsedBytes        int64   `json:"used_bytes"`
 	ProvisionedBytes int64   `json:"provisioned_bytes"`
 	UsedPercent      float64 `json:"used_percent"`
+	// Only for pools with metadata of their own, whose filling up is as bad as data filling up.
+	MetadataUsedPercent float64 `json:"metadata_used_percent,omitempty"`
 }
 
 type poolView struct {
@@ -77,12 +79,16 @@ func (s *Server) viewPool(st *target.State, p *target.Pool) poolView {
 		v.Warnings = append(v.Warnings, err.Error())
 		return v
 	}
-	v.Capacity = &capacityView{TotalBytes: c.TotalBytes, UsedBytes: c.UsedBytes, ProvisionedBytes: provisioned}
+	v.Capacity = &capacityView{TotalBytes: c.TotalBytes, UsedBytes: c.UsedBytes, ProvisionedBytes: provisioned, MetadataUsedPercent: c.MetadataUsedPercent}
+	v.Warnings = append(v.Warnings, c.Warnings...)
 	if c.TotalBytes > 0 {
 		v.Capacity.UsedPercent = float64(c.UsedBytes) / float64(c.TotalBytes) * 100
 	}
 	if p.WarningPercent > 0 && v.Capacity.UsedPercent >= float64(p.WarningPercent) {
 		v.Warnings = append(v.Warnings, fmt.Sprintf("pool is %.1f%% full, past its warning level of %d%%", v.Capacity.UsedPercent, p.WarningPercent))
+	}
+	if p.WarningPercent > 0 && c.MetadataUsedPercent >= float64(p.WarningPercent) {
+		v.Warnings = append(v.Warnings, fmt.Sprintf("pool's metadata is %.1f%% full, past its warning level of %d%%", c.MetadataUsedPercent, p.WarningPercent))
 	}
 	if names, err := d.List(); err == nil {
 		for _, name := range names {
@@ -105,13 +111,17 @@ func (s *Server) listPools(w http.ResponseWriter, _ *http.Request) error {
 	})
 }
 
-func samePool(a, b *target.Pool) bool { return a.Type == b.Type && a.Path == b.Path }
+func samePool(a, b *target.Pool) bool {
+	return a.Type == b.Type && a.Path == b.Path && a.VolumeGroup == b.VolumeGroup && a.ThinPool == b.ThinPool
+}
 
 func (s *Server) createPool(w http.ResponseWriter, r *http.Request) error {
 	var req struct {
 		Name           string            `json:"name"`
 		Type           string            `json:"type"`
 		Path           string            `json:"path"`
+		VolumeGroup    string            `json:"volume_group"`
+		ThinPool       string            `json:"thin_pool"`
 		Labels         map[string]string `json:"labels"`
 		WarningPercent *int              `json:"warning_percent"`
 	}
@@ -121,7 +131,7 @@ func (s *Server) createPool(w http.ResponseWriter, r *http.Request) error {
 	if err := checkObjectName("pool", req.Name); err != nil {
 		return err
 	}
-	pool := &target.Pool{Name: req.Name, Type: req.Type, Path: req.Path, Labels: req.Labels, WarningPercent: 80}
+	pool := &target.Pool{Name: req.Name, Type: req.Type, Path: req.Path, VolumeGroup: req.VolumeGroup, ThinPool: req.ThinPool, Labels: req.Labels, WarningPercent: 80}
 	if req.WarningPercent != nil {
 		pool.WarningPercent = *req.WarningPercent
 	}
@@ -145,8 +155,8 @@ func (s *Server) createPool(w http.ResponseWriter, r *http.Request) error {
 			return nil
 		}
 		for _, other := range st.Pools {
-			if other.Type == pool.Type && other.Path == pool.Path {
-				return target.NewConflict("pool %s already uses %s", other.Name, pool.Path)
+			if samePool(other, pool) {
+				return target.NewConflict("pool %s already uses that storage", other.Name)
 			}
 		}
 		st.Pools[req.Name] = pool
@@ -411,8 +421,19 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) error {
 				}
 				wantPool = p.Name
 			}
+			// A size that the pool rounded up the first time has to match on a retry.
+			wantSize := req.SizeBytes
+			if sizeGiven {
+				d, err := s.m.newDriver(st.Pools[existing.Pool])
+				if err != nil {
+					return err
+				}
+				if wantSize, err = d.AlignSize(req.SizeBytes); err != nil {
+					return err
+				}
+			}
 			if (wantPool != "" && existing.Pool != wantPool) ||
-				(sizeGiven && existing.SizeBytes != req.SizeBytes) ||
+				(sizeGiven && existing.SizeBytes != wantSize) ||
 				!sameSource(existing.Source, req.Source) {
 				return target.NewConflict("volume %s already exists with different settings", req.Name)
 			}
@@ -430,17 +451,25 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) error {
 				return target.Invalid("a clone stays in its source's pool, %s", source.pool)
 			}
 			pool = st.Pools[source.pool]
-			if sizeGiven && req.SizeBytes < source.sizeBytes {
-				return target.Invalid("a clone can't be smaller than its source (%d bytes)", source.sizeBytes)
-			}
-			if !sizeGiven {
-				req.SizeBytes = source.sizeBytes
-			}
 		} else if pool, err = defaultPool(st, req.Pool); err != nil {
 			return err
 		}
 		if driver, err = s.m.newDriver(pool); err != nil {
 			return err
+		}
+		size := req.SizeBytes
+		if sizeGiven {
+			if size, err = driver.AlignSize(req.SizeBytes); err != nil {
+				return err
+			}
+		}
+		if req.Source != nil {
+			if sizeGiven && size < source.sizeBytes {
+				return target.Invalid("a clone can't be smaller than its source (%d bytes)", source.sizeBytes)
+			}
+			if !sizeGiven {
+				size = source.sizeBytes
+			}
 		}
 		name := target.NewInternalName()
 		if err := s.m.beginIntent(opCreate, pool.Name, name, 0); err != nil {
@@ -450,9 +479,9 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) error {
 		s.m.crashPoint("intent")
 		var path string
 		if req.Source != nil {
-			path, err = driver.Clone(source.internal, internal, req.SizeBytes)
+			path, err = driver.Clone(source.internal, internal, size)
 		} else {
-			path, err = driver.Create(internal, req.SizeBytes)
+			path, err = driver.Create(internal, size)
 		}
 		if err != nil {
 			return poolFull(pool.Name, err)
@@ -463,7 +492,7 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) error {
 			Pool:         pool.Name,
 			InternalName: internal,
 			DevicePath:   path,
-			SizeBytes:    req.SizeBytes,
+			SizeBytes:    size,
 			UUID:         target.NewUUID(),
 			NGUID:        target.NewNGUID(),
 			Source:       req.Source,
@@ -535,16 +564,23 @@ func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		if err := s.m.beginIntent(opGrow, vol.Pool, vol.InternalName, *req.SizeBytes); err != nil {
+		size, err := driver.AlignSize(*req.SizeBytes)
+		if err != nil {
+			return err
+		}
+		if size == vol.SizeBytes {
+			return nil
+		}
+		if err := s.m.beginIntent(opGrow, vol.Pool, vol.InternalName, size); err != nil {
 			return err
 		}
 		growing = vol.InternalName
 		s.m.crashPoint("intent")
-		if err := driver.Grow(vol.InternalName, *req.SizeBytes); err != nil {
+		if err := driver.Grow(vol.InternalName, size); err != nil {
 			return err
 		}
 		s.m.crashPoint("storage")
-		vol.SizeBytes = *req.SizeBytes
+		vol.SizeBytes = size
 		mapped = mappings(st)[name]
 		return nil
 	})

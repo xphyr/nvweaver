@@ -10,17 +10,25 @@ import (
 const TypeReflink = "reflink"
 
 // Types lists the pool types this build can use.
-func Types() []string { return []string{TypeReflink} }
+func Types() []string { return []string{TypeLVMThin, TypeReflink} }
 
 // Capacity is what a pool's underlying storage reports.
 type Capacity struct {
 	TotalBytes int64
 	UsedBytes  int64
+	// MetadataUsedPercent is how full the pool's own metadata is, where it has any.
+	MetadataUsedPercent float64
+	// Warnings are problems particular to this pool type.
+	Warnings []string
 }
 
 // Driver manages the volumes of one pool. Volumes are identified by internal name, which is
 // safe to use on disk, and all names it handles start with target.InternalPrefix.
 type Driver interface {
+	// AlignSize returns the size a volume of this size would really have.
+	AlignSize(sizeBytes int64) (int64, error)
+	// Activate makes the pool's volumes usable at startup, ahead of the backends opening them.
+	Activate() error
 	// Check reports why the pool can't be used, if it can't. It changes nothing lasting.
 	Check() error
 	// Capacity reports the pool's space.
@@ -45,7 +53,12 @@ type Driver interface {
 func New(p *target.Pool) (Driver, error) {
 	switch p.Type {
 	case TypeReflink:
+		if p.Path == "" || p.VolumeGroup != "" || p.ThinPool != "" {
+			return nil, target.Invalid("a %s pool takes path, not volume_group or thin_pool", TypeReflink)
+		}
 		return &reflinkDriver{dir: p.Path}, nil
+	case TypeLVMThin:
+		return newLVMThin(p)
 	default:
 		return nil, target.Invalid("pool type %q isn't available: this build supports %v", p.Type, Types())
 	}

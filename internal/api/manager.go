@@ -67,6 +67,16 @@ func NewManager(b target.Backend, dataDir string, log *slog.Logger) (*Manager, e
 	if err := b.Check(loaded); err != nil {
 		return nil, fmt.Errorf("saved configuration cannot run on the %s backend: %w", b.Name(), err)
 	}
+	// Volumes may not be active yet this early in boot, and the backends are about to open them.
+	for _, p := range loaded.Pools {
+		d, err := m.newDriver(p)
+		if err == nil {
+			err = d.Activate()
+		}
+		if err != nil {
+			log.Error("couldn't activate a pool", "pool", p.Name, "error", err)
+		}
+	}
 	if err := b.Reconcile(target.NewState(), loaded); err != nil {
 		return nil, fmt.Errorf("restore saved configuration: %w", err)
 	}

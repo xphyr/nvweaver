@@ -1018,6 +1018,9 @@ components:
           description: The total size promised to volumes, which may exceed what the pool has.
         used_percent:
           type: number
+        metadata_used_percent:
+          type: number
+          description: How full an LVM thin pool's own metadata is. Hosts get I/O errors if it fills.
     Pool:
       type: object
       required: [name, type, warning_percent, state, warnings, volumes, snapshots]
@@ -1026,9 +1029,16 @@ components:
           type: string
         type:
           type: string
-          enum: [reflink]
+          enum: [lvm-thin, reflink]
         path:
           type: string
+          description: The directory, for a reflink pool.
+        volume_group:
+          type: string
+          description: The volume group, for an LVM thin pool.
+        thin_pool:
+          type: string
+          description: The thin pool in that volume group.
         labels:
           type: object
           additionalProperties:
@@ -1054,17 +1064,23 @@ components:
     PoolCreate:
       type: object
       additionalProperties: false
-      required: [name, type, path]
+      required: [name, type]
       properties:
         name:
           type: string
           maxLength: 128
         type:
           type: string
-          enum: [reflink]
+          enum: [lvm-thin, reflink]
         path:
           type: string
-          description: A directory on XFS or btrfs, as seen by the service.
+          description: For reflink. A directory on XFS or btrfs, as seen by the service.
+        volume_group:
+          type: string
+          description: For LVM thin. An existing volume group.
+        thin_pool:
+          type: string
+          description: For LVM thin. An existing thin pool in that volume group.
         labels:
           type: object
           additionalProperties:
@@ -1175,7 +1191,7 @@ components:
           minimum: 4096
           description: >-
             A multiple of 4096. Required unless this is a clone, which defaults to its source's size and may be larger,
-            but not smaller.
+            but not smaller. An LVM thin pool rounds it up to a whole extent, and the volume reports the real size.
         source:
           $ref: '#/components/schemas/VolumeSource'
         labels:

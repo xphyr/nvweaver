@@ -47,7 +47,7 @@ and CLI once, against the result.
 
 - [x] Write an OpenAPI spec for the API as it stands today (`api/openapi.yaml`)
 - [x] Agree the storage API: `docs/storage-api.md`
-- [ ] Move the storage API into the spec, as it's built. Done for pools, volumes and snapshots
+- [x] Move the storage API into the spec, as it's built
 - [x] Write `docs/pools.md`: how to create a suitable pool of each type
 - [x] Check automatically that the spec and the implementation stay in sync. Routes and field names
       are checked, not types or status codes
@@ -60,18 +60,18 @@ and CLI once, against the result.
 - [ ] Check `fs.aio-max-nr` on SPDK at startup, and give a clear error. Each volume needs 128 per core
 - [ ] Handle long-running operations such as full clones, without blocking the API behind its
       single lock
-- [ ] Add support for an LVM backend, using thin provisioning only. Adopt existing pools only. In a container, use
+- [x] Add support for an LVM backend, using thin provisioning only. Adopt existing pools only. In a container, use
       the host's own `lvm`, and test that together with a shared `/dev`
-  - [ ] Enable snapshots and cloning of NVMe devices
-  - [ ] Give every clone a new UUID and NGUID, or hosts reject it as a duplicate
-  - [ ] Activate thin snapshots explicitly, because they skip activation by default
-  - [ ] Report thin pool usage through the API: a full pool causes I/O errors for hosts
+  - [x] Enable snapshots and cloning of NVMe devices
+  - [x] Give every clone a new UUID and NGUID, or hosts reject it as a duplicate
+  - [x] Activate thin snapshots explicitly, because they skip activation by default. Clones are active, and snapshots stay
+        inactive until they're cloned
+  - [x] Report thin pool usage through the API: a full pool causes I/O errors for hosts
+  - [ ] Test what happens when a thin pool really fills up, for both hosts and the API
   - [ ] Filter LVM devices on the target, so it ignores LVM that clients create inside
         their namespaces
-  - [ ] Decide how this runs in containers (udev sync, locking, `/etc/lvm`). Native
-        systemd is the better fit, and it needs privileges that the no-capabilities SPDK
-        setup doesn't have
-  - [ ] Document that snapshots are crash-consistent only
+  - [x] Decide how this runs in containers: through the host's `lvm`, with `--pid=host`. See `docs/storage-api.md`
+  - [x] Document that snapshots are crash-consistent only
 - [x] Add reflink file pools, on XFS or btrfs, which need no LVM. Ext4 doesn't support reflink
 - [x] Add the volume model: volumes own their identity, and map into subsystems
 - [x] Add snapshots and clones, on reflink. Checked as real files on XFS, including under load: see `docs/testing.md`

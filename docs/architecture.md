@@ -89,6 +89,9 @@ Managed file volumes are in `volumes/` under the same directory.
 Pools, volumes and snapshots sit above the target backends, which don't know about them. Mapping a volume copies its
 path, UUID and NGUID onto a namespace, which a backend treats like any other. So a pool type only has to produce a path.
 
+LVM runs on the host, through `nsenter` from a container started with `--pid=host`, which it detects by comparing its mount
+namespace with PID 1's. Otherwise it runs directly, as under systemd.
+
 A snapshot and a clone are separate driver calls, because they can differ by pool type: a thin LVM snapshot stays inactive
 until it's needed. On reflink both are instant copies of a file, and independent of their source once made.
 

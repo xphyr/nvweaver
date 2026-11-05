@@ -302,7 +302,9 @@ POOL_DIR=/var/lib/nvweaver/pool1
 $ENGINE exec "$TGT" mkdir -p "$POOL_DIR" /overlay-pool
 api "a pool on overlayfs is refused" 422 POST /v1/pools '{"name":"bad","type":"reflink","path":"/overlay-pool"}'
 expect_has "and says why" overlayfs "$BODY"
-api "a pool type that isn't available is refused" 422 POST /v1/pools '{"name":"bad","type":"lvm-thin","path":"/x"}'
+api "a pool type that doesn't exist is refused" 422 POST /v1/pools '{"name":"bad","type":"zfs","path":"/x"}'
+api "an LVM pool needs a volume group and thin pool" 422 POST /v1/pools '{"name":"bad","type":"lvm-thin"}'
+api "and they must exist" 422 POST /v1/pools '{"name":"bad","type":"lvm-thin","volume_group":"nosuchvg","thin_pool":"pool0"}'
 out=$(call POST /v1/pools "{\"name\":\"p1\",\"type\":\"reflink\",\"path\":\"$POOL_DIR\",\"labels\":{\"media\":\"test\"}}")
 if [ "${out%%$'\n'*}" != 201 ] && echo "$out" | grep -q "doesn't support reflink"; then
 	echo "  skip  this machine's filesystem has no reflink"

@@ -1,7 +1,7 @@
 # Storage API design
 
 **Status: agreed, and being built.** What's built is in `api/openapi.yaml`, where the sync tests hold the code
-to it: so far, pools, volumes, snapshots, clones and port transports, on reflink. Still to come: LVM thin, and the
+to it: so far, pools, volumes, snapshots, clones and port transports, on reflink and LVM thin. Still to come: the
 behaviour under load described here. The reasoning behind the model is in
 [decisions.md](decisions.md), entries 19 to 24.
 
@@ -252,4 +252,4 @@ A to C might work with more LVM settings changed, but they'd also have two LVM v
 acting on one volume group. A host agent was also considered, as the only way to give LVM to a container with no
 capabilities, but nothing needs that combination.
 
-The combination of D with `/dev` shared, as the service runs, hasn't been tested yet.
+D with `/dev` shared, as the service runs, is what's now built and tested, on both targets.

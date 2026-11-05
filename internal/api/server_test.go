@@ -45,6 +45,7 @@ type fakePools struct {
 	deleteErr error
 	growErr   error
 	capErr    error
+	alignTo   int64
 }
 
 func (f *fakePools) driver(p *target.Pool) (storage.Driver, error) {
@@ -57,6 +58,16 @@ func (f *fakePools) driver(p *target.Pool) (storage.Driver, error) {
 type fakeDriver struct{ *fakePools }
 
 func (d fakeDriver) Check() error { return d.checkErr }
+func (d fakeDriver) AlignSize(size int64) (int64, error) {
+	if d.alignTo == 0 {
+		return size, nil
+	}
+	if rest := size % d.alignTo; rest != 0 {
+		size += d.alignTo - rest
+	}
+	return size, nil
+}
+func (d fakeDriver) Activate() error { return nil }
 func (d fakeDriver) Capacity() (storage.Capacity, error) {
 	return storage.Capacity{TotalBytes: 1000, UsedBytes: 900}, d.capErr
 }
