@@ -104,11 +104,8 @@ group not named `nvw-...` is ignored, so it can be shared with other uses.
   asked for still matches.
 - **Boot takes longer with many volumes.** Activating 5,000 volumes took 55 seconds, and deactivating
   them 28, in a VM. Creating a volume went from 0.11 seconds at 500 volumes to 0.45 at 5,000.
-- **Avoid other LVM on the same host seeing clients' data.** If a client puts LVM on a volume, the
-  target host could see it. Fedora's LVM only uses disks in its devices file
-  (`/etc/lvm/devices/system.devices`), which should prevent that. On a system without one, set
-  `global_filter` in `lvm.conf`. We haven't tested either case.
-- **Containers:** the service uses the host's own `lvm`, so the host needs `lvm2`. In a container, run it with
+- **Stop this machine's LVM reading clients' data.** See "Clients' LVM", below.
+- **Containers:** the service uses the host's own `lvm`, so the host needs `lvm2`, and `thin_check`: see [Tools](../README.md#tools). In a container, run it with
   `--privileged --pid=host -v /dev:/dev`, and it goes through `nsenter`. Under the systemd unit, it just runs `lvm`. The SPDK
   Quadlet has no capabilities, so it can't use this pool type.
 
@@ -177,3 +174,43 @@ mount the pool's directory into it, and use the path as it appears there.
   than the filesystem has. Hosts get I/O errors when it fills, so watch `df`.
 - **With SPDK and no capabilities,** mount the directory into the container as a volume. Each volume
   counts towards `fs.aio-max-nr`, as the [README](../README.md#known-limits) explains.
+
+## Clients' LVM
+
+This applies to any block device that's exported, whether or not you use LVM pools. If this machine's LVM can read an exported
+device, and a client puts LVM on it, then this machine can treat that LVM as its own:
+
+- **At boot, it activates the client's logical volumes,** which then hold the exported disk open.
+- **A client's volume group with the same name as a pool's takes that pool offline.** Its state becomes `missing`, and it refuses changes.
+  A client can do this by accident, as names like `vg0` are common.
+
+In testing, hosts kept their connections and their data stayed intact, as nothing here wrote to the client's volumes. Files can't be read as PVs, so
+reflink pools and file-backed namespaces aren't affected.
+
+**nvweaver checks for this, and reports it under `warnings` in `GET /v1/system`,** and in its log. It runs `lvmdiskscan` in the background, at startup, every 5 minutes, and
+within 30 seconds of a change, so a warning takes a moment to appear or clear. It doesn't change LVM's configuration: only you know which disks are this
+machine's own, and getting that wrong can stop it booting. Where it can't reach the host's LVM, as in the SPDK Quadlet, it says that it couldn't check.
+
+What protects a machine:
+
+| Setup | Thin volumes | Exported disks |
+|---|---|---|
+| A devices file that exists, with `use_devicesfile=1` | Protected | Protected, unless you add them to it |
+| `use_devicesfile=1` but no file: Fedora, until the first `pvcreate` or `vgcreate` | Protected by `scan_lvs=0`, the default | **Exposed** |
+| `use_devicesfile=0`: the default in Debian 13, and Ubuntu 24.04. Ubuntu 22.04's LVM has no such setting | Protected by `scan_lvs=0`, the default | **Exposed** |
+| No devices file in use, with `scan_lvs=1` | **Exposed** | **Exposed** |
+
+So a Fedora machine that only exports disks, and has never used LVM, is exposed too. Those defaults are what each distribution's `lvm2` package ships. The behaviour was tested on Fedora's LVM, version 2.03.38, with the settings changed to match.
+
+**Setting `use_devicesfile=0` removes the devices file.** Every LVM command then deletes it, even `pvs`, leaving a copy in `/etc/lvm/devices/backup`. Setting it back to 1 does nothing until there's a file again, and nvweaver's check will run a command that does this too, like anything else using LVM there.
+
+To fix it, do one of these, **before clients have made any LVM if you can.** Keep the root disk and every other disk this machine's own LVM needs.
+
+- **Use a devices file:** set `use_devicesfile = 1` in `/etc/lvm/lvm.conf`, then run `vgimportdevices -a`. That imports every volume group it can see, including a client's, so
+  check that `/etc/lvm/devices/system.devices` lists only this machine's disks. With no volume groups, it does nothing. If this machine has no LVM of its own, `touch` that file instead:
+  an empty one hides everything from LVM, as far as `lvmdiskscan` shows, though a reboot with one hasn't been tested.
+- **Or filter out exported disks,** in `lvm.conf`, using kernel names and covering partitions, as a client can make those:
+  `global_filter = [ "r|^/dev/vdb[0-9]*$|", "r|^/dev/sda[0-9]*$|" ]`. For names like `nvme0n1`, use `p?[0-9]*`.
+
+If a pool has already gone offline, apply the fix and reboot, which also releases the client's logical volumes. That's tested with `global_filter`.
+Adding a devices file was only tested before clients had made any LVM. Neither has been tested with this machine's root on LVM, where its initramfs may need updating.

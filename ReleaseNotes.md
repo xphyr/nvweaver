@@ -2,6 +2,21 @@
 
 The major differences between versions. For every change, see the commit history.
 
+## Not yet released
+
+### Security
+
+- **Web pages could use the API, in all earlier versions.** With no token, which is allowed on loopback, any page open in a browser on the same machine could send requests to the API, and export any unused disk, and DNS rebinding could read
+  from it too. These are now refused. If you run an earlier version, set `NVWEAVER_API_TOKEN`, which prevents this, or don't browse from that machine.
+
+### Added
+
+- **`nvweaver`, a command line utility,** for everything the API does, from this machine or another. It's in the images and the tarball. See [Command line](README.md#command-line).
+- **HTTPS for the API,** with `NVWEAVER_TLS_CERT` and `NVWEAVER_TLS_KEY`. Renewing a certificate needs no restart. Without them, serving off
+  loopback now logs a warning that the token is in clear text.
+- **`warnings` in `GET /v1/system`,** which reports if this machine's LVM can read exported devices. A client's LVM on one can get activated here at boot, and can
+  take a pool offline. See ["Clients' LVM"](docs/pools.md#clients-lvm). They also report if an LVM pool's `lvm` or `thin_check` is missing.
+
 ## v0.2.0
 
 ### Added

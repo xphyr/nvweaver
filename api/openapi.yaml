@@ -16,6 +16,13 @@ info:
 servers:
   - url: http://127.0.0.1:8420
     description: The default address, on the machine running the service.
+  - url: https://{host}:{port}
+    description: Over a network, with `NVWEAVER_TLS_CERT` and `NVWEAVER_TLS_KEY` set. With them, plain HTTP is refused.
+    variables:
+      host:
+        default: 127.0.0.1
+      port:
+        default: "8420"
 tags:
   - name: system
     description: The service and the target it runs.
@@ -981,7 +988,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: Required on everything but `/healthz`, when `NVWEAVER_API_TOKEN` is set.
+      description: Required on everything but `/healthz`, when `NVWEAVER_API_TOKEN` is set. Without TLS, it crosses the network in clear text.
   parameters:
     NQN:
       name: nqn
@@ -1374,7 +1381,7 @@ components:
             type: string
     System:
       type: object
-      required: [version, backend, capabilities, pool_types, kernel, modules, target_ready, ports, hosts, subsystems, pools, volumes, snapshots]
+      required: [version, backend, capabilities, pool_types, kernel, modules, target_ready, ports, hosts, subsystems, pools, volumes, snapshots, warnings]
       properties:
         version:
           type: string
@@ -1416,6 +1423,14 @@ components:
         snapshots:
           type: integer
           description: How many snapshots exist.
+        warnings:
+          type: array
+          description: |
+            Problems with how this machine is set up, which are empty if there are none. So far, this means that LVM on this machine can
+            read exported devices, that this couldn't be checked, or that an LVM pool's tools are missing. It's checked in the background, so a change takes a little
+            while to show here. See "Clients' LVM" in `docs/pools.md`.
+          items:
+            type: string
     Port:
       type: object
       required: [id, transport, address, service]

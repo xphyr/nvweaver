@@ -39,6 +39,16 @@ type Manager struct {
 	log       *slog.Logger
 	// newDriver returns the driver for a pool. Tests substitute a fake.
 	newDriver func(*target.Pool) (storage.Driver, error)
+	// visibleToLVM lists the devices this machine's LVM can read. Tests substitute a fake.
+	visibleToLVM func() ([]string, error)
+	// deviceIDs identifies a block device, however it's named. Tests substitute a fake.
+	deviceIDs func(string) []string
+	// missingLVMTools says what LVM thin pools need that's missing. Tests substitute a fake.
+	missingLVMTools func() []string
+	// lvmChanged asks WatchLVM for another check.
+	lvmChanged chan struct{}
+	// warnings holds what WatchLVM last found.
+	warnings atomic.Pointer[[]string]
 	// crash stops a request at a named point. Only tests set it.
 	crash func(point string)
 }
@@ -56,6 +66,11 @@ func NewManager(b target.Backend, dataDir string, log *slog.Logger) (*Manager, e
 		intentDir: filepath.Join(dataDir, "intents"),
 		log:       log,
 		newDriver: storage.New,
+
+		visibleToLVM:    storage.VisibleToLVM,
+		deviceIDs:       deviceIDs,
+		missingLVMTools: storage.MissingLVMTools,
+		lvmChanged:      make(chan struct{}, 1),
 	}
 	m.state.Store(target.NewState())
 	if err := os.MkdirAll(m.volumeDir, 0o700); err != nil {
@@ -137,6 +152,7 @@ func (m *Manager) commit(fn func(*target.State) error) error {
 	if err == nil {
 		if err = m.save(next); err == nil {
 			m.state.Store(next)
+			m.noteExportsChanged()
 			return nil
 		}
 	}

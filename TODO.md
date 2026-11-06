@@ -34,6 +34,13 @@ Work through these in order: each phase depends on the ones before it.
   - [ ] `test/systemd-e2e.sh` has a fixed `-l 30`, which doesn't scale with `TEST_TIMEOUT_SCALE`
   - [ ] In `e2e.sh`, stop waiting for a reconnect once the host has removed its controller
   - [ ] Arm runners have no KVM, so CI runs `e2e.sh` directly. Decide whether Arm needs the VM suites
+- [ ] For v0.3.0: publish an SBOM with each release, so that consumers know what's in it. Generate SPDX JSON in the release workflow with a pinned tool such as Syft, from the
+      tested images and tarballs, for both architectures. Attach them to the GitHub release, and attest them, as with provenance
+  - [ ] Check whether a scanner sees SPDK, DPDK and ISA-L inside `nvmf_tgt`. They're compiled from source into one binary, so it probably doesn't, which would look clean while leaving out
+        the most security-relevant code. If so, record their exact versions at build time and add them
+  - [ ] Have CI fail if the SBOM doesn't list what's in `THIRD_PARTY_NOTICES.md`, so that this can't quietly go stale
+- [ ] For v0.3.0: publish the `nvweaver` command line utility as its own artifact, as `nvweaver-cli-<version>-linux-<arch>`, for people who only want the client. Linux on amd64 and arm64,
+      built natively, as the suites and the Arm runner already test it. Include them in the checksums, attestations and SBOM, and say in the README how to get them
 - [ ] Pin base images in the Containerfiles by digest, with automated updates
 - [x] Add a `LICENSE` (MIT)
 - [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)
@@ -75,28 +82,30 @@ and CLI once, against the result.
         inactive until they're cloned
   - [x] Report thin pool usage through the API: a full pool causes I/O errors for hosts
   - [x] Test what happens when a thin pool really fills up, for both hosts and the API: see `docs/testing.md`
-  - [ ] Filter LVM devices on the target, so it ignores LVM that clients create inside
-        their namespaces
   - [x] Decide how this runs in containers: through the host's `lvm`, with `--pid=host`. See `docs/storage-api.md`
   - [x] Document that snapshots are crash-consistent only
 - [x] Add reflink file pools, on XFS or btrfs, which need no LVM. Ext4 doesn't support reflink
 - [x] Add the volume model: volumes own their identity, and map into subsystems
 - [x] Add snapshots and clones, on reflink. Checked as real files on XFS, including under load: see `docs/testing.md`
 - [ ] Leave room in the API for group snapshots, without building them yet
-- [x] Add `transport` to ports, accepting only `tcp` for now, and `capabilities.transports`, before the CLI and
-      CSI driver are written against the API. See "Transports" in `docs/storage-api.md`
+- [x] Add `transport` to ports, accepting only `tcp` for now, and `capabilities.transports`, before the CLI and CSI driver are written against the API. See "Transports" in `docs/storage-api.md`
 - [ ] Later: creating pools from raw disks, behind an explicit confirmation
 
 ## 3. API foundations
 
-- [ ] Add TLS to the API, needed before the web UI or CSI driver use it over a network
-- [ ] Create a shared Go API client from the spec, for the CLI and CSI driver to use
+- [x] Deal with LVM that clients create inside their namespaces, before the CSI driver, as Kubernetes nodes may well use LVM. Only the machine's own LVM
+      configuration can prevent it, so nvweaver reports it under `warnings`, and documents the fix. See decision 32 and "Clients' LVM" in `docs/pools.md`
+- [x] Add TLS to the API, needed before the web UI or CSI driver use it over a network. See decision 31
+- [ ] By 1.0: make serving the API in clear text off loopback an explicit choice by the admin deploying it, rather than a warning. See decision 31
+- [x] Check at startup that the tools in "Tools" in the README are there. See decision 34
+- [x] Create a shared Go API client, for the CLI and CSI driver to use. See decision 35
 - [ ] Add an endpoint showing connected hosts, including each connection's transport
+- [ ] Keep `info.version` in the API spec current: `v0.2.0` shipped saying `0.1.0`. Check it in the release workflow
 - [ ] Add an endpoint listing available block devices. Pools are adopted for now, so nothing needs it yet
 
 ## 4. Command line utility
 
-- [ ] Create a command line utility for CRUD actions, using the shared client
+- [x] Create a command line utility for CRUD actions, using the shared client
 
 ## 5. Scale
 
@@ -109,6 +118,8 @@ Production-like scale is a requirement, so measure this before building on it.
       connection per CPU, so per-volume subsystems add up quickly
 
 ## 6. Web UI
+
+**Next, by choice,** ahead of what's left of phases 3 and 5, so that there's something to see.
 
 - [ ] Create a web UI for manually handling CRUD tasks, embedded in the binary
   - [ ] The web UI should allow for token auth or simple username/password authentication
@@ -133,9 +144,27 @@ Production-like scale is a requirement, so measure this before building on it.
   - [ ] Pass the `csi-sanity` conformance suite
   - [ ] Test at production-like volume and node counts
   - [ ] Document that there is a single target, with no failover
-
+  - [ ] Test a clone of a volume with LVM inside it, on a node that also has the original. Its PV UUID and VG name match its source's, so the node's LVM should
+        see duplicates. Nothing has tested this yet. Real arrays have the same problem, and the target can't fix it without changing the client's data. Find
+        out what happens to pods on both volumes, then either document it or have the node plugin handle it, as with `vgimportclone`
 ## Later (low priority)
 
+- [ ] Publish the `nvweaver` command line utility for macOS, on arm64 and amd64, and Windows on amd64. Only the client: the service stays Linux only. Name them as the Linux ones are, and include them in
+      the checksums, attestations and SBOM
+  - [ ] Add a smoke test on hosted macOS and Windows runners, running the real binary against a fake API, as nothing has run there yet. Don't publish those builds without it. All these targets
+        cross-compile, but `go test ./cmd/nvweaver` won't there, as its tests use the Linux-only `internal/target`
+  - [ ] Check what differs there: file paths for `--token-file` and `--ca`, the system's certificates, and signals on Windows
+- [ ] iSCSI as a second protocol, once the CLI and CSI driver have settled the API. It would be new resources, such as `/v1/iscsi/targets`, not a
+      `transport` on ports. Pools, volumes and snapshots should carry over: see decision 33
+  - [ ] First, probe whether it's really feasible, before any design, as with Arm: drive LIO and SPDK's iSCSI target by hand on a throwaway VM, with
+        a separate initiator and real data. Nothing here has been tested yet. Answer these, and record them in `docs/testing.md`:
+    - Can both export a pool's volume, and a clone of it, with the data intact?
+    - Can a volume keep its identity (serial and WWN in VPD pages) across a move and a restart, and can it come from `nguid`?
+    - What does removing an initiator do to a live session on each: is it cut off, and are others affected?
+    - Does each survive a restart and a power cut with its data, as NVMe/TCP does? SPDK ignoring FUA may apply here too
+    - Does Raspberry Pi OS's kernel have LIO, and what would SPDK's image need: is `spdk_tgt` or `iscsi_tgt` required?
+    - What would `mapped_to` need, and does decision 33's estimate of how little changes in the API hold up?
+  - [ ] Weigh the cost of four combinations of target and protocol in the test suite
 - [ ] Test the suites against Docker. Podman is the supported engine and Docker a fallback,
       and nothing has been run against Docker since Podman became the default
 - [ ] Support NVMe/RDMA, after the CSI driver. Both targets support it underneath. See decision 26
@@ -169,6 +198,8 @@ network-attached NVMe namespaces.
 - [x] Use the VMs to test the systemd setup for real: `make install` as root, enable, reboot
       the VM, SELinux enforcing, and the Quadlet on the VM's own Podman
 - [ ] Run benchmarks between the VMs and over the 1 Gb network, on both backends
+- [ ] Long term: run the suites on a Debian VM too. All VM testing so far is on Fedora, and Debian differs where it matters, such as
+      LVM having no devices file by default
 
 ### Deferred until hardware is available
 

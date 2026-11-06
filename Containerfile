@@ -4,13 +4,14 @@ COPY go.mod ./
 COPY cmd ./cmd
 COPY internal ./internal
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /nvweaverd ./cmd/nvweaverd
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /nvweaverd ./cmd/nvweaverd \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /nvweaver ./cmd/nvweaver
 
 FROM docker.io/library/alpine:3.22
 # kmod: nvmet-tcp is loaded from the host's /lib/modules. Its modprobe handles
 # xz, zstd and gzip modules, whichever the host distribution uses.
 RUN apk add --no-cache kmod
-COPY --from=build /nvweaverd /usr/local/bin/nvweaverd
+COPY --from=build /nvweaverd /nvweaver /usr/local/bin/
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/licenses/nvweaver/
 COPY --from=build /usr/local/go/LICENSE /usr/local/go/PATENTS /usr/share/licenses/nvweaver/go/
 ARG VERSION=dev

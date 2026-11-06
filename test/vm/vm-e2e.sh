@@ -121,6 +121,8 @@ t "sudo pvcreate -q -y --metadatasize 16m $LVM_DISK && sudo vgcreate -q $VG $LVM
 expect_eq "initiator can reach the target only over the link" "$TARGET_IP" "$(i "ip -o route get $TARGET_IP | sed -E 's/.* dev lab0 .*/$TARGET_IP/'")"
 
 # --pid=host is what lets the service use the host's LVM.
+warnings() { t "curl -s $API/v1/system | jq -r '.warnings | join(\" \")'"; }
+
 start_service() { # BACKEND IMAGE
 	t "sudo podman rm -f nvweaver-vm >/dev/null 2>&1; sudo podman run -d --pull=never --name nvweaver-vm --privileged --network host --pid=host \
 		-v /lib/modules:/lib/modules:ro -v /dev:/dev -v nvweaver-vm-data:/var/lib/nvweaver \
@@ -198,6 +200,7 @@ backend_tests() { # BACKEND IMAGE [run args]
 	full_pool_tests "$backend"
 	power_tests "$backend" "$image" lvm-thin
 	power_tests "$backend" "$image" reflink
+	client_lvm_tests "$backend" "$image"
 }
 
 our_lvs() { t "sudo lvs --noheadings -o lv_name $VG | grep -c nvw-"; }
@@ -652,6 +655,17 @@ lvm_tests() { # BACKEND IMAGE
 	t "sudo lvremove -q -y $VG/nvw-stray"
 	api "delete the volume" 204 DELETE /v1/volumes/small
 	expect_eq "it's gone" 0 "$(our_lvs)"
+	# The service looks on the host, through nsenter, as nothing like this is in the image.
+	t "sudo mv /usr/sbin/thin_check /usr/sbin/thin_check.hidden"
+	start_service "$backend" "$image"
+	wait_api || bad "service starts without thin_check" "$(t 'sudo podman logs nvweaver-vm 2>&1 | tail -5')"
+	sleep 3 # For the check at startup.
+	expect_has "a missing thin_check is reported" "thin_check isn't installed" "$(warnings)"
+	t "sudo mv /usr/sbin/thin_check.hidden /usr/sbin/thin_check"
+	start_service "$backend" "$image"
+	wait_api || bad "service starts again"
+	sleep 3
+	expect_lacks "and clears when it's back" thin_check "$(warnings)"
 
 	# Everything the service said it did must still be true after a crash, with nothing left over.
 	local round in_progress=0 n
@@ -845,6 +859,142 @@ power_tests() { # BACKEND IMAGE POOL-TYPE
 	if [ "$kind" = lvm-thin ]; then expect_eq "nothing is left in LVM" 0 "$(our_lvs)"; fi
 }
 
+# A client's LVM, on a machine whose LVM can read what's exported, can be activated here and can take a pool offline. Only
+# this machine's configuration prevents that, so the service reports it. See "Clients' LVM" in docs/pools.md.
+client_lvm_tests() { # BACKEND IMAGE
+	local backend=$1 image=$2 pre=$NQN:$1-clvm va vb dev da db sum out lvpath
+	section "$backend: a client's LVM, with this machine's LVM set to read exported devices"
+	t "sudo cp /etc/lvm/lvm.conf /var/tmp/lvm.conf.orig"
+	lvm_conf() { # use_devicesfile scan_lvs [global_filter]
+		t "sudo cp /var/tmp/lvm.conf.orig /etc/lvm/lvm.conf; sudo sed -i -E 's/^(\\s*)# use_devicesfile = .*/\\1use_devicesfile = $1/; s/^(\\s*)# scan_lvs = .*/\\1scan_lvs = $2/' /etc/lvm/lvm.conf"
+		[ -n "${3:-}" ] && t "sudo sed -i -E 's#^(\\s*)\\# global_filter = .*#\\1global_filter = $3#' /etc/lvm/lvm.conf"
+		true
+	}
+	# A change is checked up to 30 seconds later.
+	wait_warning() { # TEXT
+		for _ in $(seq 1 $((25 * SCALE))); do
+			case "$(warnings)" in *"$1"*) return 0 ;; esac
+			sleep 2
+		done
+		return 1
+	}
+	restart_service() {
+		start_service "$backend" "$image"
+		wait_api || bad "service starts" "$(t 'sudo podman logs nvweaver-vm 2>&1 | tail -8')"
+		sleep 3 # For the check at startup.
+	}
+	map() { # SUFFIX NAMESPACE_JSON
+		api "subsystem $1" 201 POST /v1/subsystems "{\"nqn\":\"$pre-$1\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
+		api "export it" 201 POST "/v1/subsystems/$pre-$1/namespaces" "$2"
+	}
+	unmap() {
+		api "unmap $1" 204 DELETE "/v1/subsystems/$pre-$1/namespaces/1"
+		api "remove subsystem $1" 204 DELETE "/v1/subsystems/$pre-$1"
+	}
+	client_lvs_here() { t "sudo dmsetup ls | grep -c '^clientvg' || true"; }
+
+	api "adopt the thin pool" 201 POST /v1/pools "{\"name\":\"c\",\"type\":\"lvm-thin\",\"volume_group\":\"$VG\",\"thin_pool\":\"pool0\"}"
+	expect_eq "with nothing exported that LVM can read, there's no warning" "" "$(warnings)"
+
+	# A thin volume, which LVM only reads with scan_lvs turned on.
+	api "a volume" 201 POST /v1/volumes '{"name":"cv","size_bytes":134217728}'
+	map cv '{"volume":"cv"}'
+	lvm_conf 0 1
+	restart_service
+	lvpath=$(t "curl -s $API/v1/volumes/cv | jq -r .device_path")
+	expect_has "a thin volume LVM can read is reported at startup, before a client makes LVM" "$lvpath" "$(warnings)"
+	expect_has "saying where to look" "docs/pools.md" "$(warnings)"
+	out=$(connect "$pre-cv") && ok "host connects" || bad "host connects" "$out"
+	dev=$(ini_dev "$pre-cv")
+	i "sudo pvcreate -q -y $dev && sudo vgcreate -q clientvg $dev && sudo lvcreate -q -y -L 16m -n clientlv clientvg" 2>&1 | grep -v 'created' || true
+	api "a clone duplicates the client's PV, and still works" 201 POST /v1/volumes '{"name":"cc","source":{"volume":"cv"}}'
+	api "as does another volume" 201 POST /v1/volumes '{"name":"cw","size_bytes":4194304}'
+	i "sudo vgchange -q -an clientvg >/dev/null; sudo vgremove -q -y clientvg >/dev/null; sudo pvremove -q -y $dev >/dev/null"
+	disconnect "$pre-cv"
+	unmap cv
+	api "delete the volume" 204 DELETE /v1/volumes/cv
+	api "delete the clone" 204 DELETE /v1/volumes/cc
+	api "delete the other" 204 DELETE /v1/volumes/cw
+
+	# Whole disks, which is the default on a machine with no devices file. The first tests still export these.
+	api "free the first disk" 204 DELETE "/v1/subsystems/$NQN:$backend-virtio/namespaces/1"
+	api "free the second" 204 DELETE "/v1/subsystems/$NQN:$backend-sata/namespaces/1"
+	api "free the third" 204 DELETE "/v1/subsystems/$NQN:$backend-nvme/namespaces/1"
+	va=$(t "readlink -f $VIRTIO")
+	vb=$(t "readlink -f $SATA")
+	lvm_conf 0 0
+	restart_service
+	map a "{\"device_path\":\"$VIRTIO\"}"
+	map b "{\"device_path\":\"$SATA\"}"
+	wait_warning "$va" && ok "a disk LVM can read is reported, soon after it's exported" || bad "a disk LVM can read is reported, soon after it's exported" "$(warnings)"
+	expect_has "under the name LVM uses" "$vb" "$(warnings)"
+	lvm_conf 1 0
+	restart_service
+	expect_has "turning use_devicesfile back on isn't enough, as LVM removed the file" "$va" "$(warnings)"
+	t "sudo vgimportdevices -a >/dev/null" && ok "make a devices file, as in the docs" || bad "make a devices file, as in the docs"
+	restart_service
+	expect_eq "with one, it isn't reported" "" "$(warnings)"
+	lvm_conf 0 0
+	restart_service
+	expect_has "without one again, it is" "$va" "$(warnings)"
+
+	out=$(connect "$pre-a") && ok "host connects to the first" || bad "host connects to the first" "$out"
+	out=$(connect "$pre-b") && ok "and the second" || bad "and the second" "$out"
+	da=$(ini_dev "$pre-a")
+	db=$(ini_dev "$pre-b")
+	i "echo ',,8e' | sudo sfdisk -q $da >/dev/null && sudo udevadm settle" && ok "the client partitions one" || bad "the client partitions one"
+	i "sudo pvcreate -q -y ${da}p1 && sudo vgcreate -q clientvg ${da}p1 && sudo lvcreate -q -y -L 16m -n clientlv clientvg" 2>&1 | grep -v 'created'
+	i "sudo pvcreate -q -y $db && sudo vgcreate -q $VG $db && sudo lvcreate -q -y -L 16m -n clientlv $VG" 2>&1 | grep -v 'created'
+	i "sudo dd if=/dev/urandom of=/tmp/clvm bs=1M count=16 status=none; sudo dd if=/tmp/clvm of=/dev/clientvg/clientlv bs=1M oflag=direct status=none"
+	sum=$(i "md5sum </tmp/clvm | cut -d' ' -f1")
+	i "sudo vgchange -q -an clientvg >/dev/null; sudo vgchange -q -an $VG >/dev/null"
+	disconnect "$pre-a"
+	disconnect "$pre-b"
+
+	reboot_target && ok "VM reboots" || bad "VM reboots"
+	expect_eq "this machine has activated the client's LV" 1 "$(client_lvs_here)"
+	restart_service
+	api "so the pool has gone offline" 200 GET /v1/pools/c
+	expect_eq "reported as missing" missing "$(t 'jq -r .state /tmp/b')"
+	expect_has "saying what's wrong" "is used by VGs" "$(t 'jq -r ".warnings | join(\" \")" /tmp/b')"
+	expect_has "the warning is still there" "$va" "$(warnings)"
+	out=$(connect "$pre-a") && ok "the host can still connect" || bad "the host can still connect" "$out"
+	i "sudo udevadm settle; sudo vgchange -q -ay clientvg >/dev/null"
+	expect_eq "and its data is intact" "$sum" "$(i "sudo dd if=/dev/clientvg/clientlv bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
+	i "sudo vgchange -q -an clientvg >/dev/null"
+	disconnect "$pre-a"
+
+	# The fix from docs/pools.md, which also has to cover a partition that a client made.
+	lvm_conf 0 0 "[ \"r|^${va}[0-9]*\$|\", \"r|^${vb}[0-9]*\$|\" ]"
+	reboot_target && ok "with the filter from the docs, VM reboots" || bad "with the filter from the docs, VM reboots"
+	expect_eq "this machine leaves the client's LV alone" 0 "$(client_lvs_here)"
+	restart_service
+	expect_eq "there's no warning" "" "$(warnings)"
+	api "the pool is back" 200 GET /v1/pools/c
+	expect_eq "online" online "$(t 'jq -r .state /tmp/b')"
+	api "and usable" 201 POST /v1/volumes '{"name":"cx","size_bytes":4194304}'
+	out=$(connect "$pre-a") && ok "the host connects" || bad "the host connects" "$out"
+	i "sudo udevadm settle; sudo vgchange -q -ay clientvg >/dev/null"
+	expect_eq "and its data is still intact" "$sum" "$(i "sudo dd if=/dev/clientvg/clientlv bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
+
+	# Back as it was.
+	out=$(connect "$pre-b") || bad "connect to clean up" "$out"
+	i "sudo udevadm settle; sudo vgremove -q -y clientvg >/dev/null; sudo vgremove -q -y $VG >/dev/null; sudo pvremove -q -y ${da}p1 >/dev/null; sudo pvremove -q -y $db >/dev/null; sudo wipefs -q -a $da $db"
+	disconnect "$pre-a"
+	disconnect "$pre-b"
+	unmap a
+	unmap b
+	api "delete the last volume" 204 DELETE /v1/volumes/cx
+	api "forget the pool" 204 DELETE /v1/pools/c
+	t "sudo cp /var/tmp/lvm.conf.orig /etc/lvm/lvm.conf; sudo wipefs -q -a $va $vb; sudo vgimportdevices -a >/dev/null"
+	restart_service
+	expect_eq "nothing is left in LVM" 0 "$(our_lvs)"
+	expect_eq "and no warning" "" "$(warnings)"
+	api "export the first disk as it was" 201 POST "/v1/subsystems/$NQN:$backend-virtio/namespaces" "{\"nsid\":1,\"device_path\":\"$VIRTIO\"}"
+	api "and the second" 201 POST "/v1/subsystems/$NQN:$backend-sata/namespaces" "{\"nsid\":1,\"device_path\":\"$SATA\"}"
+	api "and the third" 201 POST "/v1/subsystems/$NQN:$backend-nvme/namespaces" "{\"nsid\":1,\"device_path\":\"$NVME\"}"
+}
+
 # After a reboot nothing is active but what LVM activates, and the target has lost its configuration.
 lvm_reboot_tests() { # BACKEND IMAGE
 	local sub=$NQN:$1-lvm-reboot dev sum out
@@ -959,6 +1109,21 @@ api "adopt the thin pool, with no container involved" 201 POST /v1/pools "{\"nam
 api "a volume" 201 POST /v1/volumes '{"name":"sv","size_bytes":67108864}'
 api "a snapshot" 201 POST /v1/snapshots '{"name":"ss","volume":"sv"}'
 api "a clone" 201 POST /v1/volumes '{"name":"sc","source":{"snapshot":"ss"}}'
+# With no container: running it natively is where a missing tool is most likely.
+t "sudo mv /usr/sbin/thin_check /usr/sbin/thin_check.hidden; sudo systemctl restart nvweaver"
+sleep 3 # For the check at startup.
+expect_has "natively, a missing thin_check is reported" "thin_check isn't installed" "$(warnings)"
+t "sudo mv /usr/sbin/thin_check.hidden /usr/sbin/thin_check; sudo mv /usr/sbin/lvm /usr/sbin/lvm.hidden; sudo systemctl restart nvweaver"
+sleep 3
+expect_has "as is a missing lvm, with an LVM pool" "can't find lvm" "$(warnings)"
+api "the pool can still be asked about" 200 GET /v1/pools/svc
+expect_eq "and reports that it's missing" missing "$(t 'jq -r .state /tmp/b')"
+expect_has "saying why" "can't find lvm" "$(t 'jq -r ".warnings | join(\" \")" /tmp/b')"
+expect_has "the service keeps running" active "$(t 'systemctl is-active nvweaver')"
+t "sudo mv /usr/sbin/lvm.hidden /usr/sbin/lvm; sudo systemctl restart nvweaver"
+sleep 3
+expect_lacks "and it clears when they're back" "thin_check" "$(warnings)"
+expect_lacks "both of them" "can't find lvm" "$(warnings)"
 api "subsystem for it" 201 POST /v1/subsystems "{\"nqn\":\"$LSUB\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
 api "map the clone" 201 POST "/v1/subsystems/$LSUB/namespaces" '{"volume":"sc"}'
 out=$(connect "$LSUB" "-l 300 -c 5") && ok "host connects to it" || bad "host connects to it" "$out"

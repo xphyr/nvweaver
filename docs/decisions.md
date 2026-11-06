@@ -93,8 +93,7 @@ there, not as absolute numbers.
 
 - **Chosen:** default to `127.0.0.1:8420`, and refuse to start off loopback with no token.
 - **Why:** the API can export any unused block device on the host.
-- **Known gap:** there is no TLS yet, so a token crosses the network in clear text. See
-  `TODO.md`, phase 3.
+- **TLS:** added later, in decision 31. Without it, a token crosses the network in clear text.
 
 ## 11. Stopping removes the target by default
 
@@ -307,3 +306,71 @@ there, not as absolute numbers.
 - **Rejected: nvmet's debugfs,** which is thought to allow dropping one controller. That's unconfirmed, as Fedora's kernel is built without
   `CONFIG_NVME_TARGET_DEBUGFS`, so it can't be tried here. It's worth revisiting if the distributions turn it on, since it could avoid the stall.
 - **Rejected, for now: an option to keep connections.** Nothing needs it yet. The CSI driver might, for live migration: see `TODO.md`.
+
+## 31. The API's TLS uses files it's given, and reads them again when they change
+
+- **Chosen:** `NVWEAVER_TLS_CERT` and `NVWEAVER_TLS_KEY`, as PEM files, both or neither. With them, plain HTTP is refused. TLS 1.2 is the minimum.
+- **Reloading:** each handshake checks whether the files have changed. Restarting to renew a certificate would stop SPDK's data path,
+  and a timer or signal is one more thing to set up. A check is one `stat` per file, and handshakes are rare.
+- **A bad change keeps the current certificate,** and logs an error once. A renewal replaces two files one after the other, so a pair that
+  doesn't match is normal for a moment. At startup, the same mistake is fatal, before the target starts.
+- **Rejected: creating a self-signed certificate.** Clients could only skip verifying it, which leaves the token open to anyone in the path.
+- **Rejected, for now: client certificates.** The bearer token already authenticates clients. Reconsider if something needs clients to have
+  separate identities.
+- **A token without TLS off loopback is only logged as a warning, for now,** as refusing it would break existing v0.2.0 setups on an isolated lab
+  network. **By 1.0, the admin deploying it decides:** clear text off loopback will be an explicit choice, rather than something that happens by leaving
+  TLS unset. See `TODO.md`.
+
+## 32. nvweaver reports when this machine's LVM can read exports, rather than preventing it
+
+- **The problem, tested:** with no devices file, this machine activates a client's LVM on an exported disk at boot, and a client's volume group named like a pool's takes that pool
+  offline. Debian and Ubuntu ship that way, as does Fedora until its first `pvcreate` or `vgcreate`. Thin volumes are safe unless `scan_lvs=1`. A devices file that exists protects both.
+- **Chosen:** run `lvmdiskscan` in the background, compare it by device number with what's exported, and report under `warnings` in `/v1/system`. It gives LVM's own answer, after its
+  devices file, filters and `scan_lvs`, so this doesn't have to work those out. That was checked against each of them, and it took about 0.05 s with 300 thin volumes.
+- **Why ask LVM, rather than read its configuration:** `use_devicesfile=1` means nothing if the file doesn't exist, as on a Fedora machine that has never used LVM, which reading the setting would have got wrong.
+- **Rejected: `pvs -a`,** which was tried first. It leaves out what has no PV on it, so it only warned after a client had already made LVM.
+- **Rejected: flags on nvweaver's own LVM commands,** such as `--devices`. It's the host's own activation at boot that takes the disk, which they can't stop.
+- **Rejected: changing the host's LVM configuration.** Only the admin knows which disks are the machine's own, and a wrong devices file can stop it booting. nvweaver adopts what's there, and
+  doesn't initialize.
+- **Rejected: refusing to export a disk that LVM can read.** That's the default on Debian and Ubuntu, and only matters if a client uses LVM.
+- **In the background,** because it has to scan, and `/v1/system` should stay fast. So a warning can be up to 30 seconds late after a change.
+
+## 33. Storage stays independent of the protocol that exports it
+
+- **Chosen:** pools, volumes and snapshots know nothing of how they're exported. Anything specific to a protocol goes on the mapping, not on them. A volume is storage, and exporting it is a separate step.
+- **Why:** it keeps a second protocol, such as iSCSI, from rewriting the storage API that the CLI and CSI driver are built on. From reading the spec, iSCSI would mostly add resources beside `/v1/subsystems`, which is an estimate
+  until the probe in `TODO.md` has run.
+- **What already touches NVMe:** `mapped_to` on a volume names a subsystem and namespace, so it would need extending, which can be done without breaking clients. `uuid` and `nguid` stay as a volume's identity: an iSCSI WWN might be
+  derived from `nguid`, which is untested.
+- **Consequence:** if a volume or pool seems to need another NVMe-specific field, put it on the mapping instead.
+- **Rejected: `transport: iscsi` on ports.** `transport` is for ways of carrying NVMe, as in decision 26, and iSCSI is a different protocol.
+- **Not chosen yet: building iSCSI.** It's in the "Later" section of `TODO.md`, after the CLI and CSI driver.
+
+## 34. Missing tools stop the service only if the chosen target can't run
+
+- **Chosen:** what the chosen target can't run without stops it at startup, as it already did: `nvmet-tcp`, or `nvmf_tgt`. Anything else is only reported under `warnings`, and only if something saved needs it. So far that means `lvm` and `thin_check`, with an LVM pool saved.
+- **Why not stop for those too:** a pool's tools going missing shouldn't take down everything else this machine exports. Someone using reflink pools doesn't need LVM at all. And without `thin_check`, tested, LVM still activates thin pools, only skipping its check of their metadata.
+- **It looks where the tool would run,** on the host through `nsenter` in a container, as checking inside the container would give the wrong answer. It asks LVM where `thin_check` should be, as that's configurable.
+- **Not checked: `modprobe` and `nsenter`.** A missing `modprobe` only matters if the module isn't loaded, and its error already says what to do. `nsenter` is in both images.
+
+## 35. The client is written by hand, and tested against the spec and the real handlers
+
+- **Chosen:** `internal/client`, using the standard library, with its types written out. The command line utility uses only this, as the CSI driver will, so neither can do anything the API can't.
+- **Why not generate it:** a generator would be this project's first dependency, even if only at build time, and the API is small. What generating would have guaranteed, tests check instead: every schema's fields against the
+  client's types, in both directions, and every operation in the spec reached successfully against the real handlers.
+- **It retries `503`,** which the API only sends having changed nothing, for up to a minute, as `Retry-After` says. It doesn't retry a network error, as that doesn't say whether anything happened. Each caller would otherwise write this itself.
+- **It doesn't follow redirects,** as the API never sends one, so something else is answering.
+- **It's under `internal/`,** as nothing outside this repository uses it. The module path isn't importable from elsewhere anyway. Reconsider if someone needs it.
+- **The utility takes secrets only from files or the environment,** as other users of a machine can see command lines. That applies to the token and DH-HMAC-CHAP keys, and a `--token` flag is refused.
+- **Rejected, for now: a confirmation prompt on delete.** It's for automation first, and the API refuses to delete what's in use.
+- **Rejected, for now: an option to skip verifying certificates.** `--ca` covers a lab's own certificate, and it's easy to add if it's really needed.
+
+## 36. The API refuses web pages, and with no token, any name but loopback
+
+- **The problem, and it was real:** with no token, which is allowed on loopback, any web page open in a browser on the machine could send requests to the API, and could export any unused disk. A request needs no permission from the server if it doesn't
+  ask to read the answer, and the API accepted a JSON body with any `Content-Type`. Tests showed that such a request got 201 and took effect. DNS rebinding also let a site read answers, by pointing its own name at 127.0.0.1. All of this was in v0.1.0 and v0.2.0.
+- **Chosen:** Go's `http.CrossOriginProtection` on everything, which refuses unsafe requests from other origins using `Sec-Fetch-Site`, or `Origin` on older browsers. With no token, a `Host` that isn't loopback is also refused, as a site can't change that header.
+- **Programs aren't affected,** as they send neither header. With a token, any name works, as the API can be on any address, and a page doesn't have the token.
+- **Rejected: requiring `Content-Type: application/json`.** It would stop the writes but not rebinding, and would break plain `curl -d`, as the README's own examples use.
+- **It's on by default, and only tests can turn the `Host` check off.**
+

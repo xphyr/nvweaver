@@ -83,7 +83,7 @@ func newSpecServer(t *testing.T) (*Server, http.Handler) {
 		t.Fatal(err)
 	}
 	m.newDriver = newFakeDriver(t.TempDir())
-	srv := NewServer(m, "")
+	srv := fixtureServer(m)
 	return srv, srv.Handler()
 }
 
