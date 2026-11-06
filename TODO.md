@@ -75,8 +75,6 @@ and CLI once, against the result.
         inactive until they're cloned
   - [x] Report thin pool usage through the API: a full pool causes I/O errors for hosts
   - [x] Test what happens when a thin pool really fills up, for both hosts and the API: see `docs/testing.md`
-  - [ ] Filter LVM devices on the target, so it ignores LVM that clients create inside
-        their namespaces
   - [x] Decide how this runs in containers: through the host's `lvm`, with `--pid=host`. See `docs/storage-api.md`
   - [x] Document that snapshots are crash-consistent only
 - [x] Add reflink file pools, on XFS or btrfs, which need no LVM. Ext4 doesn't support reflink
@@ -89,9 +87,14 @@ and CLI once, against the result.
 
 ## 3. API foundations
 
-- [ ] Add TLS to the API, needed before the web UI or CSI driver use it over a network
+- [ ] **Filter LVM devices on the target, so it ignores LVM that clients create inside their namespaces.** Carried over
+      from phase 2, and must be done before the CSI driver, since Kubernetes nodes may well use LVM. Test what Fedora's
+      devices file really does, and a system without one: see `docs/pools.md`
+- [x] Add TLS to the API, needed before the web UI or CSI driver use it over a network. See decision 31
+- [ ] By 1.0: make serving the API in clear text off loopback an explicit choice by the admin deploying it, rather than a warning. See decision 31
 - [ ] Create a shared Go API client from the spec, for the CLI and CSI driver to use
 - [ ] Add an endpoint showing connected hosts, including each connection's transport
+- [ ] Keep `info.version` in the API spec current: `v0.2.0` shipped saying `0.1.0`. Check it in the release workflow
 - [ ] Add an endpoint listing available block devices. Pools are adopted for now, so nothing needs it yet
 
 ## 4. Command line utility

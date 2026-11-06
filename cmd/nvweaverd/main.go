@@ -58,6 +58,14 @@ func run(log *slog.Logger) error {
 	if err := checkExposure(listen, token); err != nil {
 		return err
 	}
+	// Before the target starts, so that a mistake here doesn't disturb hosts.
+	tlsConfig, err := api.NewTLSConfig(env("NVWEAVER_TLS_CERT", ""), env("NVWEAVER_TLS_KEY", ""), log)
+	if err != nil {
+		return err
+	}
+	if tlsConfig == nil && !isLoopback(listen) {
+		log.Warn("the API has no TLS, so its token crosses the network in clear text: set NVWEAVER_TLS_CERT and NVWEAVER_TLS_KEY")
+	}
 	backend, err := selectBackend(log)
 	if err != nil {
 		return err
@@ -89,6 +97,7 @@ func run(log *slog.Logger) error {
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       2 * time.Minute,
+		TLSConfig:         tlsConfig,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -100,8 +109,14 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("API: %w", err)
 	}
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.Serve(listener) }()
-	log.Info("API listening", "address", listen, "authenticated", token != "")
+	go func() {
+		if tlsConfig != nil {
+			serveErr <- srv.ServeTLS(listener, "", "")
+			return
+		}
+		serveErr <- srv.Serve(listener)
+	}()
+	log.Info("API listening", "address", listen, "authenticated", token != "", "tls", tlsConfig != nil)
 	notify(log, "READY=1\nSTATUS=Serving with the "+backend.Name()+" backend")
 
 	select {
@@ -149,15 +164,22 @@ func notify(log *slog.Logger, state string) {
 // checkExposure refuses an unauthenticated API off the local machine: it can
 // export any block device on the host to the network.
 func checkExposure(listen, token string) error {
-	host, _, err := net.SplitHostPort(listen)
-	if err != nil {
+	if _, _, err := net.SplitHostPort(listen); err != nil {
 		return fmt.Errorf("NVWEAVER_LISTEN %q: %w", listen, err)
 	}
-	ip := net.ParseIP(host)
-	if token == "" && host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+	if token == "" && !isLoopback(listen) {
 		return fmt.Errorf("refusing to serve the API on %s without NVWEAVER_API_TOKEN set", listen)
 	}
 	return nil
+}
+
+func isLoopback(listen string) bool {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return host == "localhost" || (ip != nil && ip.IsLoopback())
 }
 
 // selectBackend honours NVWEAVER_BACKEND. With auto, the kernel wins wherever it

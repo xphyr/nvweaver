@@ -115,7 +115,7 @@ $ENGINE volume rm -f "$VOL" >/dev/null 2>&1
 $ENGINE run -d --name "$INI" --privileged --network host -v /lib/modules:/lib/modules:ro -v /dev:/dev \
 	docker.io/library/alpine:3.22 sleep infinity >/dev/null || exit 1
 trap cleanup EXIT
-ini "apk add -q --no-progress nvme-cli curl jq util-linux kmod coreutils busybox-extras" || exit 1
+ini "apk add -q --no-progress nvme-cli curl jq util-linux kmod coreutils busybox-extras openssl" || exit 1
 ini "modprobe nvme-tcp" || exit 1
 # Made before the machine boots: it gets its own copy of /dev, taken at startup.
 ini "truncate -s 64M /tmp/loop.img"
@@ -241,6 +241,22 @@ sd "sed -i '/KEEP_ON_EXIT/d' /etc/nvweaver/nvweaver.env; systemctl restart $UNIT
 sd "systemctl stop $UNIT"
 expect_lacks "without it, stop removes the target again" "$SUB" "$(kernel_has)"
 
+section "API over TLS, from the environment file"
+TLS_URL=https://127.0.0.1:8420
+TLS_DIR=/etc/nvweaver/tls
+ini "openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=nvweaver-sd \
+	-addext subjectAltName=IP:127.0.0.1 -keyout /tmp/tls.key -out /tmp/tls.crt 2>/dev/null" || bad "make a test certificate"
+sd "install -d -m 0755 $TLS_DIR"
+ini "cat /tmp/tls.crt" | $ENGINE exec -i "$TGT" sh -c "cat >$TLS_DIR/tls.crt"
+ini "cat /tmp/tls.key" | $ENGINE exec -i "$TGT" sh -c "umask 077; cat >$TLS_DIR/tls.key"
+TLS_ENV="NVWEAVER_TLS_CERT=$TLS_DIR/tls.crt\nNVWEAVER_TLS_KEY=$TLS_DIR/tls.key"
+sd "printf '$TLS_ENV\n' >> /etc/nvweaver/nvweaver.env; systemctl restart $UNIT" || bad "restart with TLS" "$(sd "journalctl -u $UNIT --no-pager -n 25")"
+expect_eq "the sandbox can read a private key, and it's served" 200 "$(ini "curl -s -m 5 -o /dev/null -w '%{http_code}' --cacert /tmp/tls.crt $TLS_URL/v1/system")"
+expect_eq "plain HTTP is refused" 400 "$(ini "curl -s -m 5 -o /dev/null -w '%{http_code}' $API/v1/system")"
+sd "sed -i '/NVWEAVER_TLS_/d' /etc/nvweaver/nvweaver.env; systemctl restart $UNIT"
+expect_eq "and without it, plain HTTP works" 200 "$(ini "curl -s -m 5 -o /dev/null -w '%{http_code}' $API/v1/system")"
+sd "systemctl stop $UNIT"
+
 section "Uninstall"
 sd "systemctl disable $UNIT >/dev/null 2>&1; rm -f /etc/systemd/system/$UNIT; systemctl daemon-reload"
 expect_eq "unit is gone" not-found "$(prop LoadState)"
@@ -274,6 +290,13 @@ if $ENGINE image inspect "$SPDK_IMAGE" >/dev/null 2>&1; then
 	ini "nvme disconnect -n $SUB >/dev/null"
 	sd "systemctl restart $QUNIT"
 	expect_has "restart restores the configuration" "$SUB" "$(ini "curl -s $API/v1/subsystems | jq -r '.[].nqn'")"
+	# As the Quadlet's own comment says to, with no capabilities to read other users' files.
+	sd "sed -i 's|^#Volume=$TLS_DIR|Volume=$TLS_DIR|' /etc/containers/systemd/nvweaver-spdk.container; printf '$TLS_ENV\n' >> /etc/nvweaver/nvweaver.env; systemctl daemon-reload"
+	if sd "systemctl restart $QUNIT" 2>/dev/null; then ok "the Quadlet starts with TLS"; else
+		bad "the Quadlet starts with TLS" "$(sd "journalctl -u $QUNIT --no-pager -n 25")"
+	fi
+	expect_eq "and serves it" 200 "$(ini "curl -s -m 5 -o /dev/null -w '%{http_code}' --cacert /tmp/tls.crt $TLS_URL/v1/system")"
+	expect_eq "plain HTTP is refused" 400 "$(ini "curl -s -m 5 -o /dev/null -w '%{http_code}' $API/v1/system")"
 	sd "systemctl stop $QUNIT"
 	expect_eq "stop leaves it inactive, not failed" inactive "$(sd "systemctl is-active $QUNIT" 2>/dev/null)"
 else

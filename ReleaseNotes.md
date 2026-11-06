@@ -2,6 +2,13 @@
 
 The major differences between versions. For every change, see the commit history.
 
+## Not yet released
+
+### Added
+
+- **HTTPS for the API,** with `NVWEAVER_TLS_CERT` and `NVWEAVER_TLS_KEY`. Renewing a certificate needs no restart. Without them, serving off
+  loopback now logs a warning that the token is in clear text.
+
 ## v0.2.0
 
 ### Added

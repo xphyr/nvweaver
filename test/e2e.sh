@@ -140,6 +140,7 @@ cleanup() {
 	for s in "$NQN:node1" "$NQN:node2" "$NQN:overlay" "$SE" "$SF" "$SA" "$SB" "$SC" "$SD"; do disconnect "$s"; done
 	$ENGINE stop -t 20 "$TGT" >/dev/null 2>&1
 	$ENGINE rm -f "$TGT" >/dev/null 2>&1
+	[ -n "${TLS_DIR:-}" ] && rm -rf "$TLS_DIR"
 	[ -n "$LOOP" ] && ini "losetup -d $LOOP"
 	if [ "${MODULES_WERE_LOADED:-1}" = 0 ]; then
 		ini "modprobe -r nvmet-tcp nvmet" || echo "  note: nvmet modules left loaded"
@@ -158,7 +159,7 @@ $ENGINE volume rm -f "$VOL" >/dev/null 2>&1
 $ENGINE run -d --name "$INI" --privileged --network host -v /lib/modules:/lib/modules:ro -v /dev:/dev \
 	docker.io/library/alpine:3.22 sleep infinity >/dev/null || exit 1
 trap cleanup EXIT
-ini "apk add -q --no-progress nvme-cli curl jq util-linux kmod coreutils busybox-extras iproute2-ss" || exit 1
+ini "apk add -q --no-progress nvme-cli curl jq util-linux kmod coreutils busybox-extras iproute2-ss openssl" || exit 1
 ini "modprobe nvme-tcp" || exit 1
 
 section "Startup"
@@ -537,6 +538,73 @@ fi
 section "Teardown"
 disconnect "$SA"
 disconnect "$SB"
+
+section "API over TLS"
+TLS_DIR=$(mktemp -d)
+TLS_URL=https://127.0.0.1:18420
+TLS_TOKEN=tls-test-token
+# Self-signed, so that a certificate is also the CA that a client trusts.
+new_cert() { ini "openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=nvweaver-e2e \
+	-addext subjectAltName=IP:127.0.0.1 -keyout /tmp/$1.key -out /tmp/$1.crt 2>/dev/null"; }
+# Atomically, as the service may read them at any moment.
+install_part() { # NAME FILE
+	ini "cat /tmp/$1" >"$TLS_DIR/.new" && mv "$TLS_DIR/.new" "$TLS_DIR/$2"
+}
+tls_code() { # CA [curl args]: prints the status, and curl's exit code if it failed
+	local ca=$1
+	shift
+	ini "curl -s -m 10 -o /tmp/body -w '%{http_code}' --cacert /tmp/$ca.crt -H 'Authorization: Bearer $TLS_TOKEN' $* $TLS_URL/v1/system || echo \" rc=\$?\""
+}
+new_cert tls1 && new_cert tls2 || bad "make test certificates"
+install_part tls1.crt tls.crt
+install_part tls1.key tls.key
+
+out=$($ENGINE run --rm --network none -e NVWEAVER_TLS_CERT=/tls/tls.crt "$IMAGE" 2>&1)
+rc=$?
+[ "$rc" != 0 ] && ok "a certificate without a key stops it starting" || bad "a certificate without a key stops it starting"
+expect_has "saying why" "must be set together" "$out"
+ini "cat /tmp/tls2.key" >"$TLS_DIR/wrong.key"
+out=$($ENGINE run --rm --network none -v "$TLS_DIR:/tls:ro,Z" -e NVWEAVER_TLS_CERT=/tls/tls.crt -e NVWEAVER_TLS_KEY=/tls/wrong.key "$IMAGE" 2>&1)
+rc=$?
+[ "$rc" != 0 ] && ok "so does a key that doesn't match" || bad "so does a key that doesn't match" "$out"
+
+$ENGINE stop -t 20 "$TGT" >/dev/null 2>&1
+$ENGINE rm -f "$TGT" >/dev/null 2>&1
+$ENGINE run -d --name "$TGT" --privileged --network host \
+	-v /lib/modules:/lib/modules:ro -v /dev:/dev -v "$VOL:/var/lib/nvweaver" -v "$TLS_DIR:/tls:ro,Z" \
+	-e NVWEAVER_LISTEN=127.0.0.1:18420 -e NVWEAVER_BACKEND="$BACKEND" -e NVWEAVER_API_TOKEN="$TLS_TOKEN" \
+	-e NVWEAVER_TLS_CERT=/tls/tls.crt -e NVWEAVER_TLS_KEY=/tls/tls.key "$IMAGE" >/dev/null || bad "start with TLS"
+for _ in $(seq 1 $((40 * SCALE))); do
+	[ "$(ini "curl -s -m 2 -o /dev/null -w '%{http_code}' --cacert /tmp/tls1.crt $TLS_URL/healthz")" = 200 ] && break
+	sleep 0.25
+done
+expect_eq "a client trusting it gets an answer" 200 "$(tls_code tls1)"
+expect_has "from the right backend" "\"backend\":\"$BACKEND\"" "$(ini "tr -d ' \n' </tmp/body")"
+expect_eq "and over HTTP/2" 2 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_version}' --cacert /tmp/tls1.crt $TLS_URL/healthz")"
+expect_has "a client that doesn't is refused" "rc=60" "$(ini "curl -s -m 10 -o /dev/null $TLS_URL/healthz || echo rc=\$?")"
+expect_eq "plain HTTP gets nothing but an error" 400 "$(ini "curl -s -m 10 -o /tmp/body -w '%{http_code}' -H 'Authorization: Bearer $TLS_TOKEN' http://127.0.0.1:18420/v1/system")"
+expect_lacks "and none of the API's data" backend "$(ini "cat /tmp/body")"
+expect_eq "the token is still needed" 401 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' --cacert /tmp/tls1.crt $TLS_URL/v1/system")"
+expect_eq "TLS 1.1 is refused" 35 "$(ini "curl -s -m 10 -o /dev/null --cacert /tmp/tls1.crt --tlsv1.1 --tls-max 1.1 $TLS_URL/healthz; echo \$?" | tail -1)"
+STARTED=$($ENGINE inspect "$TGT" --format '{{.State.StartedAt}}')
+
+install_part tls2.key tls.key
+install_part tls2.crt tls.crt
+expect_eq "a renewal is picked up" 200 "$(tls_code tls2)"
+expect_has "and the old certificate is gone" "rc=60" "$(tls_code tls1)"
+expect_eq "with no restart" "$STARTED" "$($ENGINE inspect "$TGT" --format '{{.State.StartedAt}}')"
+install_part tls1.crt tls.crt
+expect_eq "half of a renewal keeps what's working" 200 "$(tls_code tls2)"
+expect_has "and logs why" "keeping the current API TLS certificate" "$($ENGINE logs "$TGT" 2>&1)"
+install_part tls1.key tls.key
+expect_eq "then finishing it works" 200 "$(tls_code tls1)"
+expect_has "the configuration is unaffected" "$SA" "$(ini "curl -s -m 10 --cacert /tmp/tls1.crt -H 'Authorization: Bearer $TLS_TOKEN' $TLS_URL/v1/subsystems")"
+
+$ENGINE stop -t 20 "$TGT" >/dev/null 2>&1
+start_target false || bad "restart without TLS"
+expect_eq "without TLS again, plain HTTP works" 200 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' $API/v1/system")"
+rm -rf "$TLS_DIR"
+TLS_DIR=
 
 section "A crash while a pool is changing"
 KPOOL=/var/lib/nvweaver/kill-pool

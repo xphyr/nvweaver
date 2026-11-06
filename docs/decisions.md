@@ -93,8 +93,7 @@ there, not as absolute numbers.
 
 - **Chosen:** default to `127.0.0.1:8420`, and refuse to start off loopback with no token.
 - **Why:** the API can export any unused block device on the host.
-- **Known gap:** there is no TLS yet, so a token crosses the network in clear text. See
-  `TODO.md`, phase 3.
+- **TLS:** added later, in decision 31. Without it, a token crosses the network in clear text.
 
 ## 11. Stopping removes the target by default
 
@@ -307,3 +306,17 @@ there, not as absolute numbers.
 - **Rejected: nvmet's debugfs,** which is thought to allow dropping one controller. That's unconfirmed, as Fedora's kernel is built without
   `CONFIG_NVME_TARGET_DEBUGFS`, so it can't be tried here. It's worth revisiting if the distributions turn it on, since it could avoid the stall.
 - **Rejected, for now: an option to keep connections.** Nothing needs it yet. The CSI driver might, for live migration: see `TODO.md`.
+
+## 31. The API's TLS uses files it's given, and reads them again when they change
+
+- **Chosen:** `NVWEAVER_TLS_CERT` and `NVWEAVER_TLS_KEY`, as PEM files, both or neither. With them, plain HTTP is refused. TLS 1.2 is the minimum.
+- **Reloading:** each handshake checks whether the files have changed. Restarting to renew a certificate would stop SPDK's data path,
+  and a timer or signal is one more thing to set up. A check is one `stat` per file, and handshakes are rare.
+- **A bad change keeps the current certificate,** and logs an error once. A renewal replaces two files one after the other, so a pair that
+  doesn't match is normal for a moment. At startup, the same mistake is fatal, before the target starts.
+- **Rejected: creating a self-signed certificate.** Clients could only skip verifying it, which leaves the token open to anyone in the path.
+- **Rejected, for now: client certificates.** The bearer token already authenticates clients. Reconsider if something needs clients to have
+  separate identities.
+- **A token without TLS off loopback is only logged as a warning, for now,** as refusing it would break existing v0.2.0 setups on an isolated lab
+  network. **By 1.0, the admin deploying it decides:** clear text off loopback will be an explicit choice, rather than something that happens by leaving
+  TLS unset. See `TODO.md`.

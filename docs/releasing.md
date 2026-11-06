@@ -2,7 +2,8 @@
 
 ## Making a release
 
-First, update [ReleaseNotes.md](../ReleaseNotes.md): move what shipped out of "not yet released", and give it the version.
+First, update [ReleaseNotes.md](../ReleaseNotes.md): move what shipped out of "not yet released", and give it the version. Also
+update `info.version` in `api/openapi.yaml`.
 
 ```sh
 git tag -s v0.2.0 -m "nvweaver 0.2.0"

@@ -16,6 +16,13 @@ info:
 servers:
   - url: http://127.0.0.1:8420
     description: The default address, on the machine running the service.
+  - url: https://{host}:{port}
+    description: Over a network, with `NVWEAVER_TLS_CERT` and `NVWEAVER_TLS_KEY` set. With them, plain HTTP is refused.
+    variables:
+      host:
+        default: 127.0.0.1
+      port:
+        default: "8420"
 tags:
   - name: system
     description: The service and the target it runs.
@@ -981,7 +988,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: Required on everything but `/healthz`, when `NVWEAVER_API_TOKEN` is set.
+      description: Required on everything but `/healthz`, when `NVWEAVER_API_TOKEN` is set. Without TLS, it crosses the network in clear text.
   parameters:
     NQN:
       name: nqn

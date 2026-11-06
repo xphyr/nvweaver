@@ -137,6 +137,8 @@ Behaviour worth knowing:
 |---|---|---|
 | `NVWEAVER_LISTEN` | `127.0.0.1:8420` | API address. |
 | `NVWEAVER_API_TOKEN` | none | Bearer token. Required unless the API is on loopback. |
+| `NVWEAVER_TLS_CERT` | none | PEM certificate, with any intermediates. Set this and the key to serve the API over HTTPS. |
+| `NVWEAVER_TLS_KEY` | none | PEM private key. Keep it mode 0600. |
 | `NVWEAVER_DATA_DIR` | `/var/lib/nvweaver` | Saved state and managed files. |
 | `NVWEAVER_KEEP_ON_EXIT` | `false` | Leave the target serving when the container stops. Kernel target only. |
 | `NVWEAVER_BACKEND` | `auto` | `auto`, `nvmet` or `spdk`. `auto` uses the kernel if it can, otherwise SPDK if the image has it. |
@@ -260,8 +262,14 @@ connect directly to the published address.
 This is for isolated lab networks.
 
 - Anyone who can reach the API with its token can export any unused host block
-  device. The API has no TLS, so the token travels in clear text if the API is not
-  on loopback.
+  device. Set `NVWEAVER_TLS_CERT` and `NVWEAVER_TLS_KEY` if the API isn't on loopback. Without them, the token travels in
+  clear text, and the service logs a warning.
+- A certificate's files are read again when they change, so renewing one needs no restart, which would stop SPDK's data
+  path. A change that can't be used keeps the current certificate and logs an error. nvweaver doesn't create certificates, as
+  clients couldn't verify them. In the Quadlet, also enable its `Volume=` line for them.
+- **With SELinux, write a renewed certificate's files inside that directory, or use `cp`, rather than moving them in.** A file moved in
+  keeps its old label, so a Quadlet can't read it. The current certificate keeps being served, and nvweaver's error is the only sign, as
+  SELinux doesn't log this denial. To fix one, run `chcon --reference=/etc/nvweaver/tls` on the files.
 - NVMe/TCP traffic is unencrypted. TLS for NVMe/TCP is not implemented here.
 - Host NQNs are claims, not proof of identity. Use DH-HMAC-CHAP if that matters.
 

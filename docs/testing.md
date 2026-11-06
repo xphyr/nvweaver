@@ -35,9 +35,9 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | Suite | Path | Result |
 |---|---|---|
 | Unit tests | | Pass |
-| `e2e.sh`, kernel target | Loopback in one VM | 209 of 209 |
-| `e2e.sh`, SPDK target | Loopback in one VM | 223 of 223 |
-| `systemd-e2e.sh` | Loopback in one VM | 68 of 68 |
+| `e2e.sh`, kernel target | Loopback in one VM | 228 of 228 |
+| `e2e.sh`, SPDK target | Loopback in one VM | 242 of 242 |
+| `systemd-e2e.sh` | Loopback in one VM | 74 of 74 |
 | `vm/vm-e2e.sh` | Between two VMs | 762 of 762 |
 
 `go test -race` also passes. Earlier, smaller versions of these suites passed on GitHub's hosted runners, in
@@ -323,6 +323,16 @@ Each did 64 MiB through a separate initiator, read back after reconnecting, and 
 Checksums and attestations for both tarballs and both multi-arch tags verified, and the published `-spdk` and kernel arm64 images
 report the right version on the CM4. CI on the same code gave the full counts on a real Arm runner: 209 and 223, with none skipped.
 
+### The API's TLS under SELinux
+
+`systemd-e2e.sh` runs nested, with no SELinux, so the SPDK Quadlet with its TLS `Volume=` line was also tried by hand on a Fedora VM,
+enforcing, in `container_t`: HTTPS answered, plain HTTP got 400, and a renewal written inside the directory was picked up. Files moved in
+from `/root` kept `admin_home_t` and couldn't be read, so the old certificate kept serving and nvweaver logged why, until `chcon` fixed them.
+
+That denial appears nowhere: not in the journal, `audit.log` or `dmesg`. To see whether "no SELinux denials" in `vm-e2e.sh` can fail at all, a
+confined container was made to touch unlabelled host paths. All 3 denials were in the journal, matching `audit.log`, so it does catch denials
+that the policy logs, but not ones it silences.
+
 ## Not tested
 
 Deferred until hardware is available, as tracked in `TODO.md`:
@@ -490,6 +500,7 @@ Checks that passed while proving nothing. Watch for these patterns:
 - **`linux-modules-extra` on Arm runners:** there's no such package for the `azure` 7.0 kernel on arm64, and installing it fails the
   job. `nvmet-tcp` and `nvme-tcp` are in its base modules. The first probe saw this, but tolerated the error, so it went unnoticed.
 - **`gh attestation verify` prints nothing when not on a terminal,** even on success. Check its exit status, not its output.
+- **`ausearch` reads stdin when it isn't a terminal,** so in a script piped to `bash -s`, it swallows the rest of the script. Use `</dev/null`.
 - **One machine:** an initiator can't see the same namespace twice. Two host NQNs on one
   kernel also share a multipath device, so test multi-host by disconnecting one and reading
   through the other.
