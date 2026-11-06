@@ -323,6 +323,36 @@ Each did 64 MiB through a separate initiator, read back after reconnecting, and 
 Checksums and attestations for both tarballs and both multi-arch tags verified, and the published `-spdk` and kernel arm64 images
 report the right version on the CM4. CI on the same code gave the full counts on a real Arm runner: 209 and 223, with none skipped.
 
+### iSCSI: is it feasible?
+
+A probe, with throwaway scripts that aren't in the repository, before any design. Fedora VMs, kernel 7.2.15, driving LIO through configfs and SPDK v26.09's `iscsi_tgt` through RPC, with `open-iscsi` on a separate initiator. x86-64 and emulated disks only. **The answer is yes, on both targets, with differences that would have to be designed around.**
+
+| Question | LIO | SPDK `iscsi_tgt` |
+|---|---|---|
+| Thin LV and reflink file export, 16 MiB round trip after reconnecting | Pass | Pass |
+| A clone, with its source's data and a new identity | Pass, for an LV and a reflink file | Not tried |
+| A host not on the list | Refused | Discovery shows it nothing. A direct login wasn't tried |
+| Keeps its identity when recreated under another target | Yes | Yes, if the bdev's name stays the same |
+| Where identity comes from | A serial you set. NAA `6001405` + the first 25 hex digits, so it can come from `nguid` | Only the bdev's name: a chosen `--uuid` was ignored. An 8-byte hash of the name as NAA, and the name as serial, cut to 31 characters. Vendor is always `INTEL AIO disk` |
+| Removing a host from live sessions: its marker write | Fails, and doesn't reach the disk | The same, but only after `iscsi_target_node_request_logout`. Removing it from the list alone leaves the session writing |
+| Can it log back in | No | No |
+| Longest stall for a host sharing the target | 0.07 s, so none | 2.05 s, with no errors |
+| A host on another target | Unaffected | Unaffected |
+| Growing, with a host connected | Only seen after the host rescans: NVMe tells hosts by itself | Not tried |
+| Power cut, thin LV, one round | 22 files, none lost, `xfs_repair` clean | 22 files, none lost, clean |
+| Power cut, file, one round | 20 files, none lost, clean. The same with `fd_buffered_io`, though its identical flush counts suggest looking again at whether that applied | **Corrupted in one round of two:** the filesystem wouldn't mount, and all 55 journaled files were lost. It's the same as NVMe without `chattr +S` |
+| Power cut, file with `chattr +S`, one round | | 36 files, none lost, clean. It needs more rounds to mean much, as the failure above is intermittent |
+
+Other findings:
+
+- **Fencing is better than on NVMe's kernel target,** whose other hosts stall for about 10 s.
+- **A volume would have different identities on the two iSCSI targets,** which NVMe doesn't have, so moving between them couldn't be promised. LIO's and SPDK's can't be made to match, as SPDK's comes from a hash and a fixed vendor string.
+- **Nothing stops two protocols exporting one device:** with LIO holding a device, `nvmet` enabled it too. A volume being mapped once, as now, would have to cover both.
+- **The SPDK image would need another binary,** as `iscsi_tgt` is separate from `nvmf_tgt`. The build makes it already, and `spdk_tgt` too, which wasn't tried and may do both.
+- **Raspberry Pi OS has no LIO** (`CONFIG_TARGET_CORE` is off), as with `nvmet`, but has the `iscsi_tcp` initiator. SPDK's target wasn't tried on Arm.
+
+Not tried: CHAP, multipath, snapshots under load, performance, Arm, real hardware, and `iscsi_tgt` at scale.
+
 ### A client's LVM on the target
 
 `vm-e2e.sh` runs this on both targets, as `client_lvm_tests`: it detects the exposure, sees the pool go down after a real reboot, and recovers with the documented fix. Before that, throwaway
@@ -554,6 +584,7 @@ Checks that passed while proving nothing. Watch for these patterns:
 - **Moving between screens only changes the hash,** so a check right after that can read the old screen. Wait for something on the new one.
 - **A unit test can depend on the machine by accident:** one looked up `/dev/sdb` for real, and passed where that exists.
 - **`use_devicesfile=0` deletes the devices file,** at the next LVM command of any kind, keeping a backup. So a test that turns it off and on again has to make a new one. It looks as if the setting did nothing.
+- **In a shell, `$?` straight after `$(...)` is that command's status.** `echo "$(date) $?"` logged `date`'s, so a writer reported no errors for what had failed. Save `rc=$?` first. It's the iSCSI probe's, but could be anyone's.
 - **`pvs -a` doesn't list everything LVM can read:** it leaves out a disk with no PV on it, whatever else is on it, though the first experiment suggested otherwise. Use `lvmdiskscan`.
 - **`ausearch` reads stdin when it isn't a terminal,** so in a script piped to `bash -s`, it swallows the rest of the script. Use `</dev/null`.
 - **One machine:** an initiator can't see the same namespace twice. Two host NQNs on one

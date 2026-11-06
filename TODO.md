@@ -169,14 +169,10 @@ Production-like scale is a requirement, so measure this before building on it.
   - [ ] Check what differs there: file paths for `--token-file` and `--ca`, the system's certificates, and signals on Windows
 - [ ] iSCSI as a second protocol, once the CLI and CSI driver have settled the API. It would be new resources, such as `/v1/iscsi/targets`, not a
       `transport` on ports. Pools, volumes and snapshots should carry over: see decision 33
-  - [ ] First, probe whether it's really feasible, before any design, as with Arm: drive LIO and SPDK's iSCSI target by hand on a throwaway VM, with
-        a separate initiator and real data. Nothing here has been tested yet. Answer these, and record them in `docs/testing.md`:
-    - Can both export a pool's volume, and a clone of it, with the data intact?
-    - Can a volume keep its identity (serial and WWN in VPD pages) across a move and a restart, and can it come from `nguid`?
-    - What does removing an initiator do to a live session on each: is it cut off, and are others affected?
-    - Does each survive a restart and a power cut with its data, as NVMe/TCP does? SPDK ignoring FUA may apply here too
-    - Does Raspberry Pi OS's kernel have LIO, and what would SPDK's image need: is `spdk_tgt` or `iscsi_tgt` required?
-    - What would `mapped_to` need, and does decision 33's estimate of how little changes in the API hold up?
+  - [x] Probe whether it's really feasible, driving LIO and SPDK by hand in VMs: it is, on both. See "iSCSI: is it feasible?" in `docs/testing.md`
+  - [ ] Decide how to handle a volume's identity differing between LIO and SPDK, which can't be made to match
+  - [ ] Have `mapped_to` cover both protocols, so that a volume is only ever exported once: nothing below stops two
+  - [ ] Try what the probe didn't: CHAP, multipath, growing on SPDK, a direct login by a stranger on SPDK, `spdk_tgt` in place of `iscsi_tgt`, Arm, and more power-cut rounds
   - [ ] Weigh the cost of four combinations of target and protocol in the test suite
 - [ ] Test the suites against Docker. Podman is the supported engine and Docker a fallback,
       and nothing has been run against Docker since Podman became the default

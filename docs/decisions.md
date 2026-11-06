@@ -338,10 +338,8 @@ there, not as absolute numbers.
 ## 33. Storage stays independent of the protocol that exports it
 
 - **Chosen:** pools, volumes and snapshots know nothing of how they're exported. Anything specific to a protocol goes on the mapping, not on them. A volume is storage, and exporting it is a separate step.
-- **Why:** it keeps a second protocol, such as iSCSI, from rewriting the storage API that the CLI and CSI driver are built on. From reading the spec, iSCSI would mostly add resources beside `/v1/subsystems`, which is an estimate
-  until the probe in `TODO.md` has run.
-- **What already touches NVMe:** `mapped_to` on a volume names a subsystem and namespace, so it would need extending, which can be done without breaking clients. `uuid` and `nguid` stay as a volume's identity: an iSCSI WWN might be
-  derived from `nguid`, which is untested.
+- **Why:** it keeps a second protocol, such as iSCSI, from rewriting the storage API that the CLI and CSI driver are built on. A probe, in `docs/testing.md`, backs up the estimate that iSCSI would mostly add resources beside `/v1/subsystems`, as it needed nothing different from pools, volumes or snapshots.
+- **What already touches NVMe:** `mapped_to` on a volume names a subsystem and namespace, so it would need extending, which can be done without breaking clients. `uuid` and `nguid` stay as a volume's identity. On LIO, a WWN can come from `nguid`, as tested. On SPDK, it can't: identity comes from a hash of the bdev's name.
 - **Consequence:** if a volume or pool seems to need another NVMe-specific field, put it on the mapping instead.
 - **Rejected: `transport: iscsi` on ports.** `transport` is for ways of carrying NVMe, as in decision 26, and iSCSI is a different protocol.
 - **Not chosen yet: building iSCSI.** It's in the "Later" section of `TODO.md`, after the CLI and CSI driver.
