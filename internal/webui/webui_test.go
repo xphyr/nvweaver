@@ -99,7 +99,7 @@ func TestTheScriptNeverBuildsMarkupFromStrings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "localStorage"} {
+	for _, bad := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"} {
 		if strings.Contains(string(script), bad) {
 			t.Errorf("app.js uses %s", bad)
 		}

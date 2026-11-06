@@ -381,6 +381,7 @@ there, not as absolute numbers.
 - **A strict Content-Security-Policy:** only this service's own scripts, styles, images and API. Data reaches the page through `textContent` only, and a test fails if the script uses `innerHTML` or similar. A label with markup in it is tested in a real browser.
 - **It's tested in a real browser,** with Playwright in a container, against `test/webui-demo`, which is the real API on a fake target. That caught what unit tests can't: a page script with a syntax error, and a stray word under every table. Screenshots caught what the checks then missed, so look at them.
 - **The files need no token,** as they're the same for everyone. The API decides what a browser may do.
+- **Tables show 25 rows at a time,** adjustable to 250, remembered in `localStorage`, which only ever holds that number. Volumes and snapshots come from the API 500 at a time, so a filter only searches what's loaded so far, and says so.
 - **The icons are copies of those in `images/`,** as `go:embed` can't reach outside its package. A test fails if they differ.
 
 ## 38. A volume's usage has its own request

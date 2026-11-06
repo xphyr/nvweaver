@@ -134,8 +134,7 @@ Run `nvweaver help` for every command, and `--help` after one for its flags. Siz
 
 ## Web interface
 
-`nvweaverd` serves a browser interface at `/ui/`, on the same address as the API, and `/` leads there. It's in the binary, so there's nothing else to install. So far it only shows things: pools and how full they are, volumes with their snapshots and how much of each is really allocated, subsystems,
-hosts, ports and any warnings. To change anything, use the command line or API for now. 
+`nvweaverd` serves a browser interface at `/ui/`, on the same address as the API, and `/` leads there. It's in the binary, so there's nothing else to install. It shows pools and how full they are, volumes with their snapshots and how much of each is really allocated, subsystems, hosts, ports and any warnings. You can create, grow, clone and delete volumes, and take, clone and delete snapshots. To change anything else, use the command line or API for now. 
 
 **Signing in.** To have it ask for a username and password, make a users file, and set `NVWEAVER_USERS_FILE`:
 

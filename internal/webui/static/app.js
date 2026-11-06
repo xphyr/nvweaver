@@ -2,7 +2,6 @@
 // Everything from the API reaches the page through textContent, by way of el(), so a name can't become markup.
 
 const REFRESH_MS = 10000;
-const TABLE_PAGE = 100;
 const TOKEN_KEY = "nvweaver-token";
 
 // --- The API ---
@@ -38,6 +37,24 @@ async function api(path, { retries = 5 } = {}) {
     throw new Error(body.error || `The API answered with status ${resp.status}`);
   }
   return resp.json();
+}
+
+// send changes something. The API says 503 only having changed nothing, so it's safe to try again, for a while.
+async function send(method, path, body, tries = 30) {
+  const headers = {};
+  const t = memoryToken || token();
+  if (t) headers.Authorization = "Bearer " + t;
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const resp = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  if (resp.status === 401) throw new Unauthorized();
+  if (resp.status === 503 && tries > 0) {
+    const wait = Number(resp.headers.get("Retry-After")) || 1;
+    await new Promise((done) => setTimeout(done, wait * 1000));
+    return send(method, path, body, tries - 1);
+  }
+  const answer = resp.status === 204 ? null : await resp.json().catch(() => null);
+  if (!resp.ok) throw new Error((answer && answer.error) || `The API answered with status ${resp.status}`);
+  return answer;
 }
 
 // --- Building the page ---
@@ -105,45 +122,261 @@ function capacityBar(capacity, warningPercent) {
     capacity.provisioned_bytes > capacity.total_bytes && el("span", { class: "sub" }, `${humanSize(capacity.provisioned_bytes)} promised to volumes`));
 }
 
-// table draws rows, with a filter box and a page at a time, as there can be thousands.
+const PAGE_SIZES = [10, 25, 50, 100, 250];
+const DEFAULT_PAGE_SIZE = 25;
+const PAGE_SIZE_KEY = "nvweaver-page-size";
+
+// How many rows to show is a preference, so it's kept in this browser. It's not a secret, and it's fine if the browser refuses.
+function pageSize() {
+  try {
+    const saved = Number(localStorage.getItem(PAGE_SIZE_KEY));
+    if (PAGE_SIZES.includes(saved)) return saved;
+  } catch { /* Fall through to the default. */ }
+  return DEFAULT_PAGE_SIZE;
+}
+
+function savePageSize(size) {
+  try { localStorage.setItem(PAGE_SIZE_KEY, String(size)); } catch { /* It then lasts until the page is reloaded. */ }
+  fallbackPageSize = size;
+}
+
+let fallbackPageSize = 0;
+
+// table draws rows a page at a time, with a filter box, as there can be thousands.
 // A column is { title, cell(row), num, text(row) }, where text says what the filter searches.
-function table(columns, rows, { empty, filter = true, state }) {
+// more, if given, fetches another batch from the API, for when the last page of what's loaded is reached.
+function table(columns, rows, { empty, filter = true, state, more }) {
   const wrap = el("div", {});
-  const view = state || { text: "", shown: TABLE_PAGE };
+  const view = state || { text: "", page: 0 };
   const haystack = (row) => columns.map((c) => (c.text ? c.text(row) : "")).join(" ").toLowerCase();
   const body = el("div", {});
+  const count = el("span", { class: "count" });
   function draw() {
     const needle = view.text.trim().toLowerCase();
     const matching = needle ? rows.filter((row) => haystack(row).includes(needle)) : rows;
-    const shown = matching.slice(0, view.shown);
-    count.textContent = needle ? `${matching.length} of ${rows.length}` : `${rows.length}`;
+    const total = more ? `${rows.length}+` : `${rows.length}`;
+    count.textContent = needle ? `${matching.length} of ${total}${more ? " loaded so far" : ""}` : total;
     if (!rows.length) { body.replaceChildren(el("div", { class: "table-wrap" }, el("div", { class: "empty" }, empty))); return; }
     if (!matching.length) { body.replaceChildren(el("div", { class: "table-wrap" }, el("div", { class: "empty" }, "Nothing matches that."))); return; }
+    const size = fallbackPageSize || pageSize();
+    const pages = Math.max(1, Math.ceil(matching.length / size));
+    // What was on this page may have been deleted.
+    view.page = Math.min(view.page || 0, pages - 1);
+    const start = view.page * size;
+    const shown = matching.slice(start, start + size);
+    const onLast = view.page === pages - 1;
     body.replaceChildren(el("div", { class: "table-wrap" }, el("table", {},
       el("thead", {}, el("tr", {}, columns.map((c) => el("th", { scope: "col", class: c.num ? "num" : "" }, c.title)))),
       el("tbody", {}, shown.map((row) => el("tr", {}, columns.map((c) => el("td", { class: c.num ? "num" : "" }, c.cell(row)))))))));
-    if (matching.length > shown.length) {
-      body.append(el("div", { class: "more" },
-        el("span", { class: "count" }, `Showing ${shown.length} of ${matching.length}`),
-        el("button", { onclick: () => { view.shown += TABLE_PAGE; draw(); } }, "Show more")));
+    // Only when there's something to choose: a short list doesn't need any of this.
+    if (matching.length > PAGE_SIZES[0] || more) {
+      body.append(el("div", { class: "pager" },
+        el("label", {}, "Rows ", el("select", { id: "page-size", onchange: (e) => {
+          // Keep the first row in view, rather than jumping somewhere unrelated.
+          const first = view.page * size;
+          savePageSize(Number(e.target.value));
+          view.page = Math.floor(first / Number(e.target.value));
+          draw();
+          document.getElementById("page-size").focus();
+        } }, PAGE_SIZES.map((n) => el("option", { value: n, selected: n === size }, n)))),
+        el("span", { class: "count", id: "page-range" }, `${start + 1}\u2013${start + shown.length} of ${needle ? matching.length : total}`),
+        el("button", { id: "page-prev", disabled: view.page === 0, onclick: () => { view.page--; draw(); document.getElementById(view.page === 0 ? "page-next" : "page-prev").focus(); } }, "Previous"),
+        el("button", { id: "page-next", disabled: onLast && !(more && !needle), onclick: () => {
+          if (onLast) {
+            view.page++;
+            more();
+            return;
+          }
+          view.page++;
+          draw();
+          const next = document.getElementById("page-next");
+          (next.disabled ? document.getElementById("page-prev") : next).focus();
+        } }, "Next")));
     }
   }
-  const count = el("span", { class: "count" });
   if (filter) {
     wrap.append(el("div", { class: "toolbar" },
       el("input", { type: "search", placeholder: "Filter", "aria-label": "Filter", value: view.text,
-        oninput: (e) => { view.text = e.target.value; view.shown = TABLE_PAGE; draw(); } }), count));
+        oninput: (e) => { view.text = e.target.value; view.page = 0; draw(); } }), count));
   }
   wrap.append(body);
   draw();
   return wrap;
 }
 
+// --- Changing things ---
+
+const SIZE_UNITS = [["MiB", 2 ** 20], ["GiB", 2 ** 30], ["TiB", 2 ** 40]];
+
+function notify(message) {
+  const old = document.getElementById("toast");
+  if (old) old.remove();
+  const toast = el("div", { id: "toast", class: "toast", role: "status" }, message);
+  document.body.append(toast);
+  setTimeout(() => toast.remove(), 5000);
+}
+
+// A size in a whole unit, as bytes. Starts on the largest unit that shows it exactly.
+function sizeField(field) {
+  const [unitName, unitSize] = [...SIZE_UNITS].reverse().find(([, size]) => field.value && field.value % size === 0) || SIZE_UNITS[1];
+  const number = el("input", { type: "number", id: "field-" + field.name, min: 1, step: "any", required: field.required, value: field.value ? field.value / unitSize : undefined });
+  const unit = el("select", { "aria-label": `${field.label} unit` }, SIZE_UNITS.map(([name]) => el("option", { value: name, selected: name === unitName }, name)));
+  return {
+    node: el("div", { class: "size" }, number, unit),
+    focus: number,
+    value: () => {
+      if (number.value === "") return undefined;
+      return Math.round(Number(number.value) * SIZE_UNITS.find(([name]) => name === unit.value)[1]);
+    },
+  };
+}
+
+function plainField(field) {
+  const attrs = { id: "field-" + field.name, required: field.required, placeholder: field.placeholder, autocomplete: "off", spellcheck: "false" };
+  const input = field.options
+    ? el("select", attrs, field.options.map((o) => el("option", { value: o.value, selected: o.value === field.value }, o.label)))
+    : el("input", { ...attrs, type: "text", value: field.value });
+  return { node: input, focus: input, value: () => input.value.trim() };
+}
+
+// openDialog asks for something, and stays open showing the API's answer if it's refused, with what was typed still there.
+function openDialog({ title, intro, fields = [], submit, danger, confirmText, action, done }) {
+  const built = fields.map((field) => ({ field, ...(field.size ? sizeField(field) : plainField(field)) }));
+  const notice = el("div", {});
+  const go = el("button", { type: "submit", class: danger ? "danger" : "primary", id: "dialog-submit" }, submit);
+  const typed = confirmText && el("input", { type: "text", id: "field-confirm", autocomplete: "off", spellcheck: "false", required: true });
+  if (typed) {
+    go.disabled = true;
+    typed.addEventListener("input", () => { go.disabled = typed.value !== confirmText; });
+  }
+  let working = false;
+  const dialog = el("dialog", {}, el("form", { method: "dialog", onsubmit: async (e) => {
+    e.preventDefault();
+    if (working) return;
+    working = true;
+    go.disabled = true;
+    const label = go.textContent;
+    go.textContent = "Working...";
+    notice.replaceChildren();
+    try {
+      const values = Object.fromEntries(built.map((b) => [b.field.name, b.value()]));
+      const result = await action(values);
+      working = false;
+      dialog.close();
+      done(result, values);
+    } catch (err) {
+      working = false;
+      if (err instanceof Unauthorized) { dialog.close(); rerender(); return; }
+      notice.replaceChildren(el("div", { class: "panel-notice bad", role: "alert" }, err.message));
+      go.textContent = label;
+      go.disabled = false;
+    }
+  } },
+    el("h2", {}, title),
+    intro && el("p", {}, intro),
+    notice,
+    built.map((b) => [
+      el("label", { for: "field-" + b.field.name }, b.field.label),
+      b.node,
+      b.field.hint && el("p", { class: "hint" }, b.field.hint),
+    ]),
+    typed && [el("label", { for: "field-confirm" }, ["Type ", el("code", {}, confirmText), " to confirm"]), typed],
+    el("div", { class: "dialog-actions" },
+      el("button", { type: "button", id: "dialog-cancel", onclick: () => { if (!working) dialog.close(); } }, "Cancel"),
+      go)));
+  // Escape shouldn't look like it stopped something that's already been sent.
+  dialog.addEventListener("cancel", (e) => { if (working) e.preventDefault(); });
+  dialog.addEventListener("close", () => dialog.remove());
+  // Outside main, so that a refresh underneath doesn't lose what's being typed.
+  document.body.append(dialog);
+  dialog.showModal();
+  (built[0] ? built[0].focus : typed || go).focus();
+}
+
+const volumePath = (name) => "/v1/volumes/" + encodeURIComponent(name);
+const snapshotPath = (name) => "/v1/snapshots/" + encodeURIComponent(name);
+const showVolume = (name) => { location.hash = hash("volume", name); };
+
+async function createVolumeDialog(pool) {
+  const pools = await api("/v1/pools");
+  openDialog({
+    title: "Create a volume",
+    submit: "Create",
+    fields: [
+      { name: "name", label: "Name", required: true },
+      ...(pools.length > 1 ? [{ name: "pool", label: "Pool", value: pool, options: pools.map((p) => ({ value: p.name, label: p.name })) }] : []),
+      { name: "size", label: "Size", size: true, required: true, value: 10 * 2 ** 30, hint: "Thin storage only allocates this as it's written." },
+    ],
+    action: (v) => send("POST", "/v1/volumes", { name: v.name, pool: v.pool, size_bytes: v.size }),
+    done: (vol) => { notify(`Created ${vol.name}.`); showVolume(vol.name); },
+  });
+}
+
+function growDialog(vol) {
+  openDialog({
+    title: `Grow ${vol.name}`,
+    intro: `It's ${humanSize(vol.size_bytes)} now. It can only get larger, and connected hosts are told of the new size.`,
+    submit: "Grow",
+    fields: [{ name: "size", label: "New size", size: true, required: true, value: vol.size_bytes }],
+    action: (v) => send("PATCH", volumePath(vol.name), { size_bytes: v.size }),
+    done: (updated) => { notify(`${vol.name} is now ${humanSize(updated.size_bytes)}.`); rerender(); },
+  });
+}
+
+function snapshotDialog(vol) {
+  openDialog({
+    title: `Take a snapshot of ${vol.name}`,
+    intro: "It's instant, and works while hosts are writing. It's as if the power had been cut at that moment, so it's crash-consistent.",
+    submit: "Take snapshot",
+    fields: [{ name: "name", label: "Name", required: true, value: `${vol.name}-${new Date().toISOString().slice(0, 10)}` }],
+    action: (v) => send("POST", "/v1/snapshots", { name: v.name, volume: vol.name }),
+    done: (snap) => { notify(`Took snapshot ${snap.name}.`); rerender(); },
+  });
+}
+
+function cloneDialog(source, what) {
+  openDialog({
+    title: `Clone ${source}`,
+    intro: `This makes a new volume from this ${what}, with its own identity. It shares no future changes with it.`,
+    submit: "Clone",
+    fields: [{ name: "name", label: "New volume's name", required: true, value: `${source}-copy` }],
+    action: (v) => send("POST", "/v1/volumes", { name: v.name, source: { [what]: source } }),
+    done: (vol) => { notify(`Created ${vol.name}.`); showVolume(vol.name); },
+  });
+}
+
+function deleteVolumeDialog(vol) {
+  openDialog({
+    title: `Delete ${vol.name}`,
+    intro: "This destroys its data, and can't be undone. Its snapshots and clones aren't affected.",
+    submit: "Delete volume",
+    danger: true,
+    confirmText: vol.name,
+    action: () => send("DELETE", volumePath(vol.name)),
+    done: () => { notify(`Deleted ${vol.name}.`); location.hash = "#/volumes"; },
+  });
+}
+
+function deleteSnapshotDialog(snap) {
+  openDialog({
+    title: `Delete snapshot ${snap.name}`,
+    intro: "This can't be undone. Volumes cloned from it aren't affected.",
+    submit: "Delete snapshot",
+    danger: true,
+    action: () => send("DELETE", snapshotPath(snap.name)),
+    done: () => { notify(`Deleted snapshot ${snap.name}.`); rerender(); },
+  });
+}
+
+const snapshotActions = (s) => el("div", { class: "row-actions" },
+  el("button", { onclick: () => cloneDialog(s.name, "snapshot") }, "Clone"),
+  el("button", { class: "danger-quiet", onclick: () => deleteSnapshotDialog(s) }, "Delete"));
+
 // --- Screens. Each returns what to show, and is called again to refresh. ---
 
 // Screen state that should survive a refresh, such as what's typed in a filter.
 let screenState = {};
-const stateOf = (key) => (screenState[key] ||= { text: "", shown: TABLE_PAGE });
+const stateOf = (key) => (screenState[key] ||= { text: "", page: 0 });
 
 async function dashboard() {
   const [sys, pools] = await Promise.all([api("/v1/system"), api("/v1/pools")]);
@@ -222,7 +455,10 @@ async function volumes(pool) {
   const mapped = items.filter((v) => v.mapped_to).length;
   return [
     el("h1", {}, pool ? `Volumes in ${pool}` : "Volumes"),
-    el("div", { class: "toolbar" }, poolPicker(allPools, pool)),
+    el("div", { class: "toolbar" }, poolPicker(allPools, pool),
+      allPools.length
+        ? el("button", { class: "primary", id: "create-volume", onclick: () => createVolumeDialog(pool) }, "Create volume")
+        : el("span", { class: "muted" }, "Adopt a pool to create volumes, with: nvweaver pool create")),
     table([
       { title: "Name", cell: (v) => [el("strong", {}, link(v.name, "volume", v.name)), v.source && el("span", { class: "sub" }, `clone of ${v.source.snapshot || v.source.volume}`)], text: (v) => v.name },
       { title: "Pool", cell: (v) => link(v.pool, "volumes", v.pool), text: (v) => v.pool },
@@ -230,9 +466,8 @@ async function volumes(pool) {
       { title: "Exported", cell: (v) => (v.mapped_to ? [link(v.mapped_to.subsystem, "subsystems", v.mapped_to.subsystem), el("span", { class: "sub" }, `namespace ${v.mapped_to.nsid}`)] : pill("Not exported", "quiet")), text: (v) => (v.mapped_to ? v.mapped_to.subsystem : "") },
       { title: "NGUID", cell: (v) => mono(v.nguid), text: (v) => v.nguid },
       { title: "Labels", cell: (v) => labelsText(v.labels) || "-", text: (v) => labelsText(v.labels) },
-    ], items, { empty: "No volumes yet. Create one with: nvweaver volume create", state: stateOf("volumes" + pool) }),
-    el("p", { class: "count" }, `${mapped} of ${items.length} loaded are exported.`),
-    more && el("div", { class: "more" }, el("button", { onclick: loadMore }, "Load more")),
+    ], items, { empty: "No volumes yet.", state: stateOf("volumes" + pool), more: more ? loadMore : undefined }),
+    !more && items.length > 0 && el("p", { class: "count" }, `${mapped} of ${items.length} are exported.`),
   ];
 }
 
@@ -247,6 +482,12 @@ async function volume(name) {
   return [
     el("p", { class: "crumb" }, el("a", { href: "#/volumes" }, "Volumes")),
     el("h1", {}, v.name),
+    el("div", { class: "toolbar" },
+      el("button", { class: "primary", id: "take-snapshot", onclick: () => snapshotDialog(v) }, "Take snapshot"),
+      el("button", { id: "clone-volume", onclick: () => cloneDialog(v.name, "volume") }, "Clone"),
+      el("button", { id: "grow-volume", onclick: () => growDialog(v) }, "Grow"),
+      el("button", { class: "danger-quiet", id: "delete-volume", disabled: Boolean(v.mapped_to), onclick: () => deleteVolumeDialog(v) }, "Delete"),
+      v.mapped_to && el("span", { class: "muted", id: "delete-hint" }, "It can't be deleted while it's exported.")),
     el("dl", { class: "facts" },
       fact("Space", usageBar(usage)),
       fact("Pool", link(v.pool, "volumes", v.pool)),
@@ -261,8 +502,8 @@ async function volume(name) {
       { title: "Name", cell: (s) => el("strong", {}, s.name), text: (s) => s.name },
       { title: "Size", num: true, cell: (s) => humanSize(s.size_bytes) },
       { title: "Taken", cell: (s) => humanTime(s.created_at) },
-    ], snaps.items, { filter: snaps.items.length > 5, empty: `No snapshots of this volume. Take one with: nvweaver snapshot create NAME --volume ${v.name}`, state: stateOf("volume-snapshots") }),
-    snaps.more && el("div", { class: "more" }, el("button", { onclick: snaps.loadMore }, "Load more")),
+      { title: "", cell: snapshotActions },
+    ], snaps.items, { filter: snaps.items.length > 5, empty: "No snapshots of this volume.", state: stateOf("volume-snapshots"), more: snaps.more ? snaps.loadMore : undefined }),
   ];
 }
 
@@ -276,8 +517,8 @@ async function snapshots() {
       { title: "Pool", cell: (s) => link(s.pool, "volumes", s.pool), text: (s) => s.pool },
       { title: "Size", num: true, cell: (s) => humanSize(s.size_bytes) },
       { title: "Taken", cell: (s) => humanTime(s.created_at) },
-    ], items, { empty: "No snapshots yet. Take one with: nvweaver snapshot create", state: stateOf("snapshots") }),
-    more && el("div", { class: "more" }, el("button", { onclick: loadMore }, "Load more")),
+      { title: "", cell: snapshotActions },
+    ], items, { empty: "No snapshots yet. Open a volume to take one.", state: stateOf("snapshots"), more: more ? loadMore : undefined }),
   ];
 }
 
@@ -314,7 +555,7 @@ async function subsystem(nqn) {
       { title: "Size", num: true, cell: (n) => humanSize(n.size_bytes) },
       { title: "Backed by", cell: (n) => [n.volume ? link(n.volume, "volume", n.volume) : null, el("span", { class: n.volume ? "sub" : "" }, mono(n.device_path))] },
       { title: "NGUID", cell: (n) => mono(n.nguid) },
-    ], s.namespaces || [], { filter: false, empty: "Nothing exported yet. Add something with: nvweaver namespace create" }),
+    ], s.namespaces || [], { filter: false, empty: "Nothing exported yet. Add something with: nvweaver namespace create", state: stateOf("namespaces") }),
   ];
 }
 
@@ -340,7 +581,7 @@ async function ports() {
       { title: "Transport", cell: (p) => p.transport },
       { title: "Address", cell: (p) => mono(p.address), text: (p) => p.address },
       { title: "Service", cell: (p) => p.service },
-    ], list, { filter: false, empty: "No ports yet. Add one with: nvweaver port create" }),
+    ], list, { filter: false, empty: "No ports yet. Add one with: nvweaver port create", state: stateOf("ports") }),
   ];
 }
 
@@ -466,10 +707,14 @@ async function rerender() {
     // Redrawing shouldn't lose someone's place, or what they're typing.
     const active = document.activeElement;
     const filter = active && active.type === "search" ? { start: active.selectionStart } : null;
+    const focused = active && main.contains(active) && active.id ? active.id : "";
     main.replaceChildren(...[content].flat(Infinity).filter((n) => n instanceof Node));
     if (filter) {
       const box = main.querySelector('input[type="search"]');
       if (box) { box.focus(); box.setSelectionRange(filter.start, filter.start); }
+    } else if (focused) {
+      const again = document.getElementById(focused);
+      if (again && !again.disabled) again.focus({ preventScroll: true });
     }
     statusLine.textContent = "Updated " + new Date().toLocaleTimeString();
     drawAccount();
