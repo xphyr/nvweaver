@@ -95,10 +95,9 @@ jobs:
         run: |
           go vet ./...
           go test -race ./...
-      - name: Install the kernel modules
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q "linux-modules-extra-$(uname -r)"
+      - name: Check the kernel has the modules
+        # Unlike on x86-64, this kernel's own package has them, and there's no modules-extra package.
+        run: modinfo -F filename nvmet_tcp nvme_tcp
       - name: Work out the version
         id: version
         env:

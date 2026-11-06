@@ -472,6 +472,8 @@ Checks that passed while proving nothing. Watch for these patterns:
   up a VM's login attempts, hence `IdentitiesOnly`. `if=virtio` drives take IDs like `virtio0`.
 - **Podman versions:** the runners have 4.9, which refuses `podman manifest inspect docker://...`, as 5.8 doesn't. That would have
   failed a release after pushing its images. Try release steps in `ubuntu:24.04`, using `vfs` storage.
+- **`linux-modules-extra` on Arm runners:** there's no such package for the `azure` 7.0 kernel on arm64, and installing it fails the
+  job. `nvmet-tcp` and `nvme-tcp` are in its base modules. The first probe saw this, but tolerated the error, so it went unnoticed.
 - **One machine:** an initiator can't see the same namespace twice. Two host NQNs on one
   kernel also share a multipath device, so test multi-host by disconnecting one and reading
   through the other.
