@@ -315,6 +315,7 @@ connect directly to the published address.
 
 This is for isolated lab networks.
 
+- The API refuses requests from web pages, using `Sec-Fetch-Site` and `Origin`. With no token, it only answers to loopback addresses in the `Host` header, which stops DNS rebinding. Programs aren't affected.
 - Anyone who can reach the API with its token can export any unused host block
   device. Set `NVWEAVER_TLS_CERT` and `NVWEAVER_TLS_KEY` if the API isn't on loopback. Without them, the token travels in
   clear text, and the service logs a warning.

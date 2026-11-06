@@ -539,6 +539,25 @@ section "Teardown"
 disconnect "$SA"
 disconnect "$SB"
 
+section "Web pages can't use the API"
+# What a browser really sends, from a page open on this machine. Without this, any site could export a disk through a loopback API with no token.
+evil() { # EXPECTED NAME [curl args]
+	local want=$1 name=$2
+	shift 2
+	expect_eq "$name" "$want" "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' $*")"
+}
+ATTACK=$NQN:from-a-web-page
+BODY_J="-X POST -H 'Content-Type: text/plain' -d '{\"nqn\":\"$ATTACK\"}'"
+evil 403 "a request from another site is refused" "$BODY_J -H 'Sec-Fetch-Site: cross-site' -H 'Origin: https://evil.example' $API/v1/hosts"
+evil 403 "as is one with only an Origin, from an older browser" "$BODY_J -H 'Origin: https://evil.example' $API/v1/hosts"
+evil 403 "and one from another port on this machine" "$BODY_J -H 'Sec-Fetch-Site: same-site' -H 'Origin: http://127.0.0.1:9999' $API/v1/hosts"
+evil 404 "none of them took effect" "$API/v1/hosts/$ATTACK"
+evil 403 "DNS rebinding can't read anything" "-H 'Host: evil.example:18420' $API/v1/system"
+evil 403 "or change anything" "$BODY_J -H 'Host: evil.example:18420' $API/v1/hosts"
+evil 404 "which didn't take effect either" "$API/v1/hosts/$ATTACK"
+evil 200 "curl still works" "$API/v1/system"
+evil 200 "by name too" "http://localhost:18420/v1/system"
+
 section "Command line"
 CLIP=/var/lib/nvweaver/cli-pool
 $ENGINE exec "$TGT" mkdir -p "$CLIP"

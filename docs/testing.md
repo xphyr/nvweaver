@@ -35,8 +35,8 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | Suite | Path | Result |
 |---|---|---|
 | Unit tests | | Pass |
-| `e2e.sh`, kernel target | Loopback in one VM | 257 of 257 |
-| `e2e.sh`, SPDK target | Loopback in one VM | 271 of 271 |
+| `e2e.sh`, kernel target | Loopback in one VM | 266 of 266 |
+| `e2e.sh`, SPDK target | Loopback in one VM | 280 of 280 |
 | `systemd-e2e.sh` | Loopback in one VM | 76 of 76 |
 | `vm/vm-e2e.sh` | Between two VMs | 890 of 890 |
 
@@ -338,6 +338,10 @@ scripts tried each setup in fresh VMs, with a client making a volume group, and 
 
 Hosts kept connecting and reading their data throughout, and this machine's copy of the client's LV wasn't open. `lvmdiskscan` took about 0.05 s with 300 thin volumes, on a VM. It hasn't been timed at 5,000.
 The defaults for Debian 13 and Ubuntu 22.04 and 24.04 were read from their packages in containers. Nothing has run on those distributions.
+
+### Web pages using the API
+
+`internal/api/browser_test.go` first failed with the attack working: a cross-site request got 201 and took effect, and DNS rebinding read `/v1/system`. `e2e.sh` sends the same requests to both real targets, using `curl` to send what a browser would. No real browser has tried this yet.
 
 ### The client and command line
 

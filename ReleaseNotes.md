@@ -4,6 +4,11 @@ The major differences between versions. For every change, see the commit history
 
 ## Not yet released
 
+### Security
+
+- **Web pages could use the API, in all earlier versions.** With no token, which is allowed on loopback, any page open in a browser on the same machine could send requests to the API, and export any unused disk, and DNS rebinding could read
+  from it too. These are now refused. If you run an earlier version, set `NVWEAVER_API_TOKEN`, which prevents this, or don't browse from that machine.
+
 ### Added
 
 - **`nvweaver`, a command line utility,** for everything the API does, from this machine or another. It's in the images and the tarball. See [Command line](README.md#command-line).

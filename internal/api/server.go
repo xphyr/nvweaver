@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -28,6 +29,8 @@ type Server struct {
 	token   string
 	// patterns lists the routes, for comparing with the OpenAPI spec.
 	patterns []string
+	// anyHost skips checking the Host header with no token. Only tests set it, whose requests have made-up names.
+	anyHost bool
 }
 
 // NewServer returns an API handler. A non-empty token is required as a bearer
@@ -171,7 +174,37 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	root.Handle("/", authed)
-	return root
+	return s.guardBrowsers(root)
+}
+
+// guardBrowsers stops web pages using the API through a browser on this machine. With no token, which is only allowed on loopback,
+// nothing else would: any page could send a request here, and the API can export any unused disk. Programs send neither header
+// that this looks at, so it doesn't affect them.
+func (s *Server) guardBrowsers(next http.Handler) http.Handler {
+	// A page from elsewhere can send a request without the server's permission, if it doesn't ask to read the answer.
+	crossOrigin := http.NewCrossOriginProtection().Handler(next)
+	if s.token != "" || s.anyHost {
+		return crossOrigin
+	}
+	// DNS rebinding: a site can point its own name at 127.0.0.1, and to the browser, it's then the same origin, which lets it
+	// read answers too. It can't change the name in the Host header, and nothing legitimate reaches loopback by another name.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLoopbackHost(r.Host) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "with no token, the API only answers to a loopback address"})
+			return
+		}
+		crossOrigin.ServeHTTP(w, r)
+	})
+}
+
+func isLoopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	return host == "localhost" || (ip != nil && ip.IsLoopback())
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {

@@ -172,7 +172,7 @@ func (e *env) start() {
 	m.newDriver = e.pools.driver
 	m.Recover()
 	e.m = m
-	e.http = NewServer(m, "").Handler()
+	e.http = fixtureServer(m).Handler()
 }
 
 // do performs a request and fails the test unless it gets the wanted status.
@@ -463,7 +463,7 @@ func TestTeardownKeepsSavedState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, fs: fs, dir: dir, http: NewServer(m, "").Handler()}
+	e := &env{t: t, fs: fs, dir: dir, http: fixtureServer(m).Handler()}
 	e.fullConfig()
 	if err := m.Teardown(); err != nil {
 		t.Fatal(err)
@@ -482,7 +482,7 @@ func TestSystemReportsVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(m, "")
+	srv := fixtureServer(m)
 	srv.Version = "1.2.3"
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/system", nil))
@@ -519,7 +519,7 @@ func TestListingChecksLiveStateOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, http: NewServer(m, "").Handler()}
+	e := &env{t: t, http: fixtureServer(m).Handler()}
 	for i := range 3 {
 		sub := fmt.Sprintf("%s%d", subNQN, i)
 		e.do("POST", "/v1/subsystems", obj{"nqn": sub}, 201)
@@ -537,4 +537,11 @@ func TestListingChecksLiveStateOnce(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"live_enabled": true`) {
 		t.Errorf("listing lost live state: %s", rec.Body)
 	}
+}
+
+// fixtureServer is for tests whose requests have httptest's made-up host name, which a real server refuses with no token.
+func fixtureServer(m *Manager) *Server {
+	s := NewServer(m, "")
+	s.anyHost = true
+	return s
 }

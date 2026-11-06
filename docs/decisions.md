@@ -365,3 +365,12 @@ there, not as absolute numbers.
 - **Rejected, for now: a confirmation prompt on delete.** It's for automation first, and the API refuses to delete what's in use.
 - **Rejected, for now: an option to skip verifying certificates.** `--ca` covers a lab's own certificate, and it's easy to add if it's really needed.
 
+## 36. The API refuses web pages, and with no token, any name but loopback
+
+- **The problem, and it was real:** with no token, which is allowed on loopback, any web page open in a browser on the machine could send requests to the API, and could export any unused disk. A request needs no permission from the server if it doesn't
+  ask to read the answer, and the API accepted a JSON body with any `Content-Type`. Tests showed that such a request got 201 and took effect. DNS rebinding also let a site read answers, by pointing its own name at 127.0.0.1. All of this was in v0.1.0 and v0.2.0.
+- **Chosen:** Go's `http.CrossOriginProtection` on everything, which refuses unsafe requests from other origins using `Sec-Fetch-Site`, or `Origin` on older browsers. With no token, a `Host` that isn't loopback is also refused, as a site can't change that header.
+- **Programs aren't affected,** as they send neither header. With a token, any name works, as the API can be on any address, and a page doesn't have the token.
+- **Rejected: requiring `Content-Type: application/json`.** It would stop the writes but not rebinding, and would break plain `curl -d`, as the README's own examples use.
+- **It's on by default, and only tests can turn the `Host` check off.**
+
