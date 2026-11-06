@@ -372,14 +372,22 @@ The defaults for Debian 13 and Ubuntu 22.04 and 24.04 were read from their packa
 ### The web interface
 
 `test/webui-e2e.sh` runs the real API and interface on a fake target, in Chromium, through Playwright in a container: every screen, real data, filtering, markup staying text, the security policy really applying, signing in with a token, warnings, a phone-sized screen, and
-losing the service. There's no real target or real browser against one in this. `e2e.sh` only checks that the real images serve the files.
+losing the service. There's no real target in this: see the next section. `e2e.sh` only checks that the real images serve the files.
 
 **A real web page from another origin attacked the API here.** With `guardBrowsers` switched off, in a throwaway copy, its request created a host, and that check failed. With it on, the request had no effect. Chromium reported "sent" both times, so what the browser says proves nothing: check what happened.
+
+### The web interface on real targets
+
+`test/webui-real-e2e.sh` drives both real targets from Chromium, in VMs, through a tunnel, with what the fake target can't show: a real LVM thin pool adopted on the Pools page, a port and host added there, a volume created and exported, and over real HTTPS, with a real password from `nvweaver passwd`. The initiator VM runs the `nvme connect` command that the page displayed, and writes 16 MiB, which reads back and is checked in the LV on the target. Then a snapshot and clone, the clone reaching the host in the same subsystem with the snapshot's data, removing the host on the page really stopping its I/O, and everything taken apart from the interface, leaving no LVs. It checks that LVM has 3 volumes first, so that finding none afterwards means something.
+
+77 checks passed, on x86-64. Its first run failed twice, both in the test: un-exporting a subsystem's last volume removes the subsystem by default, so there was nothing left to delete, and it expected `used_bytes` to be at least what was written. LVM reports a percentage to two places, so 16 MiB came back as 16,750,372 bytes, which the API now documents.
+
+The browser is told to accept the test's own certificate, so trusting a CA isn't covered. It's the interface's happy path: errors and every field are in `webui-e2e.sh`.
 
 ### Signing in
 
 `internal/auth` is tested with a real `htpasswd -B` hash. `e2e.sh` runs on both real targets, with `nvweaver passwd` from the image, against a service on `0.0.0.0`, reached by a real non-loopback address: a password over plain HTTP is refused, on loopback it's fine, and with the override it's allowed. The browser test signs in and out, and has a hostile page
-in the same browser, with the session in its cookies, try to read and change things through it, which had no effect. Not tested: signing in over real TLS in a browser, or under the Quadlet, with SELinux. `e2e.sh` checks that the service refuses plain HTTP, and a unit test that TLS is accepted and marks the cookie `Secure`.
+in the same browser, with the session in its cookies, try to read and change things through it, which had no effect. Signing in over real TLS in a browser is in the next section. Not tested: signing in under the Quadlet, with SELinux. `e2e.sh` checks that the service refuses plain HTTP, and a unit test that TLS is accepted and marks the cookie `Secure`.
 
 ### Web pages using the API
 

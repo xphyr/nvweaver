@@ -134,7 +134,7 @@ Run `nvweaver help` for every command, and `--help` after one for its flags. Siz
 
 ## Web interface
 
-`nvweaverd` serves a browser interface at `/ui/`, on the same address as the API, and `/` leads there. It's in the binary, so there's nothing else to install. It shows pools and how full they are, volumes with their snapshots and how much of each is really allocated, subsystems, hosts, ports and any warnings. You can create, grow, clone, delete, export and un-export volumes, from their own pages or a subsystem's, and take, clone and delete snapshots. An exported volume's page shows the `nvme connect` command for it. To change anything else, use the command line or API for now. 
+`nvweaverd` serves a browser interface at `/ui/`, on the same address as the API, and `/` leads there. It's in the binary, so there's nothing else to install. It shows pools and how full they are, volumes with their snapshots and how much of each is really allocated, subsystems, hosts, ports and any warnings. You can manage volumes and snapshots, subsystems and who may connect to them, hosts and their DH-HMAC-CHAP keys, and ports, and adopt and forget pools. An exported volume's page shows the `nvme connect` command for it. Some settings are still only in the command line and API, such as labels, and a namespace's UUID. 
 
 **Signing in.** To have it ask for a username and password, make a users file, and set `NVWEAVER_USERS_FILE`:
 
@@ -367,6 +367,7 @@ go test ./...      # needs no privileges; uses a fake configfs
 ./test/systemd-e2e.sh  # the installed service under real systemd, in a container
 ./test/vm/vm-e2e.sh    # separate initiator, emulated disks, passthrough, real install and reboot
 ./test/webui-e2e.sh    # the web interface in a real browser, with a fake target and no root
+./test/webui-real-e2e.sh  # a browser driving both real targets in VMs, with a real host, HTTPS and signing in
 ```
 
 Set `BACKEND=spdk` to run `e2e.sh` and `bench.sh` against SPDK. `systemd-e2e.sh` installs

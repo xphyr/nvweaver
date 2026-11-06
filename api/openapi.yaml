@@ -1335,7 +1335,7 @@ components:
         used_bytes:
           type: integer
           format: int64
-          description: What's really allocated, which is less on thin storage until it's written.
+          description: What's really allocated, which is less on thin storage until it's written. On LVM this is worked out from a percentage that LVM reports to two places, so it's only accurate to 0.01% of the size.
     VolumePage:
       type: object
       required: [items]

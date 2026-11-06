@@ -130,3 +130,4 @@ code.command { display: inline-block; padding: .1rem .4rem; border-radius: 5px; 
 
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 1.5rem 0 .6rem; }
 .section-head h2 { margin: 0; }
+.section-head .row-actions button { padding: .35rem .8rem; font-size: 1rem; }

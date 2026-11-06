@@ -130,14 +130,14 @@ Production-like scale is a requirement, so measure this before building on it.
 
 - [x] Read-only screens, embedded in the binary, tested in a real browser. See decision 37
 - [x] Sign in with a username and password, from a users file in bcrypt. See decision 40
-- [ ] Try signing in over real TLS, in a browser
+- [x] Try signing in over real TLS, in a browser. It has a real certificate that the browser is told to accept, as trusting a CA isn't what's being tested
 - [x] Create, grow, clone and delete volumes, take, clone and delete snapshots, and export and un-export volumes from their own pages and from subsystems
 - [x] Show tables a page at a time, 10 rows by default
-- [ ] Create and delete subsystems, hosts and ports, including who's allowed and which ports, and namespaces on raw devices and files
-- [ ] Adopt and forget pools
-- [ ] Set DH-HMAC-CHAP keys on hosts
+- [x] Create and delete subsystems, hosts and ports, including who's allowed and which ports, and namespaces on raw devices and files
+- [x] Adopt and forget pools
+- [x] Set DH-HMAC-CHAP keys on hosts. It doesn't set their hash or DH group, or labels, a namespace's UUID, or enabling and disabling a namespace, which are in the CLI
 - [ ] Show which hosts are connected before un-exporting, once the phase 3 endpoint for that exists
-- [ ] Run one browser test against a real target in a VM: create, export, a real host writing data, un-export and delete. So far, browsers have only driven the fake target
+- [x] Run a browser against both real targets in VMs: `test/webui-real-e2e.sh`
 
 ## 7. Kubernetes CSI driver
 

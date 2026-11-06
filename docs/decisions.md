@@ -394,9 +394,9 @@ there, not as absolute numbers.
 
   | What changed | What's enough |
   |---|---|
-  | `internal/webui`, or the demo | Unit tests and the browser test |
+  | `internal/webui`, or the demo | Unit tests and the browser test. `webui-real-e2e.sh` too if what the interface sends changed |
   | `cmd/nvweaver`, `internal/client` | Unit tests and `e2e.sh` |
-  | `internal/auth`, `internal/api` | Unit tests, the browser test and `e2e.sh`, and `vm-e2e.sh` if storage handling changed |
+  | `internal/auth`, `internal/api` | Unit tests, both browser tests and `e2e.sh`, and `vm-e2e.sh` if storage handling changed |
   | `internal/storage`, `internal/target`, `internal/spdk` | Everything, as that's where data can be lost |
   | Docs only | Lint |
 

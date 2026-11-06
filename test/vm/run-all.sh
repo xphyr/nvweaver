@@ -21,6 +21,10 @@ report() { # NAME EXIT-STATUS LOG
 "$ROOT/test/vm/vm-e2e.sh" >"$RESULTS/vm.log" 2>&1 </dev/null
 report vm-e2e $? "$RESULTS/vm.log"
 
+# So are these, and the browser runs in a container here.
+"$ROOT/test/webui-real-e2e.sh" >"$RESULTS/webui-real.log" 2>&1 </dev/null
+report webui-real $? "$RESULTS/webui-real.log"
+
 "$LAB" down >/dev/null 2>&1 </dev/null
 "$LAB" up >/dev/null </dev/null || { echo "VMs did not start"; exit 1; }
 trap '"$LAB" down >/dev/null 2>&1 </dev/null' EXIT

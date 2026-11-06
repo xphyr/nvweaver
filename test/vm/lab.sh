@@ -12,6 +12,7 @@
 #   status               show what is running
 #   ssh tgt|ini [cmd]    run a command in a VM, as a user with passwordless sudo
 #   sync tgt|ini         copy this source tree to ~/nvweaver in a VM
+#   forward tgt|ini LOCAL REMOTE   forward a port on loopback here to one on loopback in a VM, until killed
 #   load tgt|ini IMAGE   copy a local Podman image into a VM's root image store
 #
 # Settings: LAB_DIR (~/nvweaver-vms), LAB_CPUS (4), LAB_MEM_MB (4096).
@@ -325,6 +326,10 @@ ssh)
 	[ $# -ge 2 ] || die "usage: $0 ssh tgt|ini [command]"
 	shift
 	vm_ssh "$@"
+	;;
+forward)
+	[ $# -eq 4 ] || die "usage: $0 forward tgt|ini LOCAL_PORT REMOTE_PORT"
+	exec ssh "${SSH_OPTS[@]}" -p "$(ssh_port "$2")" -N -L "127.0.0.1:$3:127.0.0.1:$4" lab@127.0.0.1
 	;;
 sync)
 	[ $# -eq 2 ] || die "usage: $0 sync tgt|ini"
