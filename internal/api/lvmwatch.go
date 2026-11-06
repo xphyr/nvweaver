@@ -67,7 +67,7 @@ func (m *Manager) Warnings() []string {
 
 func (m *Manager) checkLVM() {
 	st := m.state.Load()
-	warnings := append(lvmWarnings(st, m.visibleToLVM, deviceIDs), toolWarnings(st, m.missingLVMTools)...)
+	warnings := append(lvmWarnings(st, m.visibleToLVM, m.deviceIDs), toolWarnings(st, m.missingLVMTools)...)
 	if !slices.Equal(warnings, m.Warnings()) {
 		for _, w := range warnings {
 			m.log.Warn(w)

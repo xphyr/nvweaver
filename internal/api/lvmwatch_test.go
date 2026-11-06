@@ -120,7 +120,7 @@ func TestMissingToolsOnlyMatterIfSomethingNeedsThem(t *testing.T) {
 }
 
 func TestWarningsCollectEveryProblemAndClear(t *testing.T) {
-	m := &Manager{log: slog.New(slog.DiscardHandler)}
+	m := &Manager{log: slog.New(slog.DiscardHandler), deviceIDs: fakeIDs}
 	st := lvmState("/dev/sdb")
 	st.Pools["l"] = &target.Pool{Name: "l", Type: storage.TypeLVMThin}
 	m.state.Store(st)

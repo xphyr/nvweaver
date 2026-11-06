@@ -41,6 +41,8 @@ type Manager struct {
 	newDriver func(*target.Pool) (storage.Driver, error)
 	// visibleToLVM lists the devices this machine's LVM can read. Tests substitute a fake.
 	visibleToLVM func() ([]string, error)
+	// deviceIDs identifies a block device, however it's named. Tests substitute a fake.
+	deviceIDs func(string) []string
 	// missingLVMTools says what LVM thin pools need that's missing. Tests substitute a fake.
 	missingLVMTools func() []string
 	// lvmChanged asks WatchLVM for another check.
@@ -66,6 +68,7 @@ func NewManager(b target.Backend, dataDir string, log *slog.Logger) (*Manager, e
 		newDriver: storage.New,
 
 		visibleToLVM:    storage.VisibleToLVM,
+		deviceIDs:       deviceIDs,
 		missingLVMTools: storage.MissingLVMTools,
 		lvmChanged:      make(chan struct{}, 1),
 	}
