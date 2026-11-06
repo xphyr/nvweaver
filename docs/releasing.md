@@ -5,8 +5,8 @@
 First, update [ReleaseNotes.md](../ReleaseNotes.md): move what shipped out of "not yet released", and give it the version.
 
 ```sh
-git tag -s v0.1.0 -m "nvweaver 0.1.0"
-git push origin v0.1.0
+git tag -s v0.2.0 -m "nvweaver 0.2.0"
+git push origin v0.2.0
 ```
 
 The [release workflow](../.github/workflows/release.yml) then runs everything CI runs,
@@ -14,17 +14,19 @@ including all end-to-end suites, and publishes only if they all pass:
 
 | What | Where |
 |---|---|
-| Kernel image | `ghcr.io/xphyr/nvweaver:0.1.0`, and `:latest` |
-| SPDK image | `ghcr.io/xphyr/nvweaver:0.1.0-spdk`, and `:latest-spdk` |
-| Binary, unit, Quadlet, notices | `nvweaver-0.1.0-linux-amd64.tar.gz` on the GitHub release |
-| Checksums | `SHA256SUMS` on the GitHub release |
-| Provenance | Signed attestations for the images and the tarball |
+| Kernel image, both architectures | `ghcr.io/xphyr/nvweaver:0.2.0`, and `:latest` |
+| SPDK image, both architectures | `ghcr.io/xphyr/nvweaver:0.2.0-spdk`, and `:latest-spdk` |
+| One architecture's image | The same tags, ending `-amd64` or `-arm64`, as with `:0.2.0-spdk-arm64`, but not for `latest` |
+| Binary, unit, Quadlet, notices | `nvweaver-0.2.0-linux-amd64.tar.gz` and `-linux-arm64.tar.gz` on the GitHub release |
+| Checksums | `SHA256SUMS` on the GitHub release, covering both |
+| Provenance | Signed attestations for the multi-arch tags and the tarballs |
 
 A tag with a suffix, like `v0.1.0-rc1`, makes a pre-release and leaves `latest` alone. Use one
 to try the pipeline.
 
-The images are the ones the suites just tested, not a rebuild. The publish job fails if an image
-doesn't report the tagged version.
+The images are the ones the suites just tested, not a rebuild, and each architecture's are built on that architecture. The
+publish job fails if an image doesn't report the tagged version or is the wrong architecture, if a tarball's binary is the wrong
+architecture, or if the registry doesn't then serve both architectures.
 
 ## Before the first release
 
@@ -38,9 +40,12 @@ Set these up in the repository's settings on GitHub:
 
 ```sh
 sha256sum -c SHA256SUMS
-gh attestation verify nvweaver-0.1.0-linux-amd64.tar.gz --repo xphyr/nvweaver
-gh attestation verify oci://ghcr.io/xphyr/nvweaver:0.1.0 --repo xphyr/nvweaver
+gh attestation verify nvweaver-0.2.0-linux-amd64.tar.gz --repo xphyr/nvweaver
+gh attestation verify oci://ghcr.io/xphyr/nvweaver:0.2.0 --repo xphyr/nvweaver
 ```
+
+Attestations are on the multi-arch tags, whose digests pin each architecture's image. Verifying a tag ending `-amd64` or
+`-arm64` directly won't find one.
 
 ## Versions
 
@@ -49,9 +54,8 @@ still change. `nvweaverd --version` and `GET /v1/system` report the version.
 
 ## What's built
 
-Only `linux/amd64` so far. arm64 is planned for v0.2.0, as in `docs/decisions.md`, entry 27. CI already tests Arm on every
-pull request and on `main`, but publishes nothing from it yet. Its runners have no KVM, so that job runs `e2e.sh` directly
-rather than the VM suites. Emulated Arm VMs are a manual check, with `LAB_ARCH=aarch64` and `TEST_TIMEOUT_SCALE=10`.
+`linux/amd64` and `linux/arm64`, as in `docs/decisions.md`, entry 27. CI tests Arm on every pull request and on `main`. Its
+runners have no KVM, so that job runs `e2e.sh` directly rather than the VM suites. Emulated Arm VMs are a manual check, with `LAB_ARCH=aarch64` and `TEST_TIMEOUT_SCALE=10`.
 
 ## Running the same checks locally
 
@@ -60,5 +64,5 @@ make lint test                   # needs Podman, for shellcheck and actionlint
 make images                      # all three images, with rootless Podman
 ./test/vm/lab.sh base            # once: builds the VM base image
 ./test/vm/run-all.sh             # every end-to-end suite, in fresh VMs
-make package                     # the release tarball and checksums, in build/
+make package                     # the release tarball and checksums for this machine, in build/
 ```

@@ -25,8 +25,10 @@ Work through these in order: each phase depends on the ones before it.
   - [x] Choose the SPDK baseline by architecture: `Containerfile.spdk` already does
   - [x] Add an Arm job to CI that runs the unit tests and `e2e.sh` on both targets. It hasn't run yet: it runs on pull
         requests and on `main`
-  - [ ] For v0.2.0: publish multi-arch images and an arm64 tarball, built natively on Arm runners
-  - [ ] For v0.2.0: say in the README what's supported on Arm. See decision 27
+  - [ ] For v0.2.0: publish multi-arch images and an arm64 tarball, built natively on Arm runners. Written, and
+        `publish-images.sh` tested against a local registry, but the workflows haven't run: prove it with a pre-release
+  - [ ] Pull a published arm64 image and run it on real Arm, such as the CM4, after that pre-release
+  - [x] For v0.2.0: say in the README what's supported on Arm. See decision 27
   - [x] Check that `armv8-a+crc` runs on older Arm CPUs: Cortex-A72, emulated and on a real CM4
   - [x] Give the SPDK Quadlet a longer Podman stop timeout than its 10-second default, below `TimeoutStopSec`. A slow
         shutdown was killed and reported as failed. Reproduced and fixed on a CM4: see `docs/testing.md`

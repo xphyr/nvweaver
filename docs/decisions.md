@@ -255,6 +255,8 @@ there, not as absolute numbers.
 - **What it promises:** arm64 with SPDK, and with the kernel target where the host's kernel has `nvmet-tcp`, as Fedora's
   has. Raspberry Pi OS's kernel doesn't, so it's SPDK only there.
 - **Not promised:** a Pi 5 and its 16K-page kernel, which is untested; Arm performance or scale, which aren't measured.
+- **The tags cover both architectures.** `0.2.0` and `0.2.0-spdk` are manifest lists over tags that end `-amd64` and `-arm64`,
+  so that nobody has to choose. Attestations are on the lists, whose digests pin each image.
 - **CI runs the suites directly on Arm,** without VMs, as its runners have no KVM. Emulated VMs took over two hours, which
   is too slow for every change, so `TEST_TIMEOUT_SCALE=10` and `LAB_ARCH=aarch64` remain a manual check.
 

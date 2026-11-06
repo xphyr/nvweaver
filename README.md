@@ -26,7 +26,7 @@ between targets and hosts see the same UUID, NGUID, block size and data.
 | Image | `Containerfile`, 25 MB | `Containerfile.spdk`, 134 MB (includes both targets) |
 | Host kernel | `nvmet-tcp` module (`modinfo nvmet-tcp`), which is separate from the `nvme-tcp` initiator | No NVMe modules |
 | Container | Privileged, host network | Can run with `--cap-drop=ALL` |
-| CPU | Any | x86-64-v2 or newer (about 2009 onward) |
+| CPU | x86-64 or arm64 | x86-64-v2 or newer (about 2009 onward), or arm64 with CRC instructions, tested on Cortex-A72 (Raspberry Pi 4) |
 | Memory | About 8 MB plus kernel use | About 240 MB (`NVWEAVER_SPDK_MEM_MB`, default 1024, is its limit) |
 
 ## Quick start
@@ -158,6 +158,7 @@ which needs nothing built. Check it, then install it:
 
 ```sh
 sha256sum -c SHA256SUMS
+# Use arm64 in place of amd64 on Arm.
 tar xzf nvweaver-*-linux-amd64.tar.gz
 cd nvweaver-*-linux-amd64
 
@@ -182,7 +183,8 @@ sudo systemctl daemon-reload
 sudo systemctl start nvweaver-spdk
 ```
 
-The images are `ghcr.io/xphyr/nvweaver:<version>` and `:<version>-spdk`, or `latest` and `latest-spdk`.
+The images are `ghcr.io/xphyr/nvweaver:<version>` and `:<version>-spdk`, or `latest` and `latest-spdk`, for both x86-64 and
+arm64. Podman pulls the right one for the machine.
 
 ## Running under systemd
 
@@ -302,8 +304,9 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
   namespace is refused. Block devices, including LVM volumes, can't be set this way: writes reach the device, but a drive
   with a volatile cache might lose them in a power cut, which we haven't been able to test. For the strongest guarantee, use
   the kernel target.
-- Published images and tarballs are x86-64 only for now. arm64 builds from source, with arm64 releases planned for
-  v0.2.0. Raspberry Pi OS's kernel has no NVMe/TCP target, so only SPDK can run there.
+- **arm64 has less testing than x86-64.** `e2e.sh` runs on real Arm CI runners on both targets, but the suites with a separate
+  initiator and with disks run only by hand, under emulation. Its performance and scale aren't measured, and the 16K-page kernel of
+  a Raspberry Pi 5 is untested. Raspberry Pi OS's kernel has no NVMe/TCP target, so only SPDK can run there.
 - No formal NVMe conformance suite has been run. Protocol behaviour is the target's;
   the tests here exercise both with the Linux initiator only.
 - **Not yet tested on physical NVMe hardware or over a physical network.** Tests use

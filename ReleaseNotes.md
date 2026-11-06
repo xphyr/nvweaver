@@ -2,7 +2,7 @@
 
 The major differences between versions. For every change, see the commit history.
 
-## v0.2.0 (not yet released)
+## v0.2.0
 
 ### Added
 
@@ -16,6 +16,9 @@ The major differences between versions. For every change, see the commit history
   allows several hosts.
 - **Recovery from a crash.** If the service dies while changing a pool, the next start finishes or undoes that change, so
   storage isn't left orphaned.
+- **arm64 images and tarball,** alongside x86-64. The image tags now cover both, and Podman pulls the right one. Its tests pass
+  on Arm CI runners and emulated Cortex-A72, and SPDK works on a Raspberry Pi CM4. Raspberry Pi OS's kernel has no NVMe/TCP
+  target, so only SPDK can run there. See [known limits](README.md#known-limits).
 - **A transport on ports.** Ports report `transport`, and `capabilities.transports` lists what's usable. Only `tcp` is
   available, and anything else is refused. This leaves room for NVMe/RDMA later.
 
@@ -29,12 +32,6 @@ The major differences between versions. For every change, see the commit history
 - **Removing a host now cuts it off straight away on the kernel target,** rather than when it next reconnects. Other hosts on that
   subsystem stall for about 10 s while they reconnect, with no errors. See [known limits](README.md#known-limits).
 - **Too small an `fs.aio-max-nr` on SPDK gets a clear error** saying how to raise it. This also stops a saved configuration from starting.
-
-### Planned for this release
-
-- **arm64 images and tarball,** alongside x86-64. So far, arm64 builds from source. Its tests pass on Arm CI runners and
-  emulated Cortex-A72, and SPDK works on a Raspberry Pi CM4. Raspberry Pi OS's kernel has no NVMe/TCP target, so only SPDK
-  can run there.
 
 ### Fixed
 

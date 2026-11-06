@@ -79,12 +79,15 @@ jobs:
           retention-days: 3
 
   # Arm runners have no KVM, so these suites run directly on the runner, without the VMs. They load
-  # kernel modules there, which is fine as the runner is disposable. Nothing is published from this.
+  # kernel modules there, which is fine as the runner is disposable. A release publishes what's
+  # built and tested here, with the amd64 images.
   arm:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -96,19 +99,57 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q "linux-modules-extra-$(uname -r)"
+      - name: Work out the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: echo "version=${INPUT_VERSION:-$(git describe --tags --always --dirty)}" >>"$GITHUB_OUTPUT"
       - name: Build images
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          sudo podman build -q -t nvweaver:dev -f Containerfile .
-          sudo podman build -q -t nvweaver:spdk -f Containerfile.spdk .
+          sudo podman build -q -t nvweaver:dev --build-arg VERSION="$VERSION" -f Containerfile .
+          sudo podman build -q -t nvweaver:spdk --build-arg VERSION="$VERSION" -f Containerfile.spdk .
+      - name: Check they report this version
+        # The publish job can't do this, as it runs on x86-64.
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for image in localhost/nvweaver:dev localhost/nvweaver:spdk; do
+            got=$(sudo podman run --rm --pull=never "$image" --version)
+            echo "$got"
+            [ "$got" = "nvweaverd $VERSION" ]
+          done
       - name: Kernel target end to end
         run: SKIP_BUILD=1 IMAGE=nvweaver:dev ENGINE="sudo podman" ./test/e2e.sh
       - name: SPDK target end to end
         run: BACKEND=spdk SKIP_BUILD=1 IMAGE=nvweaver:spdk ENGINE="sudo podman" ./test/e2e.sh
+      - name: Build the release tarball
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: make package VERSION="$VERSION"
+      - name: Save images
+        # With their own names, so that the publish job can load them beside the amd64 images.
+        run: |
+          sudo podman tag localhost/nvweaver:dev localhost/nvweaver:dev-arm64
+          sudo podman tag localhost/nvweaver:spdk localhost/nvweaver:spdk-arm64
+          sudo podman save -m -o images-arm64.tar localhost/nvweaver:dev-arm64 localhost/nvweaver:spdk-arm64
+          sudo chown "$(id -u):$(id -g)" images-arm64.tar
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: images-arm64
+          path: images-arm64.tar
+          retention-days: 3
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-arm64
+          path: build/*
+          retention-days: 3
 
   end-to-end:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       # Hosted runners have 4 vCPUs and 16 GB, shared between the two VMs.
       LAB_CPUS: 2

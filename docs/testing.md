@@ -324,6 +324,9 @@ Not tested for other reasons:
 - Docker since Podman became the default. It's a fallback: see `TODO.md`
 - SPDK on a real older CPU. Nehalem was under QEMU, and only as far as a running reactor
 - Scale. Nothing has been measured beyond a handful of objects
+- The release workflow's arm64 path on GitHub. `publish-images.sh` was tested on Podman 4.9, as on the runners, against a local
+  registry with small stand-in images, and the tarball checks with cross-compiled binaries. The Arm build, ghcr.io and
+  attestations of multi-arch tags haven't run yet
 
 ## Benchmarks
 
@@ -386,6 +389,10 @@ Things that looked like one problem and were another:
 
 Checks that passed while proving nothing. Watch for these patterns:
 
+- `publish-images.sh` printed `kernel=$(publish_tag ...)` with `echo`, which hides a failure, and `set -e` doesn't apply inside
+  `$(...)`, so by reading the code, a wrong-architecture image would still have been pushed. It now assigns first, with `inherit_errexit`. Testing it, comparing
+  two digests passed when both reads had failed and were empty, and a check for a refusal passed on an unrelated error: check the
+  reason, and that the read worked.
 - "No reconnect happened" grepped for a log line that was never written. It now compares the
   controller ID.
 - A teardown check counted leftovers with `grep -c`, so a failed mount gave the expected
@@ -463,6 +470,8 @@ Checks that passed while proving nothing. Watch for these patterns:
   there. The Quadlet's `container_t` is the meaningful test.
 - **QEMU:** with extra disks, the root disk needs `bootindex`. An SSH agent with many keys can use
   up a VM's login attempts, hence `IdentitiesOnly`. `if=virtio` drives take IDs like `virtio0`.
+- **Podman versions:** the runners have 4.9, which refuses `podman manifest inspect docker://...`, as 5.8 doesn't. That would have
+  failed a release after pushing its images. Try release steps in `ubuntu:24.04`, using `vfs` storage.
 - **One machine:** an initiator can't see the same namespace twice. Two host NQNs on one
   kernel also share a multipath device, so test multi-host by disconnecting one and reading
   through the other.

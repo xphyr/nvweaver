@@ -32,7 +32,7 @@ REDOCLY_IMAGE = docker.io/redocly/cli:2.8.0
 lint:
 	@files=$$(gofmt -l .); if [ -n "$$files" ]; then echo "Not gofmt-formatted: $$files"; exit 1; fi
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(SHELLCHECK_IMAGE) -S warning \
-		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/vm-e2e.sh test/vm/run-all.sh test/vm/scale-bench.sh
+		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/vm-e2e.sh test/vm/run-all.sh test/vm/scale-bench.sh .github/publish-images.sh
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(ACTIONLINT_IMAGE)
 	podman run --rm --pull=missing -v "$$PWD:/spec:ro,Z" --workdir /spec $(REDOCLY_IMAGE) \
 		lint --skip-rule operation-4xx-response api/openapi.yaml
@@ -43,8 +43,8 @@ images:
 	podman build $(BUILD_FLAGS) -t nvweaver:spdk --build-arg VERSION=$(VERSION) -f Containerfile.spdk .
 	podman build $(BUILD_FLAGS) -t nvweaver:systemd-test -f test/systemd/Containerfile .
 
-# The release tarball and its checksum, in build/.
-PACKAGE = nvweaver-$(VERSION)-linux-amd64
+# The release tarball and its checksum, in build/, for the architecture that Go is building for.
+PACKAGE = nvweaver-$(VERSION)-linux-$(shell go env GOARCH)
 package: nvweaverd nvweaver.service
 	rm -rf build
 	install -d build/$(PACKAGE)
