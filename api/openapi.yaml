@@ -114,6 +114,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/ports/{id}:
     parameters:
       - $ref: '#/components/parameters/PortID'
@@ -162,6 +164,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
     delete:
       operationId: deletePort
       summary: Delete a port
@@ -176,6 +180,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/hosts:
     get:
       operationId: listHosts
@@ -217,6 +223,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/hosts/{nqn}:
     parameters:
       - $ref: '#/components/parameters/NQN'
@@ -263,6 +271,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
     delete:
       operationId: deleteHost
       summary: Delete a host
@@ -277,6 +287,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/subsystems:
     get:
       operationId: listSubsystems
@@ -318,6 +330,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/subsystems/{nqn}:
     parameters:
       - $ref: '#/components/parameters/NQN'
@@ -366,6 +380,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
     delete:
       operationId: deleteSubsystem
       summary: Delete a subsystem
@@ -380,6 +396,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/subsystems/{nqn}/ports/{id}:
     parameters:
       - $ref: '#/components/parameters/NQN'
@@ -400,6 +418,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
     delete:
       operationId: detachPort
       summary: Detach a subsystem from a port
@@ -414,6 +434,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/subsystems/{nqn}/hosts/{host}:
     parameters:
       - $ref: '#/components/parameters/NQN'
@@ -439,6 +461,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
     delete:
       operationId: denyHost
       summary: Stop allowing a host to use a subsystem
@@ -453,6 +477,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/pools:
     get:
       operationId: listPools
@@ -503,6 +529,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/pools/{pool}:
     parameters:
       - $ref: '#/components/parameters/PoolName'
@@ -546,6 +574,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
     delete:
       operationId: deletePool
       summary: Forget a pool
@@ -560,6 +590,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/volumes:
     get:
       operationId: listVolumes
@@ -637,6 +669,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/volumes/{volume}:
     parameters:
       - $ref: '#/components/parameters/VolumeName'
@@ -681,6 +715,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
     delete:
       operationId: deleteVolume
       summary: Delete a volume and its data
@@ -695,6 +731,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/snapshots:
     get:
       operationId: listSnapshots
@@ -770,6 +808,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/snapshots/{snapshot}:
     parameters:
       - $ref: '#/components/parameters/SnapshotName'
@@ -800,6 +840,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/subsystems/{nqn}/namespaces:
     parameters:
       - $ref: '#/components/parameters/NQN'
@@ -850,6 +892,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/subsystems/{nqn}/namespaces/{nsid}:
     parameters:
       - $ref: '#/components/parameters/NQN'
@@ -904,6 +948,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
     delete:
       operationId: deleteNamespace
       summary: Stop exporting a namespace
@@ -926,6 +972,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Invalid'
+        '503':
+          $ref: '#/components/responses/Busy'
 components:
   securitySchemes:
     bearerAuth:
@@ -971,6 +1019,19 @@ components:
         minimum: 0
         maximum: 65534
   responses:
+    Busy:
+      description: >-
+        Too much is in progress, or this object is in the middle of another change, such as a clone from it. Nothing
+        was changed, so send the same request again after `Retry-After` seconds.
+      headers:
+        Retry-After:
+          description: Seconds to wait before trying again.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     BadRequest:
       description: The body isn't valid JSON, or has an unknown field.
       content:

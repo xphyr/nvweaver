@@ -9,7 +9,7 @@
  internal/api      HTTP handlers, validation, in-use checks
       |
       v
- api.Manager       one lock; desired state; apply, then save; roll back on failure
+ api.Manager       one change at a time; desired state; apply, then save; roll back on failure
       |
       v
  target.Backend    interface: Check, Reconcile, Revalidate, LiveEnabled, Available,
@@ -45,7 +45,7 @@ below it, never through this process.
 
 ## How a change is applied
 
-`Manager.mutate` handles every API change the same way:
+`Manager.commit` handles every API change the same way, holding one lock:
 
 1. Copy the current desired state, and apply the request to the copy.
 2. Validate it (`State.Validate`), then ask the backend (`Backend.Check`).
@@ -59,6 +59,13 @@ to it, the storage is wanted, and otherwise it's removed. An interrupted grow is
 
 So a request either happens completely or not at all. On startup, the saved state is
 applied the same way, with an empty state as the starting point.
+
+Reads don't take that lock. The state is replaced whole and never modified, so a read loads the latest one, and sees a change
+once it has been applied and saved.
+
+Slow storage work runs before step 1, without the lock. The request reserves the objects it depends on (`internal/api/busy.go`), so nothing can
+change or remove them meanwhile. Whatever clashes gets `503` with `Retry-After`, as does a request when too much is pending. `Manager.mutate` is
+`commit` with that check, and work that's already done uses `commit` directly, so that it can't be refused at the last moment.
 
 ## The two reconcilers
 
@@ -109,6 +116,7 @@ the `PATH`.
 
 ## Known scale limits
 
-Every change holds one lock, copies the whole state, runs a full reconcile and rewrites
-the whole state file. That is expected to limit production-like scale, and hasn't been
-measured. See phase 5 in `TODO.md`.
+Each change still copies the state and rewrites the state file, so the kernel target's time for a change grows slowly: 8 ms at
+1,000 volumes and 20 ms at 5,000. On SPDK it's nearly flat, because each RPC takes about 8 ms, and a change makes the same few of them at any size.
+Changes are applied one at a time, which limits them to about 50 a second on the kernel target at 5,000 volumes, and about 17 on SPDK. See
+`docs/testing.md` for the numbers and decision 29 for why they aren't batched.

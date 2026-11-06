@@ -592,7 +592,10 @@ else
 	$ENGINE stop -t 20 "$TGT" >/dev/null
 	expect_eq "container exits cleanly" 0 "$($ENGINE inspect "$TGT" --format '{{.State.ExitCode}}')"
 	expect_lacks "stopping closes the port" LISTEN "$(ini "ss -ltn sport = :$P1 2>/dev/null || netstat -ltn | grep :$P1")"
-	$ENGINE logs "$TGT" 2>&1 | grep -q 'target configuration removed' && ok "configuration was removed" || bad "configuration was removed"
+	LOGS=$($ENGINE logs "$TGT" 2>&1)
+	expect_has "the target stops with the service" 'target stops with the service' "$LOGS"
+	expect_lacks "and isn't taken apart first" 'target configuration removed' "$LOGS"
+	expect_lacks "and didn't have to be killed" 'did not stop in time' "$LOGS"
 	section "SPDK process failure"
 	start_target false || bad "start"
 	# A child belongs to the thread that started it, and Go can use any thread, so read them all.

@@ -18,8 +18,10 @@ StateDirectory=nvweaver
 StateDirectoryMode=0700
 Restart=on-failure
 RestartSec=5
-TimeoutStartSec=120
-TimeoutStopSec=30
+# Restoring takes minutes with thousands of volumes.
+TimeoutStartSec=900
+# The kernel target takes each namespace down in turn: 46 s at 5,000.
+TimeoutStopSec=300
 
 # Sandboxing. The service needs to write configfs, load nvmet-tcp, and open
 # block devices, which rules out ProtectKernelTunables, ProtectKernelModules,

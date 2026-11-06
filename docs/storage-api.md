@@ -195,9 +195,9 @@ GET  /v1/system    capabilities: {"transports": ["tcp"], ...}
 
 - **Slow storage work doesn't hold the global lock.** A request reserves its name under the lock, does the
   `lvcreate` or copy, then records the result, with an intent log so that a crash can be cleaned up.
-- **Incremental reconcile:** a change only touches its own subsystem, and changes to one subsystem can be
-  batched.
-- **`503` with `Retry-After`** when too much is pending, rather than queuing without limit.
+- **Incremental reconcile:** a change only touches its own subsystem. Changes aren't batched: see decision 29.
+- **`503` with `Retry-After`** when too much is pending, rather than queuing without limit, or when an object is in the middle
+  of another change, such as a volume being cloned.
 - **First version is synchronous.** A correction to the earlier proposal: thin snapshots and clones took
   under half a second at 5,000 volumes in testing, and reflink copies milliseconds, so nothing needs `202`
   and polling yet. The `state` field leaves room for `creating` if a slower operation arrives.
@@ -208,7 +208,7 @@ GET  /v1/system    capabilities: {"transports": ["tcp"], ...}
 |---|---|
 | `409` | Name exists with different settings; volume mapped or still in use; pool still has volumes |
 | `422` | Invalid request; source in a different pool; shrinking a volume; pool type not usable here |
-| `503` | Too much pending, with `Retry-After` |
+| `503` | Too much pending, or the object is in the middle of another change, with `Retry-After`. Nothing changed, so send it again |
 | `507` | The pool doesn't have the room. Only for real exhaustion, as thin pools may overcommit |
 
 ## Not in the first version

@@ -64,7 +64,9 @@ func run(log *slog.Logger) error {
 	}
 	defer func() {
 		if cerr := backend.Close(); cerr != nil {
-			log.Error("backend did not stop cleanly", "error", cerr)
+			// Not lost data: hosts' writes are finished before they're acknowledged. At thousands of volumes, SPDK can
+			// take longer than this allows to clean up what's about to go with its process anyway.
+			log.Warn("backend did not stop cleanly", "error", cerr)
 		}
 	}()
 	if keepOnExit && !backend.Capabilities().SurvivesServiceExit {
@@ -118,14 +120,19 @@ func run(log *slog.Logger) error {
 	// The kernel target outlives this process. By default stopping the
 	// container stops the service; keeping it allows upgrades without
 	// dropping hosts, because the next instance adopts the running target.
-	// SPDK's data path always stops with the container.
-	if keepOnExit {
+	switch {
+	case keepOnExit:
 		log.Info("leaving kernel target running", "reason", "NVWEAVER_KEEP_ON_EXIT=true")
-	} else if terr := mgr.Teardown(); terr != nil {
-		log.Error("teardown incomplete", "error", terr)
-		err = errors.Join(err, terr)
-	} else {
-		log.Info("target configuration removed")
+	case !backend.Capabilities().SurvivesServiceExit:
+		// Its configuration goes with its process. Taking it apart first took minutes at 5,000 volumes.
+		log.Info("target stops with the service", "backend", backend.Name())
+	default:
+		if terr := mgr.Teardown(); terr != nil {
+			log.Error("teardown incomplete", "error", terr)
+			err = errors.Join(err, terr)
+		} else {
+			log.Info("target configuration removed")
+		}
 	}
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil

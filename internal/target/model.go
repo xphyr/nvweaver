@@ -5,8 +5,8 @@ package target
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"regexp"
 	"slices"
@@ -179,15 +179,57 @@ func (s *State) Normalize() {
 	}
 }
 
-// Clone returns a deep copy.
+// Clone returns a deep copy. Every change makes one, so at thousands of volumes it matters that
+// this is direct: going through JSON took 160 ms at 5,000. A test checks that it covers every field.
 func (s *State) Clone() *State {
-	b, err := json.Marshal(s)
-	if err != nil {
-		panic(fmt.Sprintf("state is not serialisable: %v", err))
+	c := &State{
+		Ports:      make(map[uint16]*Port, len(s.Ports)),
+		Hosts:      make(map[string]*Host, len(s.Hosts)),
+		Subsystems: make(map[string]*Subsystem, len(s.Subsystems)),
+		Pools:      make(map[string]*Pool, len(s.Pools)),
+		Volumes:    make(map[string]*Volume, len(s.Volumes)),
+		Snapshots:  make(map[string]*Snapshot, len(s.Snapshots)),
 	}
-	c := NewState()
-	if err := json.Unmarshal(b, c); err != nil {
-		panic(fmt.Sprintf("state does not round-trip: %v", err))
+	for k, v := range s.Ports {
+		p := *v
+		if v.InlineDataSize != nil {
+			size := *v.InlineDataSize
+			p.InlineDataSize = &size
+		}
+		c.Ports[k] = &p
+	}
+	for k, v := range s.Hosts {
+		h := *v
+		c.Hosts[k] = &h
+	}
+	for k, v := range s.Subsystems {
+		sub := *v
+		sub.AllowedHosts = slices.Clone(v.AllowedHosts)
+		sub.Ports = slices.Clone(v.Ports)
+		sub.Namespaces = make(map[uint32]*Namespace, len(v.Namespaces))
+		for id, ns := range v.Namespaces {
+			n := *ns
+			sub.Namespaces[id] = &n
+		}
+		c.Subsystems[k] = &sub
+	}
+	for k, v := range s.Pools {
+		p := *v
+		p.Labels = maps.Clone(v.Labels)
+		c.Pools[k] = &p
+	}
+	for k, v := range s.Volumes {
+		vol := *v
+		vol.Labels = maps.Clone(v.Labels)
+		if v.Source != nil {
+			source := *v.Source
+			vol.Source = &source
+		}
+		c.Volumes[k] = &vol
+	}
+	for k, v := range s.Snapshots {
+		snap := *v
+		c.Snapshots[k] = &snap
 	}
 	c.Normalize()
 	return c

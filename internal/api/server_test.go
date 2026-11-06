@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -38,6 +39,10 @@ type env struct {
 
 // fakePools is pool storage without needing a filesystem that has reflink.
 type fakePools struct {
+	mu sync.Mutex
+	// While gate is set, creating storage says so on entered, then waits for gate to close.
+	gate      chan struct{}
+	entered   chan string
 	dir       string
 	files     map[string]int64
 	checkErr  error
@@ -72,9 +77,15 @@ func (d fakeDriver) Capacity() (storage.Capacity, error) {
 	return storage.Capacity{TotalBytes: 1000, UsedBytes: 900}, d.capErr
 }
 func (d fakeDriver) Create(internal string, size int64) (string, error) {
+	if d.gate != nil {
+		d.entered <- internal
+		<-d.gate
+	}
 	if d.createErr != nil {
 		return "", d.createErr
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if _, dup := d.files[internal]; dup {
 		return "", fmt.Errorf("exists")
 	}
@@ -89,6 +100,8 @@ func (d fakeDriver) Delete(internal string) error {
 	if d.deleteErr != nil {
 		return d.deleteErr
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	delete(d.files, internal)
 	if err := os.Remove(filepath.Join(d.dir, internal)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
@@ -99,6 +112,8 @@ func (d fakeDriver) Grow(internal string, size int64) error {
 	if d.growErr != nil {
 		return d.growErr
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.files[internal] = size
 	return nil
 }
@@ -106,11 +121,14 @@ func (d fakeDriver) copy(source, internal string, size int64) (string, error) {
 	if d.createErr != nil {
 		return "", d.createErr
 	}
-	if _, ok := d.files[source]; !ok {
+	d.mu.Lock()
+	have, ok := d.files[source]
+	d.mu.Unlock()
+	if !ok {
 		return "", fmt.Errorf("no such source %s", source)
 	}
 	if size == 0 {
-		size = d.files[source]
+		size = have
 	}
 	return fakeDriver{d.fakePools}.Create(internal, size)
 }
@@ -121,6 +139,8 @@ func (d fakeDriver) Clone(source, internal string, size int64) (string, error) {
 	return d.copy(source, internal, size)
 }
 func (d fakeDriver) List() ([]string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	var names []string
 	for n := range d.files {
 		names = append(names, n)

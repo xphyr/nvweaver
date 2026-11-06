@@ -127,6 +127,10 @@ func (b *Backend) initialise(socket string, done <-chan struct{}) error {
 	if err != nil {
 		return err
 	}
+	// SPDK's default of 1,024 stops at 1,023 volumes with one subsystem each, as its discovery subsystem counts too.
+	if err := b.rpc.Call("nvmf_set_max_subsystems", map[string]any{"max_subsystems": maxSubsystems + 1}, nil); err != nil {
+		return err
+	}
 	if err := b.rpc.Call("framework_start_init", nil, nil); err != nil {
 		return err
 	}

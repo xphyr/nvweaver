@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"nvweaver/internal/storage"
 	"nvweaver/internal/target"
 )
 
@@ -90,14 +89,33 @@ func (s *Server) viewPool(st *target.State, p *target.Pool) poolView {
 	if p.WarningPercent > 0 && c.MetadataUsedPercent >= float64(p.WarningPercent) {
 		v.Warnings = append(v.Warnings, fmt.Sprintf("pool's metadata is %.1f%% full, past its warning level of %d%%", c.MetadataUsedPercent, p.WarningPercent))
 	}
+	// Storage comes and goes while this looks. In flight either before listing or after, or referred to
+	// by the state either before or after, isn't a stray: a change that finishes meanwhile is one of those.
+	maps.Copy(known, s.m.inFlightNames())
 	if names, err := d.List(); err == nil {
 		for _, name := range names {
-			if !known[name] {
+			if !known[name] && !s.m.inFlightNames()[name] && !s.m.isReferenced(name) {
 				v.Warnings = append(v.Warnings, fmt.Sprintf("%s is on disk, but no volume refers to it", name))
 			}
 		}
 	}
 	return v
+}
+
+// isReferenced looks again, as a volume may have been finished since st was read.
+func (m *Manager) isReferenced(internal string) bool {
+	st := m.current()
+	for _, vol := range st.Volumes {
+		if vol.InternalName == internal {
+			return true
+		}
+	}
+	for _, snap := range st.Snapshots {
+		if snap.InternalName == internal {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) listPools(w http.ResponseWriter, _ *http.Request) error {
@@ -222,6 +240,12 @@ func (s *Server) updatePool(w http.ResponseWriter, r *http.Request) error {
 // deletePool only forgets the pool: nothing on disk changes.
 func (s *Server) deletePool(w http.ResponseWriter, r *http.Request) error {
 	name := r.PathValue("pool")
+	// With this held nothing is at work on the pool, so any intent left was really interrupted.
+	res := s.m.reserve()
+	defer res.release()
+	if err := res.exclusive(poolKey(name)); err != nil {
+		return err
+	}
 	s.m.settleIntents(name)
 	err := s.m.mutate(func(st *target.State) error {
 		if st.Pools[name] == nil {
@@ -250,6 +274,7 @@ func (s *Server) deletePool(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	res.release()
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
@@ -385,14 +410,16 @@ func sameSource(a, b *target.VolumeSource) bool {
 	return *a == *b
 }
 
+type createVolumeRequest struct {
+	Name      string               `json:"name"`
+	Pool      string               `json:"pool"`
+	SizeBytes int64                `json:"size_bytes"`
+	Source    *target.VolumeSource `json:"source"`
+	Labels    map[string]string    `json:"labels"`
+}
+
 func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) error {
-	var req struct {
-		Name      string               `json:"name"`
-		Pool      string               `json:"pool"`
-		SizeBytes int64                `json:"size_bytes"`
-		Source    *target.VolumeSource `json:"source"`
-		Labels    map[string]string    `json:"labels"`
-	}
+	var req createVolumeRequest
 	if err := decode(w, r, &req); err != nil {
 		return err
 	}
@@ -402,122 +429,159 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) error {
 	if src := req.Source; src != nil && (src.Snapshot == "") == (src.Volume == "") {
 		return target.Invalid("source must name either a snapshot or a volume")
 	}
-	sizeGiven := req.SizeBytes != 0 || req.Source == nil
-	if sizeGiven && (req.SizeBytes < 4096 || req.SizeBytes%4096 != 0) {
+	if (req.SizeBytes != 0 || req.Source == nil) && (req.SizeBytes < 4096 || req.SizeBytes%4096 != 0) {
 		return target.Invalid("size_bytes must be a positive multiple of 4096")
 	}
-	var vol *target.Volume
-	var driver storage.Driver
-	var internal string
-	err := s.m.mutate(func(st *target.State) error {
-		// CSI retries, so the same request again is a success, not a conflict. This comes first
-		// because a clone's source may have gone by then.
-		if existing := st.Volumes[req.Name]; existing != nil {
-			wantPool := req.Pool
-			if req.Source == nil {
-				p, err := defaultPool(st, req.Pool)
-				if err != nil {
-					return err
-				}
-				wantPool = p.Name
-			}
-			// A size that the pool rounded up the first time has to match on a retry.
-			wantSize := req.SizeBytes
-			if sizeGiven {
-				d, err := s.m.newDriver(st.Pools[existing.Pool])
-				if err != nil {
-					return err
-				}
-				if wantSize, err = d.AlignSize(req.SizeBytes); err != nil {
-					return err
-				}
-			}
-			if (wantPool != "" && existing.Pool != wantPool) ||
-				(sizeGiven && existing.SizeBytes != wantSize) ||
-				!sameSource(existing.Source, req.Source) {
-				return target.NewConflict("volume %s already exists with different settings", req.Name)
-			}
-			vol = existing
-			return nil
-		}
-		var pool *target.Pool
-		var source cloneSource
-		var err error
-		if req.Source != nil {
-			if source, err = findSource(st, req.Source); err != nil {
-				return err
-			}
-			if req.Pool != "" && req.Pool != source.pool {
-				return target.Invalid("a clone stays in its source's pool, %s", source.pool)
-			}
-			pool = st.Pools[source.pool]
-		} else if pool, err = defaultPool(st, req.Pool); err != nil {
-			return err
-		}
-		if driver, err = s.m.newDriver(pool); err != nil {
-			return err
-		}
-		size := req.SizeBytes
-		if sizeGiven {
-			if size, err = driver.AlignSize(req.SizeBytes); err != nil {
-				return err
-			}
-		}
-		if req.Source != nil {
-			if sizeGiven && size < source.sizeBytes {
-				return target.Invalid("a clone can't be smaller than its source (%d bytes)", source.sizeBytes)
-			}
-			if !sizeGiven {
-				size = source.sizeBytes
-			}
-		}
-		name := target.NewInternalName()
-		if err := s.m.beginIntent(opCreate, pool.Name, name, 0); err != nil {
-			return err
-		}
-		internal = name
-		s.m.crashPoint("intent")
-		var path string
-		if req.Source != nil {
-			path, err = driver.Clone(source.internal, internal, size)
-		} else {
-			path, err = driver.Create(internal, size)
-		}
-		if err != nil {
-			return poolFull(pool.Name, err)
-		}
-		s.m.crashPoint("storage")
-		vol = &target.Volume{
-			Name:         req.Name,
-			Pool:         pool.Name,
-			InternalName: internal,
-			DevicePath:   path,
-			SizeBytes:    size,
-			UUID:         target.NewUUID(),
-			NGUID:        target.NewNGUID(),
-			Source:       req.Source,
-			Labels:       req.Labels,
-			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
-		}
-		st.Volumes[req.Name] = vol
-		return nil
-	})
+	vol, created, err := s.provisionVolume(req)
 	if err != nil {
-		if internal != "" {
-			s.m.abandonCreate(driver, internal, req.Name)
-		}
 		return err
 	}
 	code := http.StatusOK
-	if internal != "" {
-		s.m.crashPoint("saved")
-		s.m.endIntent(internal)
+	if created {
 		code = http.StatusCreated
 	}
-	return s.m.view(func(st *target.State) error {
-		writeJSON(w, code, viewVolume(vol, mappings(st)))
+	writeJSON(w, code, viewVolume(vol, mappings(s.m.current())))
+	return nil
+}
+
+// existingVolume answers a retry. CSI retries, so the same request again is a success, not a conflict.
+func (s *Server) existingVolume(req createVolumeRequest, existing *target.Volume) error {
+	st := s.m.current()
+	sizeGiven := req.SizeBytes != 0 || req.Source == nil
+	wantPool := req.Pool
+	if req.Source == nil {
+		p, err := defaultPool(st, req.Pool)
+		if err != nil {
+			return err
+		}
+		wantPool = p.Name
+	}
+	// A size that the pool rounded up the first time has to match on a retry.
+	wantSize := req.SizeBytes
+	if sizeGiven {
+		d, err := s.m.newDriver(st.Pools[existing.Pool])
+		if err != nil {
+			return err
+		}
+		if wantSize, err = d.AlignSize(req.SizeBytes); err != nil {
+			return err
+		}
+	}
+	if (wantPool != "" && existing.Pool != wantPool) ||
+		(sizeGiven && existing.SizeBytes != wantSize) ||
+		!sameSource(existing.Source, req.Source) {
+		return target.NewConflict("volume %s already exists with different settings", req.Name)
+	}
+	return nil
+}
+
+// provisionVolume makes the storage without the lock, which for a full clone can take minutes, then
+// saves the volume. It returns once its reservations are released.
+func (s *Server) provisionVolume(req createVolumeRequest) (*target.Volume, bool, error) {
+	res := s.m.reserve()
+	defer res.release()
+	if err := res.exclusive(volumeKey(req.Name)); err != nil {
+		return nil, false, err
+	}
+	// This comes first because a clone's source may have gone by the time of a retry.
+	if existing := s.m.current().Volumes[req.Name]; existing != nil {
+		if err := s.existingVolume(req, existing); err != nil {
+			return nil, false, err
+		}
+		return existing, false, nil
+	}
+	if err := s.m.admit(); err != nil {
+		return nil, false, err
+	}
+	if src := req.Source; src != nil {
+		key := volumeKey(src.Volume)
+		if src.Snapshot != "" {
+			key = snapshotKey(src.Snapshot)
+		}
+		if _, err := findSource(s.m.current(), src); err != nil {
+			return nil, false, err
+		}
+		if err := res.shared(key); err != nil {
+			return nil, false, err
+		}
+	}
+	// Read after the reservations, because the source can't change from here on.
+	st := s.m.current()
+	var pool *target.Pool
+	var source cloneSource
+	var err error
+	if req.Source != nil {
+		if source, err = findSource(st, req.Source); err != nil {
+			return nil, false, err
+		}
+		if req.Pool != "" && req.Pool != source.pool {
+			return nil, false, target.Invalid("a clone stays in its source's pool, %s", source.pool)
+		}
+		pool = st.Pools[source.pool]
+	} else if pool, err = defaultPool(st, req.Pool); err != nil {
+		return nil, false, err
+	}
+	if err := res.pool(pool.Name); err != nil {
+		return nil, false, err
+	}
+	driver, err := s.m.newDriver(pool)
+	if err != nil {
+		return nil, false, err
+	}
+	sizeGiven := req.SizeBytes != 0 || req.Source == nil
+	size := req.SizeBytes
+	if sizeGiven {
+		if size, err = driver.AlignSize(req.SizeBytes); err != nil {
+			return nil, false, err
+		}
+	}
+	if req.Source != nil {
+		if sizeGiven && size < source.sizeBytes {
+			return nil, false, target.Invalid("a clone can't be smaller than its source (%d bytes)", source.sizeBytes)
+		}
+		if !sizeGiven {
+			size = source.sizeBytes
+		}
+	}
+	internal := target.NewInternalName()
+	res.track(internal)
+	if err := s.m.beginIntent(opCreate, pool.Name, internal, 0); err != nil {
+		return nil, false, err
+	}
+	s.m.crashPoint("intent")
+	var path string
+	if req.Source != nil {
+		path, err = driver.Clone(source.internal, internal, size)
+	} else {
+		path, err = driver.Create(internal, size)
+	}
+	if err != nil {
+		s.m.abandonCreate(driver, internal, req.Name)
+		return nil, false, poolFull(pool.Name, err)
+	}
+	s.m.crashPoint("storage")
+	vol := &target.Volume{
+		Name:         req.Name,
+		Pool:         pool.Name,
+		InternalName: internal,
+		DevicePath:   path,
+		SizeBytes:    size,
+		UUID:         target.NewUUID(),
+		NGUID:        target.NewNGUID(),
+		Source:       req.Source,
+		Labels:       req.Labels,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := s.m.commit(func(st *target.State) error {
+		st.Volumes[req.Name] = vol
 		return nil
-	})
+	}); err != nil {
+		s.m.abandonCreate(driver, internal, req.Name)
+		return nil, false, err
+	}
+	s.m.crashPoint("saved")
+	s.m.endIntent(internal)
+	return vol, true, nil
 }
 
 func (s *Server) getVolume(w http.ResponseWriter, r *http.Request) error {
@@ -541,94 +605,160 @@ func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(w, r, &req); err != nil {
 		return err
 	}
-	var mapped *mappingView
-	var growing string
-	err := s.m.mutate(func(st *target.State) error {
-		vol := st.Volumes[name]
-		if vol == nil {
-			return notFound("no such volume %s", name)
-		}
-		if req.Labels != nil {
-			vol.Labels = req.Labels
-		}
-		if req.SizeBytes == nil || *req.SizeBytes == vol.SizeBytes {
-			return nil
-		}
-		switch {
-		case *req.SizeBytes < vol.SizeBytes:
-			return target.Invalid("volumes can grow but not shrink (currently %d bytes)", vol.SizeBytes)
-		case *req.SizeBytes%4096 != 0:
-			return target.Invalid("size_bytes must be a multiple of 4096")
-		}
-		driver, err := s.m.newDriver(st.Pools[vol.Pool])
-		if err != nil {
-			return err
-		}
-		size, err := driver.AlignSize(*req.SizeBytes)
-		if err != nil {
-			return err
-		}
-		if size == vol.SizeBytes {
-			return nil
-		}
-		if err := s.m.beginIntent(opGrow, vol.Pool, vol.InternalName, size); err != nil {
-			return err
-		}
-		growing = vol.InternalName
-		s.m.crashPoint("intent")
-		if err := driver.Grow(vol.InternalName, size); err != nil {
-			return err
-		}
-		s.m.crashPoint("storage")
-		vol.SizeBytes = size
-		mapped = mappings(st)[name]
-		return nil
-	})
-	if growing != "" {
-		if err == nil {
-			s.m.crashPoint("saved")
-		}
-		s.m.endIntent(growing)
-	}
-	if err != nil {
+	if err := s.changeVolume(name, req.SizeBytes, req.Labels); err != nil {
 		return err
-	}
-	if growing != "" && mapped != nil && s.m.backend.LiveEnabled(mapped.Subsystem, mapped.NSID) {
-		if err := s.m.backend.Revalidate(mapped.Subsystem, mapped.NSID); err != nil {
-			return err
-		}
 	}
 	return s.getVolume(w, r)
 }
 
-func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) error {
-	name := r.PathValue("volume")
-	var driver storage.Driver
-	var internal string
-	err := s.m.mutate(func(st *target.State) error {
+// changeVolume grows the storage, if asked to, without the lock. Labels alone don't need to wait for
+// anything.
+func (s *Server) changeVolume(name string, sizeBytes *int64, labels map[string]string) error {
+	res := s.m.reserve()
+	defer res.release()
+	label := func(st *target.State) (*target.Volume, error) {
 		vol := st.Volumes[name]
+		if vol == nil {
+			return nil, notFound("no such volume %s", name)
+		}
+		if labels != nil {
+			vol.Labels = labels
+		}
+		return vol, nil
+	}
+	var size int64
+	var growing string
+	if sizeBytes != nil {
+		vol := s.m.current().Volumes[name]
 		if vol == nil {
 			return notFound("no such volume %s", name)
 		}
+		if *sizeBytes != vol.SizeBytes {
+			if err := s.m.admit(); err != nil {
+				return err
+			}
+			if err := res.exclusive(volumeKey(name)); err != nil {
+				return err
+			}
+			if vol = s.m.current().Volumes[name]; vol == nil {
+				return notFound("no such volume %s", name)
+			}
+			switch {
+			case *sizeBytes < vol.SizeBytes:
+				return target.Invalid("volumes can grow but not shrink (currently %d bytes)", vol.SizeBytes)
+			case *sizeBytes%4096 != 0:
+				return target.Invalid("size_bytes must be a multiple of 4096")
+			}
+			driver, err := s.m.newDriver(s.m.current().Pools[vol.Pool])
+			if err != nil {
+				return err
+			}
+			if size, err = driver.AlignSize(*sizeBytes); err != nil {
+				return err
+			}
+			if size != vol.SizeBytes {
+				if err := res.pool(vol.Pool); err != nil {
+					return err
+				}
+				if err := s.m.beginIntent(opGrow, vol.Pool, vol.InternalName, size); err != nil {
+					return err
+				}
+				growing = vol.InternalName
+				s.m.crashPoint("intent")
+				if err := driver.Grow(vol.InternalName, size); err != nil {
+					s.m.endIntent(growing)
+					return err
+				}
+				s.m.crashPoint("storage")
+			}
+		}
+	}
+	if growing == "" {
+		return s.m.mutate(func(st *target.State) error {
+			_, err := label(st)
+			return err
+		})
+	}
+	var mapped *mappingView
+	err := s.m.commit(func(st *target.State) error {
+		vol, err := label(st)
+		if err != nil {
+			return err
+		}
+		vol.SizeBytes = size
+		mapped = mappings(st)[name]
+		return nil
+	})
+	if err == nil {
+		s.m.crashPoint("saved")
+	}
+	s.m.endIntent(growing)
+	if err != nil {
+		return err
+	}
+	if mapped != nil && s.m.backend.LiveEnabled(mapped.Subsystem, mapped.NSID) {
+		return s.m.backend.Revalidate(mapped.Subsystem, mapped.NSID)
+	}
+	return nil
+}
+
+func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) error {
+	name := r.PathValue("volume")
+	if err := s.removeVolume(name); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (s *Server) removeVolume(name string) error {
+	res := s.m.reserve()
+	defer res.release()
+	if err := s.m.admit(); err != nil {
+		return err
+	}
+	if err := res.exclusive(volumeKey(name)); err != nil {
+		return err
+	}
+	unmapped := func(st *target.State) (*target.Volume, error) {
+		vol := st.Volumes[name]
+		if vol == nil {
+			return nil, notFound("no such volume %s", name)
+		}
 		if m := mappings(st)[name]; m != nil {
-			return target.NewConflict("volume %s is mapped into %s as namespace %d", name, m.Subsystem, m.NSID)
+			return nil, target.NewConflict("volume %s is mapped into %s as namespace %d", name, m.Subsystem, m.NSID)
 		}
-		var err error
-		if driver, err = s.m.newDriver(st.Pools[vol.Pool]); err != nil {
+		return vol, nil
+	}
+	vol, err := unmapped(s.m.current())
+	if err != nil {
+		return err
+	}
+	return s.removeStorage(res, vol.Pool, vol.InternalName, func(st *target.State) error {
+		if _, err := unmapped(st); err != nil {
 			return err
 		}
-		if err := s.m.beginIntent(opDelete, vol.Pool, vol.InternalName, 0); err != nil {
-			return err
-		}
-		internal = vol.InternalName
-		s.m.crashPoint("intent")
 		delete(st.Volumes, name)
 		return nil
 	})
+}
+
+// removeStorage saves that something has gone, then removes its storage.
+func (s *Server) removeStorage(res *reservation, pool, internal string, forget func(*target.State) error) error {
+	if err := res.pool(pool); err != nil {
+		return err
+	}
+	driver, err := s.m.newDriver(s.m.current().Pools[pool])
 	if err != nil {
-		if internal != "" {
-			s.m.endIntent(internal) // It stays a volume, so its storage stays too.
-		}
+		return err
+	}
+	res.track(internal)
+	if err := s.m.beginIntent(opDelete, pool, internal, 0); err != nil {
+		return err
+	}
+	s.m.crashPoint("intent")
+	if err := s.m.commit(forget); err != nil {
+		s.m.endIntent(internal) // It's still in use, so its storage stays too.
 		return err
 	}
 	s.m.crashPoint("saved")
@@ -639,7 +769,6 @@ func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) error {
 	}
 	s.m.crashPoint("storage")
 	s.m.endIntent(internal)
-	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 
@@ -696,63 +825,83 @@ func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) error {
 	if err := checkObjectName("snapshot", req.Name); err != nil {
 		return err
 	}
-	var snap *target.Snapshot
-	var driver storage.Driver
-	var internal string
-	err := s.m.mutate(func(st *target.State) error {
-		// This comes first because the volume may have gone by the time CSI retries.
-		if existing := st.Snapshots[req.Name]; existing != nil {
-			if existing.Volume != req.Volume {
-				return target.NewConflict("snapshot %s already exists, of volume %s", req.Name, existing.Volume)
-			}
-			snap = existing
-			return nil
-		}
-		vol := st.Volumes[req.Volume]
-		if vol == nil {
-			return target.Invalid("no such volume %s", req.Volume)
-		}
-		var err error
-		if driver, err = s.m.newDriver(st.Pools[vol.Pool]); err != nil {
-			return err
-		}
-		name := target.NewInternalName()
-		if err := s.m.beginIntent(opCreate, vol.Pool, name, 0); err != nil {
-			return err
-		}
-		internal = name
-		s.m.crashPoint("intent")
-		path, err := driver.Snapshot(vol.InternalName, internal)
-		if err != nil {
-			return poolFull(vol.Pool, err)
-		}
-		s.m.crashPoint("storage")
-		snap = &target.Snapshot{
-			Name:         req.Name,
-			Volume:       vol.Name,
-			Pool:         vol.Pool,
-			InternalName: internal,
-			DevicePath:   path,
-			SizeBytes:    vol.SizeBytes,
-			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
-		}
-		st.Snapshots[req.Name] = snap
-		return nil
-	})
+	snap, created, err := s.takeSnapshot(req.Name, req.Volume)
 	if err != nil {
-		if internal != "" {
-			s.m.abandonCreate(driver, internal, req.Name)
-		}
 		return err
 	}
 	code := http.StatusOK
-	if internal != "" {
-		s.m.crashPoint("saved")
-		s.m.endIntent(internal)
+	if created {
 		code = http.StatusCreated
 	}
 	writeJSON(w, code, viewSnapshot(snap))
 	return nil
+}
+
+func (s *Server) takeSnapshot(name, volume string) (*target.Snapshot, bool, error) {
+	res := s.m.reserve()
+	defer res.release()
+	if err := res.exclusive(snapshotKey(name)); err != nil {
+		return nil, false, err
+	}
+	// This comes first because the volume may have gone by the time CSI retries.
+	if existing := s.m.current().Snapshots[name]; existing != nil {
+		if existing.Volume != volume {
+			return nil, false, target.NewConflict("snapshot %s already exists, of volume %s", name, existing.Volume)
+		}
+		return existing, false, nil
+	}
+	if err := s.m.admit(); err != nil {
+		return nil, false, err
+	}
+	if s.m.current().Volumes[volume] == nil {
+		return nil, false, target.Invalid("no such volume %s", volume)
+	}
+	if err := res.shared(volumeKey(volume)); err != nil {
+		return nil, false, err
+	}
+	// Read after the reservation, because the volume can't change from here on.
+	vol := s.m.current().Volumes[volume]
+	if vol == nil {
+		return nil, false, target.Invalid("no such volume %s", volume)
+	}
+	if err := res.pool(vol.Pool); err != nil {
+		return nil, false, err
+	}
+	driver, err := s.m.newDriver(s.m.current().Pools[vol.Pool])
+	if err != nil {
+		return nil, false, err
+	}
+	internal := target.NewInternalName()
+	res.track(internal)
+	if err := s.m.beginIntent(opCreate, vol.Pool, internal, 0); err != nil {
+		return nil, false, err
+	}
+	s.m.crashPoint("intent")
+	path, err := driver.Snapshot(vol.InternalName, internal)
+	if err != nil {
+		s.m.abandonCreate(driver, internal, name)
+		return nil, false, poolFull(vol.Pool, err)
+	}
+	s.m.crashPoint("storage")
+	snap := &target.Snapshot{
+		Name:         name,
+		Volume:       vol.Name,
+		Pool:         vol.Pool,
+		InternalName: internal,
+		DevicePath:   path,
+		SizeBytes:    vol.SizeBytes,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := s.m.commit(func(st *target.State) error {
+		st.Snapshots[name] = snap
+		return nil
+	}); err != nil {
+		s.m.abandonCreate(driver, internal, name)
+		return nil, false, err
+	}
+	s.m.crashPoint("saved")
+	s.m.endIntent(internal)
+	return snap, true, nil
 }
 
 func (s *Server) getSnapshot(w http.ResponseWriter, r *http.Request) error {
@@ -769,38 +918,28 @@ func (s *Server) getSnapshot(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Server) deleteSnapshot(w http.ResponseWriter, r *http.Request) error {
 	name := r.PathValue("snapshot")
-	var driver storage.Driver
-	var internal string
-	err := s.m.mutate(func(st *target.State) error {
-		snap := st.Snapshots[name]
-		if snap == nil {
-			return notFound("no such snapshot %s", name)
-		}
-		var err error
-		if driver, err = s.m.newDriver(st.Pools[snap.Pool]); err != nil {
-			return err
-		}
-		if err := s.m.beginIntent(opDelete, snap.Pool, snap.InternalName, 0); err != nil {
-			return err
-		}
-		internal = snap.InternalName
-		s.m.crashPoint("intent")
+	if err := s.removeSnapshot(name); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (s *Server) removeSnapshot(name string) error {
+	res := s.m.reserve()
+	defer res.release()
+	if err := s.m.admit(); err != nil {
+		return err
+	}
+	if err := res.exclusive(snapshotKey(name)); err != nil {
+		return err
+	}
+	snap := s.m.current().Snapshots[name]
+	if snap == nil {
+		return notFound("no such snapshot %s", name)
+	}
+	return s.removeStorage(res, snap.Pool, snap.InternalName, func(st *target.State) error {
 		delete(st.Snapshots, name)
 		return nil
 	})
-	if err != nil {
-		if internal != "" {
-			s.m.endIntent(internal)
-		}
-		return err
-	}
-	s.m.crashPoint("saved")
-	// Saved first, as with volumes.
-	if err := driver.Delete(internal); err != nil {
-		return err
-	}
-	s.m.crashPoint("storage")
-	s.m.endIntent(internal)
-	w.WriteHeader(http.StatusNoContent)
-	return nil
 }

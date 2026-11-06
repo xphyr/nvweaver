@@ -35,12 +35,12 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | Suite | Path | Result |
 |---|---|---|
 | Unit tests | | Pass |
-| `e2e.sh`, kernel target | Loopback in one VM | 106 of 106 |
-| `e2e.sh`, SPDK target | Loopback in one VM | 117 of 117 |
-| `systemd-e2e.sh` | Loopback in one VM | 67 of 67 |
-| `vm/vm-e2e.sh` | Between two VMs | 129 of 129 |
+| `e2e.sh`, kernel target | Loopback in one VM | 209 of 209 |
+| `e2e.sh`, SPDK target | Loopback in one VM | 223 of 223 |
+| `systemd-e2e.sh` | Loopback in one VM | 68 of 68 |
+| `vm/vm-e2e.sh` | Between two VMs | 701 of 701 |
 
-`make lint` and `go test -race` also pass. The same counts passed on GitHub's hosted runners, in
+`go test -race` also passes. Earlier, smaller versions of these suites passed on GitHub's hosted runners, in
 CI run 41887410583 on commit `391e438`, with 2-vCPU VMs and Ubuntu's QEMU 8.2.
 
 Earlier versions of the first three also passed on Docker, with 101, 107 and 67 checks. Docker
@@ -73,6 +73,48 @@ Adding a volume takes longer as total volumes grow, because every change reconci
 volume instead, the kernel target took 402 ms per volume, for five API calls, at only 1,000 volumes.
 
 Not measured: many connected hosts, I/O across many volumes, or a real disk.
+
+### Scale, after the work on it
+
+The same benchmark and VM shape, except with 4 GB instead of 8 GB, and nothing else running. These suites and numbers include
+the incremental reconcile, the direct copy of the state, and storage work outside the lock.
+
+| 5,000 volumes across 100 node subsystems | Kernel target | SPDK target |
+|---|---|---|
+| Add one volume, at 100 / 1,000 / 5,000 | 7 / 8 / 20 ms (was 264) | 52 / 52 / 60 ms (was 488) |
+| Move a volume, at 5,000 | 84 ms (was 644) | 153 ms (was 1,094) |
+| Building all 5,000 | 76 s (was 13 minutes) | 291 s (was 26 minutes) |
+| Stop | 46.5 s (47) | 15.2 s (113), by killing `nvmf_tgt` at our time limit |
+| Start | 11.1 s (12) | 147 s (144) |
+| Discovery, and connecting to one subsystem | 0.03 s, 0.05 s | 0.03 s, 0.03 s |
+
+| 5,000 volumes with a subsystem each, five API calls per volume | Kernel target | SPDK target |
+|---|---|---|
+| Provision one, at 1,000 / 5,000 | 45 / 221 ms (was 402 at 1,000) | 145 / 286 ms |
+| Building all 5,000 | 631 s | 1,046 s |
+| Start | 11.1 s | 310 s |
+| Target memory | Not measured | 2.1 GB, about 0.37 MB per subsystem |
+| Discovery for a host allowed on all of them | **Fails, see below** | 5,000 entries in 5.1 s |
+
+**Every SPDK RPC takes about 8 ms,** measured by timing all 54,000 in a run to 2,000 volumes. `bdev_aio_create` takes about 18 ms.
+The time didn't change with the number of volumes, and was the same for a call that does almost nothing. So what a change
+costs on SPDK is how many RPCs it makes. The first incremental reconcile barely helped SPDK (440 ms at 5,000) because it checked
+that each bdev in the changed subsystem existed. A unit test counted writes only, so it couldn't see that. Now it counts reads
+too, and adding a namespace takes 4 RPCs at any size. The cause of the 8 ms hasn't been found. It may be how SPDK polls its socket.
+Start on SPDK is mostly this cost, at about 26 ms per volume. Sending RPCs without waiting for each answer might help, and hasn't been tried.
+
+**The kernel limits discovery to about 4,095 subsystems for one host on one port.** Tested directly on configfs on kernel 7.2: 4,091
+entries worked. At 4,101, `nvme discover` fails with "failed to get discovery log", and a warning trace appears in `dmesg`. This fits an
+allocation limited to 4 MiB, at about 1 KiB per entry. Connecting by NQN still works.
+
+Stopping SPDK doesn't take the target apart first any more. At thousands of volumes `nvmf_tgt` doesn't finish exiting within our 15 s,
+so it's killed. Hosts' acknowledged writes have already finished by then. How long it would take left alone hasn't been measured.
+
+**Under load:** `vm-e2e` sends 16 clones, snapshots, creates and grows at once on real storage, on both targets and pool types. Each clone is
+then read by a host and compared. 8 identical clone requests at once gave one `201`, and `503` for the rest. The 16 workers themselves were
+never told to retry, so a `503` from a full pool or queue is only tested in unit tests, with a fake driver and a blocked backend.
+
+**Not tested at this scale:** the new systemd timeouts, under systemd itself. They come from the timings above.
 
 ### Sharing a volume between hosts
 

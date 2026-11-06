@@ -190,6 +190,8 @@ backend_tests() { # BACKEND IMAGE [run args]
 	api "a disk can't be exported twice" 409 POST "/v1/subsystems/$NQN:$backend-file/namespaces" "{\"nsid\":2,\"device_path\":\"$NVME\"}"
 	snapshot_tests "$backend" reflink
 	snapshot_tests "$backend" lvm-thin
+	concurrent_tests "$backend" reflink
+	concurrent_tests "$backend" lvm-thin
 	lvm_tests "$backend" "$image"
 	full_pool_tests "$backend"
 	power_tests "$backend" "$image" lvm-thin
@@ -340,6 +342,163 @@ snapshot_tests() { # BACKEND POOL-TYPE
 		expect_eq "the pool's volumes are gone" 0 "$(our_lvs)"
 	fi
 	api "forget the pool" 204 DELETE /v1/pools/snap
+}
+
+# Storage work runs at the same time, without the service's lock. Lots of it at once on real storage, as a
+# client would send it, retrying a 503. Clones have to hold the right data, and nothing may be lost or left over.
+concurrent_tests() { # BACKEND POOL-TYPE
+	local backend=$1 kind=$2 sub=$NQN:$1-$2-many src=$NQN:$1-$2-many-src n=16 out sums pool_dir="" devs
+	section "$backend, $kind: many changes at once"
+	if [ "$kind" = reflink ]; then
+		t "sudo podman exec nvweaver-vm mkdir -p /var/lib/nvweaver/many-pool"
+		api "adopt a pool" 201 POST /v1/pools '{"name":"many","type":"reflink","path":"/var/lib/nvweaver/many-pool"}'
+		pool_dir=$(t "sudo podman volume inspect nvweaver-vm-data --format '{{.Mountpoint}}'")/many-pool
+	else
+		api "adopt a pool" 201 POST /v1/pools "{\"name\":\"many\",\"type\":\"lvm-thin\",\"volume_group\":\"$VG\",\"thin_pool\":\"pool0\"}"
+	fi
+	api "create the volume to clone" 201 POST /v1/volumes '{"name":"src","size_bytes":67108864}'
+	api "subsystem for it" 201 POST /v1/subsystems "{\"nqn\":\"$src\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
+	api "map it" 201 POST "/v1/subsystems/$src/namespaces" '{"volume":"src"}'
+	out=$(connect "$src") && ok "host connects" || bad "host connects" "$out"
+	local dev
+	dev=$(ini_dev "$src")
+	i "sudo dd if=/dev/urandom of=$dev bs=1M count=16 oflag=direct status=none; sync"
+	local want
+	want=$(sum_of i "$dev")
+	disconnect "$src"
+
+	t "cat > /tmp/many.sh" <<EOF
+API=$API
+n=$n
+sub=$sub
+HOST=$HOST
+$(cat <<'INNER'
+# Sends a request, retrying while the service says it's busy. Prints only what went wrong.
+req() { # METHOD PATH WANT [JSON]
+	local i code
+	for i in $(seq 1 1500); do
+		if [ -n "${4:-}" ]; then
+			code=$(curl -s -m 120 -o /dev/null -w '%{http_code}' -X "$1" -d "$4" "$API$2")
+		else
+			code=$(curl -s -m 120 -o /dev/null -w '%{http_code}' -X "$1" "$API$2")
+		fi
+		if [ "$code" = 503 ]; then
+			echo busy >> /tmp/many.busy
+			sleep 0.2
+			continue
+		fi
+		[ "$code" = "$3" ] || echo "$1 $2: HTTP $code, want $3"
+		return
+	done
+	echo "$1 $2: stayed busy"
+}
+each() { # FUNCTION: runs it for each number at once
+	local j pids=()
+	for j in $(seq 1 "$n"); do
+		"$1" "$j" &
+		pids+=($!)
+	done
+	wait "${pids[@]}" # Not a bare wait, which would also wait for the watcher, and that's waiting for this.
+}
+make_all() {
+	req POST /v1/volumes 201 "{\"name\":\"c$1\",\"source\":{\"volume\":\"src\"}}"
+	req POST /v1/snapshots 201 "{\"name\":\"s$1\",\"volume\":\"src\"}"
+	req POST /v1/volumes 201 "{\"name\":\"v$1\",\"size_bytes\":8388608}"
+	req PATCH "/v1/volumes/v$1" 200 '{"size_bytes":16777216}'
+}
+map_clone() { req POST "/v1/subsystems/$sub/namespaces" 201 "{\"nsid\":$1,\"volume\":\"c$1\"}"; }
+unmap_clone() { req DELETE "/v1/subsystems/$sub/namespaces/$1" 204; }
+remove_all() {
+	req DELETE "/v1/volumes/c$1" 204
+	req DELETE "/v1/snapshots/s$1" 204
+	req DELETE "/v1/volumes/v$1" 204
+}
+same_name() {
+	curl -s -m 120 -o /dev/null -w '%{http_code}\n' -X POST -d '{"name":"same","source":{"volume":"src"}}' "$API/v1/volumes"
+}
+# Looks for storage reported as a stray while the work is going on, which would be false.
+watch_strays() {
+	while [ -e /tmp/many.watch ]; do
+		curl -s -m 120 "$API/v1/pools/many" | grep -o '[^"]*no volume refers[^"]*' >> /tmp/many.strays
+		sleep 0.1
+	done
+}
+case "$1" in
+make)
+	: > /tmp/many.busy; : > /tmp/many.strays; touch /tmp/many.watch
+	watch_strays &
+	w=$!
+	each make_all
+	rm -f /tmp/many.watch
+	wait "$w"
+	;;
+map) each map_clone ;;
+unmap) each unmap_clone ;;
+remove)
+	: > /tmp/many.strays; touch /tmp/many.watch
+	watch_strays &
+	w=$!
+	each remove_all
+	rm -f /tmp/many.watch
+	wait "$w"
+	;;
+same)
+	for j in 1 2 3 4 5 6 7 8; do same_name & done
+	wait
+	;;
+esac
+INNER
+)
+EOF
+	out=$(t "bash /tmp/many.sh make" 2>&1)
+	expect_eq "$n clones, $n snapshots, $n volumes and $n grows at once all succeed" "" "$out"
+	expect_eq "no work in progress is reported as a stray" "" "$(t 'sort -u /tmp/many.strays | head -3')"
+	echo "        (asked to retry $(t 'wc -l < /tmp/many.busy') times)"
+	expect_eq "all the volumes are there" "$((2 * n + 1))" "$(t "curl -s $API/v1/volumes | jq '.items | length'")"
+	expect_eq "and all the snapshots" "$n" "$(t "curl -s $API/v1/snapshots | jq '.items | length'")"
+	expect_eq "every grow took effect" "$n" "$(t "curl -s $API/v1/volumes | jq '[.items[] | select(.name | startswith(\"v\")) | select(.size_bytes == 16777216)] | length'")"
+	expect_eq "with a different identity each" "$((2 * n + 1))" "$(t "curl -s $API/v1/volumes | jq '[.items[].nguid] | unique | length'")"
+
+	out=$(t "bash /tmp/many.sh same" | sort | uniq -c | awk '{print $2}' | tr '\n' ' ')
+	case "$out" in
+	*201*) ok "the same clone asked for 8 times at once is made ($out)" ;;
+	*) bad "the same clone asked for 8 times at once is made" "$out" ;;
+	esac
+	expect_eq "exactly once" 1 "$(t "bash /tmp/many.sh same >/dev/null; curl -s $API/v1/volumes | jq '[.items[] | select(.name == \"same\")] | length'")"
+	api "delete it" 204 DELETE /v1/volumes/same
+	if [ "$kind" = reflink ]; then
+		expect_eq "the pool holds exactly what the service lists" "$((3 * n + 1))" "$(t "sudo ls $pool_dir | grep -c img")"
+	else
+		expect_eq "the pool holds exactly what the service lists" "$((3 * n + 1))" "$(our_lvs)"
+	fi
+
+	api "subsystem for the clones" 201 POST /v1/subsystems "{\"nqn\":\"$sub\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
+	expect_eq "map every clone into it at once" "" "$(t "bash /tmp/many.sh map" 2>&1)"
+	out=$(connect "$sub") && ok "host connects" || bad "host connects" "$out"
+	for _ in $(seq 1 $((60 * SCALE))); do
+		devs=$(i "for s in /sys/class/nvme-subsystem/*; do [ \"\$(cat \$s/subsysnqn)\" = $sub ] && ls -d \$s/nvme*n* | xargs -n1 basename; done | sed 's|^|/dev/|'")
+		[ "$(echo "$devs" | grep -c nvme)" -ge "$n" ] && break
+		sleep 0.25
+	done
+	expect_eq "the host sees all of them" "$n" "$(echo "$devs" | grep -c nvme)"
+	sums=$(for d in $devs; do sum_of i "$d"; done | sort | uniq -c | awk '{print $1, $2}')
+	expect_eq "and each holds the data of the volume it was cloned from" "$n $want" "$sums"
+	disconnect "$sub"
+	expect_eq "unmap them all at once" "" "$(t "bash /tmp/many.sh unmap" 2>&1)"
+	api "remove that subsystem" 204 DELETE "/v1/subsystems/$sub"
+
+	expect_eq "delete everything at once" "" "$(t "bash /tmp/many.sh remove" 2>&1)"
+	expect_eq "nothing reported as a stray meanwhile" "" "$(t 'sort -u /tmp/many.strays | head -3')"
+	api "unmap the source" 204 DELETE "/v1/subsystems/$src/namespaces/1"
+	api "remove its subsystem" 204 DELETE "/v1/subsystems/$src"
+	api "delete the source" 204 DELETE /v1/volumes/src
+	if [ "$kind" = reflink ]; then
+		expect_eq "the pool is empty" 0 "$(t "sudo ls $pool_dir | grep -c img")"
+	else
+		expect_eq "the pool is empty" 0 "$(our_lvs)"
+	fi
+	expect_eq "no change is left unfinished" 0 "$(t "sudo podman exec nvweaver-vm sh -c 'ls /var/lib/nvweaver/intents | wc -l'")"
+	api "forget the pool" 204 DELETE /v1/pools/many
 }
 
 # What's particular to LVM: its rules on sizes, what else is in the volume group, and crashing.

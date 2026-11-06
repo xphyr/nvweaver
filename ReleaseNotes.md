@@ -19,6 +19,14 @@ The major differences between versions. For every change, see the commit history
 - **A transport on ports.** Ports report `transport`, and `capabilities.transports` lists what's usable. Only `tcp` is
   available, and anything else is refused. This leaves room for NVMe/RDMA later.
 
+### Changed
+
+- **Much faster at scale.** Adding a volume with 5,000 in place takes 20 ms instead of 264 ms on the kernel target, and 60 ms instead of 488 ms on
+  SPDK. SPDK also now allows 8,192 subsystems, up from 1,024. See [known limits](README.md#known-limits).
+- **The API stays responsive while storage is busy.** Reads never wait for a change, and slow storage work no longer holds up other requests.
+- **The API can answer `503` with `Retry-After`** when too much is pending, or when an object is in the middle of another change. Clients should retry.
+- **SPDK stops much faster with many volumes,** without taking the target apart first.
+
 ### Planned for this release
 
 - **arm64 images and tarball,** alongside x86-64. So far, arm64 builds from source. Its tests pass on Arm CI runners and
@@ -33,6 +41,8 @@ The major differences between versions. For every change, see the commit history
   The kernel target and LVM volumes aren't slowed. See [known limits](README.md#known-limits) for block devices on SPDK.
 - **The SPDK Quadlet no longer reports `failed` after a slow shutdown.** Podman killed it after 10 seconds, and it now
   allows 25.
+- **systemd no longer kills the service while it starts or stops with thousands of volumes.** Its time limits were too short: start is now
+  900 s, and stopping the unit 300 s.
 - **Listing namespaces on SPDK is much faster at scale,** at about 71 ms instead of 32 seconds with 5,000 volumes.
 
 ## v0.1.0

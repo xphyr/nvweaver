@@ -30,7 +30,8 @@ PodmanArgs=--stop-timeout=25
 # SPDK's data path stops with the container, so a crash needs a restart.
 Restart=on-failure
 RestartSec=5
-TimeoutStartSec=120
+# Restoring takes minutes with thousands of volumes.
+TimeoutStartSec=900
 TimeoutStopSec=30
 
 [Install]

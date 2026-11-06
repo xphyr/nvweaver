@@ -215,8 +215,8 @@ there, not as absolute numbers.
 
 - **Chosen:** this as the first target, measured with `test/vm/scale-bench.sh`.
 - **Design consequences:**
-  - Incremental reconcile, batching per subsystem, and returning "busy" under load, as PowerMax does,
-    rather than one global lock and a full reconcile on every change.
+  - Incremental reconcile, and returning "busy" under load, as PowerMax does, rather than a full reconcile on every
+    change. Batching was planned too, and turned out not to be needed. See decision 29.
   - Slow operations don't block the API.
   - Create is idempotent by name, because CSI retries.
 - **Left room for:** group snapshots, which all three vendors support. Not in the first version, and
@@ -275,3 +275,21 @@ there, not as absolute numbers.
 - **Still open: block devices on SPDK, including LVM volumes.** They have no such attribute, and FUA is ignored there too. Those
   writes do reach the device, and passed here, but QEMU's disks don't lose unflushed writes. A real drive with a volatile
   cache might lose them on a power cut. This is untested, and documented in the README.
+
+## 29. Changes are applied one at a time, and storage work runs outside the lock
+
+- **Chosen:** reads load the current state, which is replaced whole and never modified, so they never wait. A change takes one lock
+  for its reconcile and save. Slow storage work runs before that, without the lock.
+- **Reservations, not queues:** while working on storage, a request holds its object exclusively, and what it depends on shared, such as a
+  clone's source. Anything that clashes gets `503` with `Retry-After` straight away, and nothing waits for a reservation. So does a pool with
+  32 operations running, or a queue of 256 changes. A client that retries, as CSI does, needs nothing more, and a retry of a clone
+  still running is told to wait, rather than being called a conflict.
+- **Rejected: batching changes into one reconcile and save.** It was the plan, in decision 24. The numbers don't justify it: at 5,000 volumes a change
+  takes 20 ms on the kernel target and 60 ms on SPDK, and SPDK's cost is RPCs, one each per volume, which a batch can't share. It would also make
+  failures hard to report fairly, as one bad namespace would fail its neighbours' requests, and some requests can't simply be run again.
+  Reconsider if a real client needs more than about 50 changes a second.
+- **Rejected, for now: a journal instead of rewriting the state file.** A whole change takes 20 ms at 5,000 volumes on the kernel target, save
+  included, once the file is compact, so there's little left to gain.
+- **Stopping SPDK no longer takes it apart first:** its configuration goes with its process, and doing so took about 100 s at 5,000 volumes.
+- **SPDK is limited to 8,192 subsystems,** rather than its default of 1,024. It's fixed at startup, and beyond it a request is refused with a clear
+  error. The kernel target reached 5,000 with no limit in the way, and the difference is documented in the README.

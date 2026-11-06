@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"nvweaver/internal/storage"
@@ -20,9 +21,18 @@ import (
 
 // Manager serialises changes to the target and persists its desired state.
 type Manager struct {
-	mu        sync.Mutex
+	mu sync.Mutex // Held for each change, so one is applied at a time.
+	// state is replaced whole, and never modified once it's here, so reads don't wait for a change.
+	state atomic.Pointer[target.State]
+	// waiting counts the changes queued for mu.
+	waiting atomic.Int32
+	busyMu  sync.Mutex
+	// busy holds the objects reserved by requests in progress: the number sharing each, or -1 for one
+	// that's exclusive.
+	busy map[string]int
+	// inFlight holds the internal names being worked on by those requests.
+	inFlight  map[string]bool
 	backend   target.Backend
-	state     *target.State
 	statePath string
 	volumeDir string
 	intentDir string
@@ -38,14 +48,16 @@ type Manager struct {
 // previous instance does not disturb its hosts.
 func NewManager(b target.Backend, dataDir string, log *slog.Logger) (*Manager, error) {
 	m := &Manager{
+		busy:      map[string]int{},
+		inFlight:  map[string]bool{},
 		backend:   b,
-		state:     target.NewState(),
 		statePath: filepath.Join(dataDir, "state.json"),
 		volumeDir: filepath.Join(dataDir, "volumes"),
 		intentDir: filepath.Join(dataDir, "intents"),
 		log:       log,
 		newDriver: storage.New,
 	}
+	m.state.Store(target.NewState())
 	if err := os.MkdirAll(m.volumeDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
@@ -80,24 +92,38 @@ func NewManager(b target.Backend, dataDir string, log *slog.Logger) (*Manager, e
 	if err := b.Reconcile(target.NewState(), loaded); err != nil {
 		return nil, fmt.Errorf("restore saved configuration: %w", err)
 	}
-	m.state = loaded
+	m.state.Store(loaded)
 	return m, nil
 }
 
-// view runs fn with the current state, which fn must not modify or retain.
-func (m *Manager) view(fn func(*target.State) error) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return fn(m.state)
+// current returns the state as of now, which must not be modified. It stays valid, but goes out of date.
+func (m *Manager) current() *target.State {
+	return m.state.Load()
 }
 
-// mutate applies fn to a copy of the state, moves the kernel to the result and
-// saves it. On failure the kernel is moved back, so a request either happens
-// completely or not at all.
+// view runs fn with the current state, which fn must not modify.
+func (m *Manager) view(fn func(*target.State) error) error {
+	return fn(m.current())
+}
+
+// mutate makes a change, if there's room for it in the queue. See commit.
 func (m *Manager) mutate(fn func(*target.State) error) error {
+	if err := m.admit(); err != nil {
+		return err
+	}
+	return m.commit(fn)
+}
+
+// commit applies fn to a copy of the state, moves the target to the result and saves it. On failure
+// the target is moved back, so a request either happens completely or not at all. fn runs with the lock
+// held, so it must be quick. Work that's already been done uses this directly, so as not to be refused.
+func (m *Manager) commit(fn func(*target.State) error) error {
+	m.waiting.Add(1)
 	m.mu.Lock()
+	m.waiting.Add(-1)
 	defer m.mu.Unlock()
-	next := m.state.Clone()
+	state := m.current()
+	next := state.Clone()
 	if err := fn(next); err != nil {
 		return err
 	}
@@ -107,14 +133,14 @@ func (m *Manager) mutate(fn func(*target.State) error) error {
 	if err := m.backend.Check(next); err != nil {
 		return err
 	}
-	err := m.backend.Reconcile(m.state, next)
+	err := m.backend.Reconcile(state, next)
 	if err == nil {
 		if err = m.save(next); err == nil {
-			m.state = next
+			m.state.Store(next)
 			return nil
 		}
 	}
-	if rerr := m.backend.Reconcile(next, m.state); rerr != nil {
+	if rerr := m.backend.Reconcile(next, state); rerr != nil {
 		m.log.Error("rollback failed; kernel may differ from saved state", "error", rerr, "cause", err)
 	}
 	return err
@@ -122,7 +148,8 @@ func (m *Manager) mutate(fn func(*target.State) error) error {
 
 // save writes the state atomically. It can hold DH-CHAP secrets, hence 0600.
 func (m *Manager) save(s *target.State) error {
-	b, err := json.MarshalIndent(s, "", "  ")
+	// Compact, because this runs on every change, and indenting it cost more than half the time at scale.
+	b, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
@@ -164,7 +191,7 @@ func writeDurably(path string, b []byte) error {
 func (m *Manager) Teardown() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.backend.Reconcile(m.state, target.NewState())
+	return m.backend.Reconcile(m.current(), target.NewState())
 }
 
 // checkBacking refuses anything but a block device or regular file, and a

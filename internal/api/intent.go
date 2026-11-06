@@ -183,7 +183,7 @@ func (m *Manager) finishGrow(driver storage.Driver, volume string, in intent) er
 		return err
 	}
 	var mapped *mappingView
-	err := m.mutate(func(st *target.State) error {
+	err := m.commit(func(st *target.State) error {
 		if vol := st.Volumes[volume]; vol != nil && vol.SizeBytes < in.SizeBytes {
 			vol.SizeBytes = in.SizeBytes
 		}

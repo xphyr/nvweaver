@@ -52,15 +52,19 @@ and CLI once, against the result.
 - [x] Check automatically that the spec and the implementation stay in sync. Routes and field names
       are checked, not types or status codes
 - [x] Benchmark the current API early, to give the design real numbers: see `docs/testing.md`
-- [ ] Replace the full reconcile with an incremental one, batched per subsystem, so that the target
-      of 5,000 volumes across 100 node subsystems is reachable
+- [x] Replace the full reconcile with an incremental one, so that the target of 5,000 volumes across 100 node subsystems is
+      reachable. Not batched, as measurements didn't justify it: see decision 29
+- [ ] Try sending SPDK's RPCs at startup without waiting for each answer. Starting takes about 26 ms per volume, and 310 s with a
+      subsystem for each of 5,000 volumes
+- [ ] Find out why every SPDK RPC takes about 8 ms, and how long `nvmf_tgt` takes to exit at 5,000 volumes if it isn't killed
+- [ ] Test the systemd timeouts at 5,000 volumes, under systemd
 - [x] Add an intent log for pool operations, and internal names for volumes
 - [ ] Make removing a host force its connections off on the kernel target, and test the effect on other hosts
 - [x] Fix SPDK's slow list, which fetched its entire configuration for each namespace
 - [ ] Report to SPDK that AIO bdevs ignore FUA while reporting a write cache. See decision 28. An upstream fix would let us drop
       the sync attribute, and also cover block devices
 - [ ] Check `fs.aio-max-nr` on SPDK at startup, and give a clear error. Each volume needs 128 per core
-- [ ] Handle long-running operations such as full clones, without blocking the API behind its
+- [x] Handle long-running operations such as full clones, without blocking the API behind its
       single lock
 - [x] Add support for an LVM backend, using thin provisioning only. Adopt existing pools only. In a container, use
       the host's own `lvm`, and test that together with a shared `/dev`
@@ -97,9 +101,8 @@ and CLI once, against the result.
 
 Production-like scale is a requirement, so measure this before building on it.
 
-- [ ] Benchmark the API with thousands of subsystems, namespaces, hosts and volumes
-- [ ] Replace the full reconcile, single lock and whole-state save on every change, if
-      the benchmark shows they limit scale (likely)
+- [x] Benchmark the API with thousands of subsystems, namespaces, hosts and volumes
+- [x] Replace the full reconcile and single lock. The whole-state save stays, as it no longer limits scale: see decision 29
 - [ ] Add pagination to list endpoints
 - [ ] Measure target limits with many connections: each connection opens roughly one TCP
       connection per CPU, so per-volume subsystems add up quickly

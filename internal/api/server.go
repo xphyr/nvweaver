@@ -77,7 +77,9 @@ func (s *Server) wrap(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := h(w, r); err != nil {
 			code := errorStatus(err)
-			if code >= 500 {
+			if code == http.StatusServiceUnavailable {
+				w.Header().Set("Retry-After", retryAfterSeconds)
+			} else if code >= 500 {
 				s.m.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 			}
 			writeJSON(w, code, map[string]string{"error": err.Error()})

@@ -290,7 +290,12 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
   default of 65,536 allows 512 volumes on one core. Beyond that, adding a namespace fails with an
   unhelpful error. Raise it on the host with `sysctl -w fs.aio-max-nr=1048576`: a container with no
   capabilities can't do this itself.
-- Scale is being worked on. Each API change currently takes longer as configuration grows.
+- **Tested to 5,000 volumes,** either across 100 subsystems or with one subsystem each. See [the numbers](docs/testing.md).
+- **SPDK allows up to 8,192 subsystems,** and each uses about 0.37 MB of memory. Beyond the limit, creating one is refused. Starting SPDK
+  also takes longer than the kernel target: about 150 s with 5,000 volumes, or 310 s with a subsystem for each.
+- **On the kernel target, discovery fails for a host allowed on more than about 4,095 subsystems on one port.** This is the kernel's limit,
+  and nothing about it is reported to nvweaver. Connecting by NQN still works. SPDK isn't affected.
+- **Under load, the API can answer `503` with `Retry-After`.** Nothing has changed when it does, so send the request again.
 - **SPDK ignores FUA, so its power-cut safety varies by what backs a namespace.** Files are set to write synchronously, which made
   a power cut safe in testing, but small writes are several times slower. On a filesystem that can't do this, adding the
   namespace is refused. Block devices, including LVM volumes, can't be set this way: writes reach the device, but a drive

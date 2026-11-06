@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -158,34 +159,56 @@ func normID(s string) string {
 // if they appear in prev, so anything configured outside this service is left
 // alone. Subsystems are attached to ports last, so a host can never discover
 // one that is only partly configured.
+//
+// Only what differs between prev and next is touched, so a change costs the same at any scale. An empty
+// prev, as at startup, applies everything, and that's still what lets a new start adopt a running target.
 func (t *Target) Reconcile(prev, next *State) error {
 	if err := t.removeStale(prev, next); err != nil {
 		return err
 	}
 	for _, nqn := range sortedKeys(next.Hosts) {
-		if err := t.applyHost(next.Hosts[nqn]); err != nil {
-			return err
-		}
-	}
-	for _, nqn := range sortedKeys(next.Subsystems) {
-		if err := t.applySubsystem(next.Subsystems[nqn]); err != nil {
-			return err
-		}
-	}
-	for _, id := range sortedKeys(next.Ports) {
-		if err := t.applyPort(next.Ports[id]); err != nil {
-			return err
-		}
-	}
-	for _, nqn := range sortedKeys(next.Subsystems) {
-		for _, id := range next.Subsystems[nqn].Ports {
-			// The first link on a port is what binds its socket.
-			if err := t.link(t.subsysDir(nqn), t.portLink(id, nqn)); err != nil {
+		if !reflect.DeepEqual(prev.Hosts[nqn], next.Hosts[nqn]) {
+			if err := t.applyHost(next.Hosts[nqn]); err != nil {
 				return err
 			}
 		}
 	}
+	for _, nqn := range sortedKeys(next.Subsystems) {
+		if old := prev.Subsystems[nqn]; !reflect.DeepEqual(old, next.Subsystems[nqn]) {
+			if err := t.applySubsystem(old, next.Subsystems[nqn]); err != nil {
+				return err
+			}
+		}
+	}
+	// Changing a port detaches what's on it, so those need linking again, as well as what has changed.
+	portChanged := map[uint16]bool{}
+	for _, id := range sortedKeys(next.Ports) {
+		if !reflect.DeepEqual(prev.Ports[id], next.Ports[id]) {
+			portChanged[id] = true
+			if err := t.applyPort(next.Ports[id]); err != nil {
+				return err
+			}
+		}
+	}
+	for _, nqn := range sortedKeys(next.Subsystems) {
+		changed := !slices.Equal(subsystemPorts(prev.Subsystems[nqn]), next.Subsystems[nqn].Ports)
+		for _, id := range next.Subsystems[nqn].Ports {
+			if changed || portChanged[id] {
+				// The first link on a port is what binds its socket.
+				if err := t.link(t.subsysDir(nqn), t.portLink(id, nqn)); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return nil
+}
+
+func subsystemPorts(s *Subsystem) []uint16 {
+	if s == nil {
+		return nil
+	}
+	return s.Ports
 }
 
 func (t *Target) removeStale(prev, next *State) error {
@@ -265,30 +288,39 @@ func (t *Target) applyHost(h *Host) error {
 	return nil
 }
 
-func (t *Target) applySubsystem(s *Subsystem) error {
+func (t *Target) applySubsystem(old, s *Subsystem) error {
 	dir := t.subsysDir(s.NQN)
-	if err := t.mkdir(dir); err != nil {
-		return err
-	}
-	// The kernel freezes serial and model once a host has identified the
-	// controller, which is why the API has no way to change them.
-	for _, a := range []struct{ name, value string }{
-		{"attr_serial", s.Serial},
-		{"attr_model", s.Model},
-		{"attr_allow_any_host", boolAttr(s.AllowAnyHost)},
-	} {
-		if p := filepath.Join(dir, a.name); t.differs(p, a.value, nil) {
-			if err := t.write(p, a.value); err != nil {
-				return err
+	// An existing subsystem's own settings rarely change, unlike its namespaces.
+	if old == nil || old.Serial != s.Serial || old.Model != s.Model || old.AllowAnyHost != s.AllowAnyHost {
+		if err := t.mkdir(dir); err != nil {
+			return err
+		}
+		// The kernel freezes serial and model once a host has identified the
+		// controller, which is why the API has no way to change them.
+		for _, a := range []struct{ name, value string }{
+			{"attr_serial", s.Serial},
+			{"attr_model", s.Model},
+			{"attr_allow_any_host", boolAttr(s.AllowAnyHost)},
+		} {
+			if p := filepath.Join(dir, a.name); t.differs(p, a.value, nil) {
+				if err := t.write(p, a.value); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	for _, h := range s.AllowedHosts {
+		if old != nil && contains(old.AllowedHosts, h) {
+			continue
+		}
 		if err := t.link(t.hostDir(h), t.hostLink(s.NQN, h)); err != nil {
 			return err
 		}
 	}
 	for _, nsid := range sortedKeys(s.Namespaces) {
+		if old != nil && reflect.DeepEqual(old.Namespaces[nsid], s.Namespaces[nsid]) {
+			continue
+		}
 		if err := t.applyNamespace(s.NQN, s.Namespaces[nsid]); err != nil {
 			return err
 		}

@@ -11,9 +11,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,9 +36,11 @@ const (
 
 // Backend is the SPDK target.Backend.
 type Backend struct {
-	rpc    Caller
-	keyDir string
-	proc   *process
+	// needsFull is set once a reconcile has failed, leaving what is live unknown.
+	needsFull bool
+	rpc       Caller
+	keyDir    string
+	proc      *process
 	// probe reports why an address could not be listened on, if it couldn't.
 	probe func(address string) error
 	done  chan struct{}
@@ -49,6 +53,9 @@ func (b *Backend) Name() string { return "spdk" }
 func (b *Backend) Capabilities() target.Capabilities {
 	return target.Capabilities{Transports: []string{target.TransportTCP}}
 }
+
+// maxSubsystems is fixed when SPDK starts. Each one costs SPDK about 0.4 MB of memory, whether or not it's in use.
+const maxSubsystems = 8192
 
 // Check implements target.Backend, rejecting what SPDK has no equivalent for
 // rather than ignoring a setting that someone may be relying on.
@@ -63,6 +70,9 @@ func (b *Backend) Check(s *target.State) error {
 		if net.ParseIP(p.Address).IsUnspecified() {
 			return target.Invalid("port %d: the spdk backend cannot serve hosts on the wildcard address %s; use a specific IP address", p.ID, p.Address)
 		}
+	}
+	if len(s.Subsystems) > maxSubsystems {
+		return target.Invalid("the spdk backend is limited to %d subsystems: share a subsystem between volumes", maxSubsystems)
 	}
 	for _, sub := range s.Subsystems {
 		if sub.Passthru != "" {
@@ -200,26 +210,221 @@ func addrOf(p *target.Port) string {
 	return net.JoinHostPort(p.Address, strconv.Itoa(p.Service))
 }
 
-// Reconcile implements target.Backend. It ignores prev: live state is the truth
-// here, which also makes rollback just another reconcile.
-func (b *Backend) Reconcile(_, next *target.State) error {
-	if err := b.removeStale(next); err != nil {
+// Reconcile implements target.Backend. Live state is the truth here, and prev only says where to look,
+// so that a change costs the same at any scale. Anything unusual gets a full reconcile, which ignores prev:
+// startup and shutdown, a change to ports, and whatever follows a failure, which makes rollback just another
+// reconcile.
+func (b *Backend) Reconcile(prev, next *target.State) error {
+	var err error
+	if b.needsFull || prev == nil || emptyState(prev) || emptyState(next) || !reflect.DeepEqual(prev.Ports, next.Ports) {
+		err = b.reconcileAll(next)
+	} else {
+		err = b.reconcileChanges(prev, next)
+	}
+	b.needsFull = err != nil
+	return err
+}
+
+func emptyState(s *target.State) bool {
+	return len(s.Subsystems) == 0 && len(s.Hosts) == 0 && len(s.Ports) == 0
+}
+
+func (b *Backend) reconcileAll(next *target.State) error {
+	live, err := b.subsystems()
+	if err != nil {
+		return err
+	}
+	if _, err := b.removeStale(next, live); err != nil {
 		return err
 	}
 	if err := b.createKeys(next); err != nil {
 		return err
 	}
-	if err := b.createBdevs(next); err != nil {
+	have, err := b.bdevs()
+	if err != nil {
 		return err
 	}
-	if err := b.applySubsystems(next); err != nil {
+	if err := b.createBdevs(next, func(name string) bool { return have[name] }); err != nil {
+		return err
+	}
+	if live, err = b.subsystems(); err != nil {
+		return err
+	}
+	if err := b.applySubsystems(next, next, live); err != nil {
+		return err
+	}
+	if live, err = b.subsystems(); err != nil {
 		return err
 	}
 	// Listeners go last, so that a host can't find a half-built subsystem.
-	if err := b.applyListeners(next); err != nil {
+	bound := boundAddresses(live)
+	if err := b.applyListeners(next, next, live, bound); err != nil {
+		return err
+	}
+	if err := b.applyDiscovery(next, live[discoveryNQN], bound); err != nil {
 		return err
 	}
 	return b.removeLeftovers(next)
+}
+
+// reconcileChanges does what a full reconcile does, for the subsystems that differ. Every RPC measured about 8 ms,
+// even ones that do next to nothing, and at any scale. So what a change costs is how many it makes, and that mustn't
+// depend on how many namespaces a subsystem has, let alone how many there are in total.
+func (b *Backend) reconcileChanges(prev, next *target.State) error {
+	hostsChanged := !reflect.DeepEqual(prev.Hosts, next.Hosts)
+	scope := &target.State{Hosts: next.Hosts, Ports: next.Ports, Subsystems: map[string]*target.Subsystem{}}
+	live := map[string]*liveSubsystem{}
+	gone := map[string]bool{}
+	for nqn, old := range prev.Subsystems {
+		want := next.Subsystems[nqn]
+		if reflect.DeepEqual(old, want) && !hostsChanged {
+			continue
+		}
+		if want != nil {
+			scope.Subsystems[nqn] = want
+		}
+		sub, err := b.subsystem(nqn)
+		if err != nil {
+			return err
+		}
+		if sub != nil {
+			live[nqn] = sub
+		}
+		for nsid, ns := range old.Namespaces {
+			gone[bdevName(nqn, nsid, ns.DevicePath)] = true
+		}
+	}
+	for nqn, want := range next.Subsystems {
+		if prev.Subsystems[nqn] == nil {
+			scope.Subsystems[nqn] = want
+		}
+	}
+	if len(live) == 0 && len(scope.Subsystems) == 0 && !hostsChanged {
+		return nil
+	}
+	removed, err := b.removeStale(scope, live)
+	if err != nil {
+		return err
+	}
+	if hostsChanged {
+		if err := b.createKeys(next); err != nil {
+			return err
+		}
+	}
+	// A namespace that stays is using its bdev, so there's no need to ask whether that exists.
+	inUse := map[string]bool{}
+	for nqn, sub := range live {
+		if want := scope.Subsystems[nqn]; want != nil {
+			for _, ns := range sub.Namespaces {
+				if wantedNamespace(want, ns) {
+					inUse[ns.BdevName] = true
+				}
+			}
+		}
+	}
+	if err := b.createBdevs(scope, func(name string) bool { return inUse[name] || b.bdevExists(name) }); err != nil {
+		return err
+	}
+	for _, nqn := range sortedKeys(scope.Subsystems) {
+		if prev.Subsystems[nqn] != nil && !removed {
+			continue // What was fetched above is still right.
+		}
+		sub, err := b.subsystem(nqn)
+		if err != nil {
+			return err
+		}
+		if sub == nil {
+			delete(live, nqn)
+		} else {
+			live[nqn] = sub
+		}
+	}
+	if err := b.applySubsystems(scope, next, live); err != nil {
+		return err
+	}
+	// Discovery's listeners are among the ports that were attached.
+	bound := boundAddresses(live)
+	for addr := range attachedAddresses(prev) {
+		bound[addr] = true
+	}
+	if err := b.applyListeners(scope, next, live, bound); err != nil {
+		return err
+	}
+	if !maps.Equal(attachedAddresses(prev), attachedAddresses(next)) {
+		disc, err := b.subsystem(discoveryNQN)
+		if err != nil {
+			return err
+		}
+		if err := b.applyDiscovery(next, disc, bound); err != nil {
+			return err
+		}
+	}
+	// Only what these subsystems used, rather than listing every bdev.
+	for _, sub := range next.Subsystems {
+		for nsid, ns := range sub.Namespaces {
+			if ns.Enabled {
+				delete(gone, bdevName(sub.NQN, nsid, ns.DevicePath))
+			}
+		}
+	}
+	for _, name := range sortedKeys(gone) {
+		if b.bdevExists(name) {
+			if err := b.call("bdev_aio_delete", map[string]any{"name": name}, nil); err != nil {
+				return err
+			}
+		}
+	}
+	if hostsChanged {
+		return b.removeUnusedKeys(next)
+	}
+	return nil
+}
+
+// attachedAddresses finds the ports with a subsystem on them.
+func attachedAddresses(s *target.State) map[string]bool {
+	out := map[string]bool{}
+	for _, sub := range s.Subsystems {
+		for _, id := range sub.Ports {
+			if p := s.Ports[id]; p != nil {
+				out[addrOf(p)] = true
+			}
+		}
+	}
+	return out
+}
+
+// subsystem fetches one subsystem's live state, or nil if there's none.
+func (b *Backend) subsystem(nqn string) (*liveSubsystem, error) {
+	var list []*liveSubsystem
+	err := b.call("nvmf_get_subsystems", map[string]any{"nqn": nqn}, &list)
+	var ve *target.ValidationError
+	if errors.As(err, &ve) {
+		return nil, nil // SPDK says that it has no such subsystem.
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, sub := range list {
+		if sub.NQN == nqn {
+			return sub, nil
+		}
+	}
+	return nil, nil
+}
+
+func (b *Backend) bdevExists(name string) bool {
+	var list []liveBdev
+	return b.rpc.Call("bdev_get_bdevs", map[string]any{"name": name}, &list) == nil && len(list) > 0
+}
+
+func boundAddresses(live map[string]*liveSubsystem) map[string]bool {
+	bound := map[string]bool{}
+	for _, sub := range live {
+		for _, l := range sub.Listeners {
+			bound[l.address()] = true
+		}
+	}
+	return bound
 }
 
 func wantedNamespace(sub *target.Subsystem, ns liveNamespace) bool {
@@ -229,11 +434,9 @@ func wantedNamespace(sub *target.Subsystem, ns liveNamespace) bool {
 		normID(ns.UUID) == normID(want.UUID) && normID(ns.NGUID) == normID(want.NGUID)
 }
 
-func (b *Backend) removeStale(next *target.State) error {
-	live, err := b.subsystems()
-	if err != nil {
-		return err
-	}
+// removeStale reports whether it removed anything, which makes what was fetched out of date.
+func (b *Backend) removeStale(next *target.State, live map[string]*liveSubsystem) (bool, error) {
+	removed := false
 	for _, nqn := range sortedKeys(live) {
 		if nqn == discoveryNQN {
 			continue
@@ -242,8 +445,9 @@ func (b *Backend) removeStale(next *target.State) error {
 		want := next.Subsystems[nqn]
 		if want == nil {
 			if err := b.call("nvmf_delete_subsystem", map[string]any{"nqn": nqn}, nil); err != nil {
-				return err
+				return removed, err
 			}
+			removed = true
 			continue
 		}
 		wantAddrs := map[string]bool{}
@@ -253,28 +457,31 @@ func (b *Backend) removeStale(next *target.State) error {
 		for _, l := range cur.Listeners {
 			if !wantAddrs[l.address()] {
 				if err := b.removeListener(nqn, l); err != nil {
-					return err
+					return removed, err
 				}
+				removed = true
 			}
 		}
 		for _, h := range cur.Hosts {
 			if !slices.Contains(want.AllowedHosts, h.NQN) {
 				params := map[string]any{"nqn": nqn, "host": h.NQN}
 				if err := b.call("nvmf_subsystem_remove_host", params, nil); err != nil {
-					return err
+					return removed, err
 				}
+				removed = true
 			}
 		}
 		for _, ns := range cur.Namespaces {
 			if !wantedNamespace(want, ns) {
 				params := map[string]any{"nqn": nqn, "nsid": ns.NSID}
 				if err := b.call("nvmf_subsystem_remove_ns", params, nil); err != nil {
-					return err
+					return removed, err
 				}
+				removed = true
 			}
 		}
 	}
-	return nil
+	return removed, nil
 }
 
 func (b *Backend) removeListener(nqn string, l liveListener) error {
@@ -341,17 +548,13 @@ func (b *Backend) bdevs() (map[string]bool, error) {
 
 // createBdevs uses AIO for everything, which is what keeps non-NVMe disks and
 // files working: the storage stays on its normal kernel driver.
-func (b *Backend) createBdevs(next *target.State) error {
-	have, err := b.bdevs()
-	if err != nil {
-		return err
-	}
+func (b *Backend) createBdevs(next *target.State, exists func(string) bool) error {
 	for _, nqn := range sortedKeys(next.Subsystems) {
 		sub := next.Subsystems[nqn]
 		for _, nsid := range sortedKeys(sub.Namespaces) {
 			ns := sub.Namespaces[nsid]
 			name := bdevName(nqn, nsid, ns.DevicePath)
-			if !ns.Enabled || have[name] {
+			if !ns.Enabled || exists(name) {
 				continue
 			}
 			params := map[string]any{"name": name, "filename": ns.DevicePath}
@@ -364,7 +567,6 @@ func (b *Backend) createBdevs(next *target.State) error {
 			if err := b.call("bdev_aio_create", params, nil); err != nil {
 				return err
 			}
-			have[name] = true
 		}
 	}
 	return nil
@@ -406,13 +608,10 @@ func makeWritesDurable(path string) error {
 	return nil
 }
 
-func (b *Backend) applySubsystems(next *target.State) error {
-	live, err := b.subsystems()
-	if err != nil {
-		return err
-	}
-	for _, nqn := range sortedKeys(next.Subsystems) {
-		want := next.Subsystems[nqn]
+// applySubsystems applies the subsystems in scope. all is the whole state, for what they refer to.
+func (b *Backend) applySubsystems(scope, all *target.State, live map[string]*liveSubsystem) error {
+	for _, nqn := range sortedKeys(scope.Subsystems) {
+		want := scope.Subsystems[nqn]
 		cur := live[nqn]
 		if cur == nil {
 			err := b.call("nvmf_create_subsystem", map[string]any{
@@ -433,7 +632,7 @@ func (b *Backend) applySubsystems(next *target.State) error {
 				return err
 			}
 		}
-		if err := b.applyHosts(next, want, cur); err != nil {
+		if err := b.applyHosts(all, want, cur); err != nil {
 			return err
 		}
 		if err := b.applyNamespaces(want, cur); err != nil {
@@ -499,52 +698,45 @@ func (b *Backend) applyNamespaces(want *target.Subsystem, cur *liveSubsystem) er
 	return nil
 }
 
-// applyListeners adds listeners, including on the discovery subsystem: the
-// kernel serves discovery on any port with a subsystem attached, and hosts
-// should see the same behaviour from either backend.
-func (b *Backend) applyListeners(next *target.State) error {
-	live, err := b.subsystems()
-	if err != nil {
-		return err
+// addListener adds a listener unless it's there already.
+func (b *Backend) addListener(nqn string, p *target.Port, cur *liveSubsystem, bound map[string]bool) error {
+	addr := addrOf(p)
+	if cur != nil && slices.ContainsFunc(cur.Listeners, func(l liveListener) bool { return l.address() == addr }) {
+		return nil
 	}
-	bound := map[string]bool{}
-	for _, sub := range live {
-		for _, l := range sub.Listeners {
-			bound[l.address()] = true
+	if !bound[addr] {
+		if err := b.probe(addr); err != nil {
+			return err
 		}
+		bound[addr] = true
 	}
-	attached := map[string]bool{}
-	add := func(nqn string, p *target.Port) error {
-		addr := addrOf(p)
-		cur := live[nqn]
-		if cur != nil && slices.ContainsFunc(cur.Listeners, func(l liveListener) bool { return l.address() == addr }) {
-			return nil
-		}
-		if !bound[addr] {
-			if err := b.probe(addr); err != nil {
-				return err
-			}
-			bound[addr] = true
-		}
-		return b.call("nvmf_subsystem_add_listener", map[string]any{"nqn": nqn, "listen_address": listenerOf(p)}, nil)
-	}
-	for _, nqn := range sortedKeys(next.Subsystems) {
-		for _, id := range next.Subsystems[nqn].Ports {
-			p := next.Ports[id]
-			attached[addrOf(p)] = true
-			if err := add(nqn, p); err != nil {
+	return b.call("nvmf_subsystem_add_listener", map[string]any{"nqn": nqn, "listen_address": listenerOf(p)}, nil)
+}
+
+// applyListeners attaches the subsystems in scope to their ports. all is the whole state, for what they refer to.
+func (b *Backend) applyListeners(scope, all *target.State, live map[string]*liveSubsystem, bound map[string]bool) error {
+	for _, nqn := range sortedKeys(scope.Subsystems) {
+		for _, id := range scope.Subsystems[nqn].Ports {
+			if err := b.addListener(nqn, all.Ports[id], live[nqn], bound); err != nil {
 				return err
 			}
 		}
 	}
-	for _, id := range sortedKeys(next.Ports) {
-		if p := next.Ports[id]; attached[addrOf(p)] {
-			if err := add(discoveryNQN, p); err != nil {
+	return nil
+}
+
+// applyDiscovery puts the discovery subsystem on every port with a subsystem attached. The kernel serves discovery
+// on those ports, and hosts should see the same behaviour from either backend.
+func (b *Backend) applyDiscovery(all *target.State, disc *liveSubsystem, bound map[string]bool) error {
+	attached := attachedAddresses(all)
+	for _, id := range sortedKeys(all.Ports) {
+		if p := all.Ports[id]; attached[addrOf(p)] {
+			if err := b.addListener(discoveryNQN, p, disc, bound); err != nil {
 				return err
 			}
 		}
 	}
-	if disc := live[discoveryNQN]; disc != nil {
+	if disc != nil {
 		for _, l := range disc.Listeners {
 			if !attached[l.address()] {
 				if err := b.removeListener(discoveryNQN, l); err != nil {
@@ -578,6 +770,10 @@ func (b *Backend) removeLeftovers(next *target.State) error {
 			}
 		}
 	}
+	return b.removeUnusedKeys(next)
+}
+
+func (b *Backend) removeUnusedKeys(next *target.State) error {
 	wantKeys := map[string]bool{}
 	for nqn, h := range next.Hosts {
 		wantKeys[keyName(nqn, h.DHCHAPKey)] = true
@@ -600,11 +796,10 @@ func (b *Backend) removeLeftovers(next *target.State) error {
 
 // Revalidate implements target.Backend. SPDK then notifies connected hosts.
 func (b *Backend) Revalidate(nqn string, nsid uint32) error {
-	live, err := b.subsystems()
+	sub, err := b.subsystem(nqn)
 	if err != nil {
 		return err
 	}
-	sub := live[nqn]
 	if sub == nil {
 		return fmt.Errorf("subsystem %s is not live", nqn)
 	}

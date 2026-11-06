@@ -21,9 +21,19 @@ type fake struct {
 	bdevs map[string]bool
 	keys  map[string]bool
 	calls []string
-	fail  map[string]error
+	// rpcs counts every call, reads too: each takes about 8 ms on the real target, even one that changes nothing.
+	rpcs int
+	fail map[string]error
 	// listed counts nvmf_get_subsystems calls, and listedAll those not naming a subsystem.
 	listed, listedAll int
+	listedBdevs       int
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func newFake() *fake {
@@ -36,6 +46,7 @@ func newFake() *fake {
 }
 
 func (f *fake) Call(method string, params, result any) error {
+	f.rpcs++
 	if !strings.Contains(method, "_get_") {
 		f.calls = append(f.calls, method)
 	}
@@ -79,9 +90,15 @@ func (f *fake) Call(method string, params, result any) error {
 		b, _ := json.Marshal(list)
 		return json.Unmarshal(b, result)
 	case "bdev_get_bdevs":
+		f.listedBdevs += btoi(p.Name == "")
+		if p.Name != "" && !f.bdevs[p.Name] {
+			return &RPCError{Code: -int(syscall.ENODEV), Message: "No such device"}
+		}
 		list := []liveBdev{}
 		for n := range f.bdevs {
-			list = append(list, liveBdev{n})
+			if p.Name == "" || p.Name == n {
+				list = append(list, liveBdev{n})
+			}
 		}
 		b, _ := json.Marshal(list)
 		return json.Unmarshal(b, result)
@@ -98,6 +115,7 @@ func (f *fake) Call(method string, params, result any) error {
 		delete(f.keys, p.Name)
 	case "bdev_aio_create":
 		f.bdevs[p.Name] = true
+	case "bdev_aio_rescan":
 	case "bdev_aio_delete":
 		for _, s := range f.subs {
 			for _, ns := range s.Namespaces {
@@ -162,6 +180,7 @@ func state() *target.State {
 			1: {NSID: 1, DevicePath: "/dev/x", UUID: "AAAA-BB", NGUID: "cc-dd", Enabled: true},
 		},
 	}
+	s.Normalize()
 	return s
 }
 
@@ -444,5 +463,208 @@ func TestMakeWritesDurable(t *testing.T) {
 	}
 	if err := makeWritesDurable("/nonexistent"); err != nil {
 		t.Errorf("a missing path is for SPDK to report: %v", err)
+	}
+}
+
+// A change looks only at what changed, which is what keeps it fast with thousands of namespaces.
+func TestAChangeDoesntFetchEverything(t *testing.T) {
+	b, f := newBackend()
+	cur := state()
+	apply(t, b, cur)
+	f.listedAll, f.listedBdevs, f.calls = 0, 0, nil
+
+	next := cur.Clone()
+	next.Subsystems[subA].Namespaces[9] = &target.Namespace{NSID: 9, DevicePath: "/d/nine", UUID: target.NewUUID(), NGUID: target.NewNGUID(), Enabled: true}
+	if err := b.Reconcile(cur, next); err != nil {
+		t.Fatal(err)
+	}
+	if f.listedAll != 0 || f.listedBdevs != 0 {
+		t.Errorf("fetched every subsystem %d times, and every bdev %d times", f.listedAll, f.listedBdevs)
+	}
+	if !slices.ContainsFunc(f.subs[subA].Namespaces, func(l liveNamespace) bool { return l.NSID == 9 }) {
+		t.Errorf("the namespace wasn't added: %+v", f.subs[subA])
+	}
+	want := []string{"bdev_aio_create", "nvmf_subsystem_add_ns"}
+	if !slices.Equal(f.calls, want) {
+		t.Errorf("calls = %v, want %v", f.calls, want)
+	}
+}
+
+// Every RPC takes about 8 ms, so this is what a change costs. Counting only writes missed a change costing 20
+// reads, one for each namespace already in the subsystem.
+func TestAChangeCostsTheSameHoweverBigItsSubsystem(t *testing.T) {
+	cost := func(namespaces int) (add, remove, grow int) {
+		b, f := newBackend()
+		cur := state()
+		apply(t, b, cur)
+		for i := range namespaces {
+			nsid := uint32(100 + i)
+			cur.Subsystems[subA].Namespaces[nsid] = &target.Namespace{NSID: nsid, DevicePath: fmt.Sprintf("/d/n%d", i), UUID: fmt.Sprintf("00000000-0000-4000-8000-%012d", nsid), NGUID: fmt.Sprintf("%032d", nsid), Enabled: true}
+		}
+		next := cur.Clone()
+		apply(t, b, next)
+		cur = next
+		next = cur.Clone()
+		next.Subsystems[subA].Namespaces[9] = &target.Namespace{NSID: 9, DevicePath: "/d/nine", UUID: target.NewUUID(), NGUID: target.NewNGUID(), Enabled: true}
+		f.rpcs = 0
+		if err := b.Reconcile(cur, next); err != nil {
+			t.Fatal(err)
+		}
+		add = f.rpcs
+		cur = next
+		next = cur.Clone()
+		delete(next.Subsystems[subA].Namespaces, 9)
+		f.rpcs = 0
+		if err := b.Reconcile(cur, next); err != nil {
+			t.Fatal(err)
+		}
+		remove = f.rpcs
+		f.rpcs = 0
+		if err := b.Revalidate(subA, 100); err != nil {
+			t.Fatal(err)
+		}
+		return add, remove, f.rpcs
+	}
+	add, remove, grow := cost(1)
+	bigAdd, bigRemove, bigGrow := cost(200)
+	if add != bigAdd || remove != bigRemove || grow != bigGrow {
+		t.Errorf("RPCs for add, remove and grow: %d, %d, %d with 1 namespace, but %d, %d, %d with 200", add, remove, grow, bigAdd, bigRemove, bigGrow)
+	}
+	// Fetch the subsystem, check for a bdev left by a failure, create it, and add the namespace.
+	if add != 4 {
+		t.Errorf("adding a namespace took %d RPCs, want 4", add)
+	}
+}
+
+// Whatever a series of changes does, it must match what a full reconcile would.
+func TestChangesMatchAFullReconcile(t *testing.T) {
+	type step func(*target.State)
+	addNS := func(nsid uint32) step {
+		return func(s *target.State) {
+			s.Subsystems[subA].Namespaces[nsid] = &target.Namespace{NSID: nsid, DevicePath: fmt.Sprintf("/d/%d", nsid), UUID: fmt.Sprintf("00000000-0000-4000-8000-%012d", nsid), NGUID: fmt.Sprintf("%032d", nsid), Enabled: true}
+		}
+	}
+	steps := []step{
+		addNS(5),
+		addNS(6),
+		func(s *target.State) { delete(s.Subsystems[subA].Namespaces, 5) },
+		func(s *target.State) { s.Subsystems[subA].Namespaces[6].Enabled = false },
+		func(s *target.State) { s.Subsystems[subA].Namespaces[6].Enabled = true },
+		func(s *target.State) { s.Subsystems[subA].Namespaces[6].DevicePath = "/d/moved" },
+		func(s *target.State) {
+			s.Hosts["nqn.2026-11.test:new"] = &target.Host{NQN: "nqn.2026-11.test:new", DHCHAPKey: "DHHC-1:00:new"}
+			s.Subsystems[subA].AllowedHosts = append(s.Subsystems[subA].AllowedHosts, "nqn.2026-11.test:new")
+		},
+		func(s *target.State) { s.Hosts["nqn.2026-11.test:new"].DHCHAPKey = "DHHC-1:00:changed" },
+		func(s *target.State) {
+			s.Subsystems["nqn.2026-11.test:other"] = &target.Subsystem{NQN: "nqn.2026-11.test:other", Serial: "s", Model: "m", Ports: []uint16{1}, Namespaces: map[uint32]*target.Namespace{}}
+		},
+		func(s *target.State) {
+			s.Subsystems[subA].AllowedHosts = slices.DeleteFunc(s.Subsystems[subA].AllowedHosts, func(h string) bool { return h == "nqn.2026-11.test:new" })
+			delete(s.Hosts, "nqn.2026-11.test:new")
+		},
+		func(s *target.State) { delete(s.Subsystems, "nqn.2026-11.test:other") },
+		func(s *target.State) {
+			s.Subsystems[subA].AllowAnyHost, s.Subsystems[subA].AllowedHosts = true, []string{}
+		},
+		func(s *target.State) { delete(s.Subsystems, subA) },
+	}
+	b, f := newBackend()
+	cur := state()
+	apply(t, b, cur)
+	full, ff := newBackend()
+	for i, change := range steps {
+		next := cur.Clone()
+		change(next)
+		if err := b.Reconcile(cur, next); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+		// The same state from scratch, by a full reconcile.
+		full.needsFull = true
+		if err := full.Reconcile(next, next); err != nil {
+			t.Fatalf("step %d, full: %v", i, err)
+		}
+		a, _ := json.Marshal(sortedLive(f.subs))
+		c, _ := json.Marshal(sortedLive(ff.subs))
+		if string(a) != string(c) {
+			t.Errorf("step %d: incremental and full differ:\n%s\n%s", i, a, c)
+		}
+		if fmt.Sprint(sortedKeys(f.bdevs)) != fmt.Sprint(sortedKeys(ff.bdevs)) {
+			t.Errorf("step %d: bdevs differ: %v, %v", i, sortedKeys(f.bdevs), sortedKeys(ff.bdevs))
+		}
+		if fmt.Sprint(sortedKeys(f.keys)) != fmt.Sprint(sortedKeys(ff.keys)) {
+			t.Errorf("step %d: keys differ: %v, %v", i, sortedKeys(f.keys), sortedKeys(ff.keys))
+		}
+		cur = next
+	}
+}
+
+func sortedLive(subs map[string]*liveSubsystem) []liveSubsystem {
+	var out []liveSubsystem
+	for _, nqn := range sortedKeys(subs) {
+		s := *subs[nqn]
+		s.Namespaces = slices.Clone(s.Namespaces)
+		slices.SortFunc(s.Namespaces, func(a, b liveNamespace) int { return int(a.NSID) - int(b.NSID) })
+		s.Hosts = slices.Clone(s.Hosts)
+		slices.SortFunc(s.Hosts, func(a, b liveHost) int { return strings.Compare(a.NQN, b.NQN) })
+		out = append(out, s)
+	}
+	return out
+}
+
+// After a failure, what's live isn't known, so the next reconcile looks at everything.
+func TestAFailedChangeIsFollowedByAFullReconcile(t *testing.T) {
+	b, f := newBackend()
+	cur := state()
+	apply(t, b, cur)
+	next := cur.Clone()
+	next.Subsystems[subA].Namespaces[9] = &target.Namespace{NSID: 9, DevicePath: "/d/nine", UUID: target.NewUUID(), NGUID: target.NewNGUID(), Enabled: true}
+	f.fail["nvmf_subsystem_add_ns"] = &RPCError{Code: -1, Message: "broken"}
+	if err := b.Reconcile(cur, next); err == nil {
+		t.Fatal("the failure should be reported")
+	}
+	if len(f.bdevs) == len(cur.Subsystems[subA].Namespaces) {
+		t.Fatal("this test needs the bdev to have been created before the failure")
+	}
+	delete(f.fail, "nvmf_subsystem_add_ns")
+	f.listedAll = 0
+	// As the manager's rollback does.
+	if err := b.Reconcile(next, cur); err != nil {
+		t.Fatal(err)
+	}
+	if f.listedAll == 0 {
+		t.Error("the rollback should look at everything")
+	}
+	for name := range f.bdevs {
+		if name == bdevName(subA, 9, "/d/nine") {
+			t.Error("the rollback should remove what the failed change left")
+		}
+	}
+	f.listedAll = 0
+	again := cur.Clone()
+	again.Subsystems[subA].Namespaces[8] = &target.Namespace{NSID: 8, DevicePath: "/d/eight", UUID: target.NewUUID(), NGUID: target.NewNGUID(), Enabled: true}
+	if err := b.Reconcile(cur, again); err != nil {
+		t.Fatal(err)
+	}
+	if f.listedAll != 0 {
+		t.Error("once a full reconcile has worked, changes should be incremental again")
+	}
+}
+
+func TestTooManySubsystemsAreRefusedClearly(t *testing.T) {
+	b, _ := newBackend()
+	s := target.NewState()
+	for i := range maxSubsystems {
+		nqn := fmt.Sprintf("nqn.2026-11.test:s%d", i)
+		s.Subsystems[nqn] = &target.Subsystem{NQN: nqn}
+	}
+	if err := b.Check(s); err != nil {
+		t.Errorf("at the limit: %v", err)
+	}
+	s.Subsystems["nqn.2026-11.test:one-more"] = &target.Subsystem{NQN: "nqn.2026-11.test:one-more"}
+	err := b.Check(s)
+	var ve *target.ValidationError
+	if !errors.As(err, &ve) || !strings.Contains(err.Error(), "8192") {
+		t.Errorf("past the limit: %v", err)
 	}
 }
