@@ -51,6 +51,15 @@ section() { printf '\n%s\n' "$1"; }
 ini() { $ENGINE exec "$INI" sh -c "$1"; }
 
 # expect_eq NAME WANT GOT
+# Without reflink, a section skips itself. REQUIRE_REFLINK=1 makes that a failure, as a green run
+# would otherwise hide that the storage tests never ran.
+skip_reflink() {
+	if [ -n "${REQUIRE_REFLINK:-}" ]; then
+		bad "this machine's filesystem has reflink" "REQUIRE_REFLINK is set, and the section can't run"
+	else
+		echo "  skip  this machine's filesystem has no reflink"
+	fi
+}
 expect_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "want [$2], got [$3]"; fi; }
 # expect_has NAME NEEDLE HAYSTACK
 expect_has() { case "$3" in *"$2"*) ok "$1" ;; *) bad "$1" "[$2] not in [$3]" ;; esac; }
@@ -307,7 +316,7 @@ api "an LVM pool needs a volume group and thin pool" 422 POST /v1/pools '{"name"
 api "and they must exist" 422 POST /v1/pools '{"name":"bad","type":"lvm-thin","volume_group":"nosuchvg","thin_pool":"pool0"}'
 out=$(call POST /v1/pools "{\"name\":\"p1\",\"type\":\"reflink\",\"path\":\"$POOL_DIR\",\"labels\":{\"media\":\"test\"}}")
 if [ "${out%%$'\n'*}" != 201 ] && echo "$out" | grep -q "doesn't support reflink"; then
-	echo "  skip  this machine's filesystem has no reflink"
+	skip_reflink
 else
 	expect_eq "adopt a reflink pool" 201 "${out%%$'\n'*}"
 	api "adopting it again succeeds" 200 POST /v1/pools "{\"name\":\"p1\",\"type\":\"reflink\",\"path\":\"$POOL_DIR\"}"
@@ -534,7 +543,7 @@ KPOOL=/var/lib/nvweaver/kill-pool
 $ENGINE exec "$TGT" mkdir -p "$KPOOL"
 out=$(call POST /v1/pools "{\"name\":\"kp\",\"type\":\"reflink\",\"path\":\"$KPOOL\"}")
 if [ "${out%%$'\n'*}" != 201 ] && echo "$out" | grep -q "doesn't support reflink"; then
-	echo "  skip  this machine's filesystem has no reflink"
+	skip_reflink
 else
 	expect_eq "adopt a pool" 201 "${out%%$'\n'*}"
 	ini "rm -f /tmp/kill.*"

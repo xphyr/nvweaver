@@ -55,7 +55,8 @@ still change. `nvweaverd --version` and `GET /v1/system` report the version.
 ## What's built
 
 `linux/amd64` and `linux/arm64`, as in `docs/decisions.md`, entry 27. CI tests Arm on every pull request and on `main`. Its
-runners have no KVM, so that job runs `e2e.sh` directly rather than the VM suites. Emulated Arm VMs are a manual check, with `LAB_ARCH=aarch64` and `TEST_TIMEOUT_SCALE=10`.
+runners have no KVM, so that job runs `e2e.sh` directly rather than the VM suites, with Podman's volumes on a throwaway XFS
+for reflink. Emulated Arm VMs are a manual check, with `LAB_ARCH=aarch64` and `TEST_TIMEOUT_SCALE=10`.
 
 ## Running the same checks locally
 

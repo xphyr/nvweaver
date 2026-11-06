@@ -119,10 +119,19 @@ jobs:
             echo "$got"
             [ "$got" = "nvweaverd $VERSION" ]
           done
+      - name: Put Podman's volumes on XFS
+        # The runner's ext4 has no reflink, so the pool, snapshot and clone tests would skip themselves.
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends xfsprogs
+          truncate -s 8G "$RUNNER_TEMP/volumes.xfs"
+          mkfs.xfs -q "$RUNNER_TEMP/volumes.xfs"
+          sudo mkdir -p /var/lib/containers/storage/volumes
+          sudo mount -o loop "$RUNNER_TEMP/volumes.xfs" /var/lib/containers/storage/volumes
       - name: Kernel target end to end
-        run: SKIP_BUILD=1 IMAGE=nvweaver:dev ENGINE="sudo podman" ./test/e2e.sh
+        run: REQUIRE_REFLINK=1 SKIP_BUILD=1 IMAGE=nvweaver:dev ENGINE="sudo podman" ./test/e2e.sh
       - name: SPDK target end to end
-        run: BACKEND=spdk SKIP_BUILD=1 IMAGE=nvweaver:spdk ENGINE="sudo podman" ./test/e2e.sh
+        run: REQUIRE_REFLINK=1 BACKEND=spdk SKIP_BUILD=1 IMAGE=nvweaver:spdk ENGINE="sudo podman" ./test/e2e.sh
       - name: Build the release tarball
         env:
           VERSION: ${{ steps.version.outputs.version }}
