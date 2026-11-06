@@ -38,7 +38,7 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | `e2e.sh`, kernel target | Loopback in one VM | 228 of 228 |
 | `e2e.sh`, SPDK target | Loopback in one VM | 242 of 242 |
 | `systemd-e2e.sh` | Loopback in one VM | 74 of 74 |
-| `vm/vm-e2e.sh` | Between two VMs | 762 of 762 |
+| `vm/vm-e2e.sh` | Between two VMs | 878 of 878 |
 
 `go test -race` also passes. Earlier, smaller versions of these suites passed on GitHub's hosted runners, in
 CI run 41887410583 on commit `391e438`, with 2-vCPU VMs and Ubuntu's QEMU 8.2.
@@ -323,6 +323,22 @@ Each did 64 MiB through a separate initiator, read back after reconnecting, and 
 Checksums and attestations for both tarballs and both multi-arch tags verified, and the published `-spdk` and kernel arm64 images
 report the right version on the CM4. CI on the same code gave the full counts on a real Arm runner: 209 and 223, with none skipped.
 
+### A client's LVM on the target
+
+`vm-e2e.sh` runs this on both targets, as `client_lvm_tests`: it detects the exposure, sees the pool go down after a real reboot, and recovers with the documented fix. Before that, throwaway
+scripts tried each setup in fresh VMs, with a client making a volume group, and another named like the pool's. All on Fedora's LVM 2.03.38, with its settings changed:
+
+| Setup | Exports | Result, including after a real reboot |
+|---|---|---|
+| Devices file | Thin volumes, or disks | Client's LVM never seen. Also with `scan_lvs=1` |
+| No devices file, `scan_lvs=1` | Thin volumes | Pool `missing`, and changes fail, as soon as the client names a VG like the pool's |
+| No devices file | Disks | Fine until a reboot. Then this machine activates the client's LV and the pool goes `missing` |
+| No devices file, `global_filter` | Disks | Client's LVM never seen |
+| Devices file added later, before clients made LVM | Disks | Client's LVM never seen |
+
+Hosts kept connecting and reading their data throughout, and this machine's copy of the client's LV wasn't open. `lvmdiskscan` took about 0.05 s with 300 thin volumes, on a VM. It hasn't been timed at 5,000.
+The defaults for Debian 13 and Ubuntu 22.04 and 24.04 were read from their packages in containers. Nothing has run on those distributions.
+
 ### The API's TLS under SELinux
 
 `systemd-e2e.sh` runs nested, with no SELinux, so the SPDK Quadlet with its TLS `Volume=` line was also tried by hand on a Fedora VM,
@@ -500,6 +516,8 @@ Checks that passed while proving nothing. Watch for these patterns:
 - **`linux-modules-extra` on Arm runners:** there's no such package for the `azure` 7.0 kernel on arm64, and installing it fails the
   job. `nvmet-tcp` and `nvme-tcp` are in its base modules. The first probe saw this, but tolerated the error, so it went unnoticed.
 - **`gh attestation verify` prints nothing when not on a terminal,** even on success. Check its exit status, not its output.
+- **`use_devicesfile=0` deletes the devices file,** at the next LVM command of any kind, keeping a backup. So a test that turns it off and on again has to make a new one. It looks as if the setting did nothing.
+- **`pvs -a` doesn't list everything LVM can read:** it leaves out a disk with no PV on it, whatever else is on it, though the first experiment suggested otherwise. Use `lvmdiskscan`.
 - **`ausearch` reads stdin when it isn't a terminal,** so in a script piped to `bash -s`, it swallows the rest of the script. Use `</dev/null`.
 - **One machine:** an initiator can't see the same namespace twice. Two host NQNs on one
   kernel also share a multipath device, so test multi-host by disconnecting one and reading

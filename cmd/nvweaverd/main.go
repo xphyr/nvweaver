@@ -108,6 +108,7 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("API: %w", err)
 	}
+	go mgr.WatchLVM(ctx)
 	serveErr := make(chan error, 1)
 	go func() {
 		if tlsConfig != nil {

@@ -81,17 +81,16 @@ and CLI once, against the result.
 - [x] Add the volume model: volumes own their identity, and map into subsystems
 - [x] Add snapshots and clones, on reflink. Checked as real files on XFS, including under load: see `docs/testing.md`
 - [ ] Leave room in the API for group snapshots, without building them yet
-- [x] Add `transport` to ports, accepting only `tcp` for now, and `capabilities.transports`, before the CLI and
-      CSI driver are written against the API. See "Transports" in `docs/storage-api.md`
+- [x] Add `transport` to ports, accepting only `tcp` for now, and `capabilities.transports`, before the CLI and CSI driver are written against the API. See "Transports" in `docs/storage-api.md`
 - [ ] Later: creating pools from raw disks, behind an explicit confirmation
 
 ## 3. API foundations
 
-- [ ] **Filter LVM devices on the target, so it ignores LVM that clients create inside their namespaces.** Carried over
-      from phase 2, and must be done before the CSI driver, since Kubernetes nodes may well use LVM. Test what Fedora's
-      devices file really does, and a system without one: see `docs/pools.md`
+- [x] Deal with LVM that clients create inside their namespaces, before the CSI driver, as Kubernetes nodes may well use LVM. Only the machine's own LVM
+      configuration can prevent it, so nvweaver reports it under `warnings`, and documents the fix. See decision 32 and "Clients' LVM" in `docs/pools.md`
 - [x] Add TLS to the API, needed before the web UI or CSI driver use it over a network. See decision 31
 - [ ] By 1.0: make serving the API in clear text off loopback an explicit choice by the admin deploying it, rather than a warning. See decision 31
+- [ ] Check at startup that the tools in "Tools" in the README are there, for running outside a container too. Stop if the chosen backend can't work, which it mostly does already. Report anything optional under `warnings` in `/v1/system`, such as `lvm` or `thin_check` missing with an LVM pool saved. Look through `nsenter` in a container, as the service does
 - [ ] Create a shared Go API client from the spec, for the CLI and CSI driver to use
 - [ ] Add an endpoint showing connected hosts, including each connection's transport
 - [ ] Keep `info.version` in the API spec current: `v0.2.0` shipped saying `0.1.0`. Check it in the release workflow
@@ -139,6 +138,17 @@ Production-like scale is a requirement, so measure this before building on it.
 
 ## Later (low priority)
 
+- [ ] iSCSI as a second protocol, once the CLI and CSI driver have settled the API. It would be new resources, such as `/v1/iscsi/targets`, not a
+      `transport` on ports. Pools, volumes and snapshots should carry over: see decision 33
+  - [ ] First, probe whether it's really feasible, before any design, as with Arm: drive LIO and SPDK's iSCSI target by hand on a throwaway VM, with
+        a separate initiator and real data. Nothing here has been tested yet. Answer these, and record them in `docs/testing.md`:
+    - Can both export a pool's volume, and a clone of it, with the data intact?
+    - Can a volume keep its identity (serial and WWN in VPD pages) across a move and a restart, and can it come from `nguid`?
+    - What does removing an initiator do to a live session on each: is it cut off, and are others affected?
+    - Does each survive a restart and a power cut with its data, as NVMe/TCP does? SPDK ignoring FUA may apply here too
+    - Does Raspberry Pi OS's kernel have LIO, and what would SPDK's image need: is `spdk_tgt` or `iscsi_tgt` required?
+    - What would `mapped_to` need, and does decision 33's estimate of how little changes in the API hold up?
+  - [ ] Weigh the cost of four combinations of target and protocol in the test suite
 - [ ] Test the suites against Docker. Podman is the supported engine and Docker a fallback,
       and nothing has been run against Docker since Podman became the default
 - [ ] Support NVMe/RDMA, after the CSI driver. Both targets support it underneath. See decision 26
@@ -172,6 +182,8 @@ network-attached NVMe namespaces.
 - [x] Use the VMs to test the systemd setup for real: `make install` as root, enable, reboot
       the VM, SELinux enforcing, and the Quadlet on the VM's own Podman
 - [ ] Run benchmarks between the VMs and over the 1 Gb network, on both backends
+- [ ] Long term: run the suites on a Debian VM too. All VM testing so far is on Fedora, and Debian differs where it matters, such as
+      LVM having no devices file by default
 
 ### Deferred until hardware is available
 

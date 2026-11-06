@@ -320,3 +320,29 @@ there, not as absolute numbers.
 - **A token without TLS off loopback is only logged as a warning, for now,** as refusing it would break existing v0.2.0 setups on an isolated lab
   network. **By 1.0, the admin deploying it decides:** clear text off loopback will be an explicit choice, rather than something that happens by leaving
   TLS unset. See `TODO.md`.
+
+## 32. nvweaver reports when this machine's LVM can read exports, rather than preventing it
+
+- **The problem, tested:** with no devices file, this machine activates a client's LVM on an exported disk at boot, and a client's volume group named like a pool's takes that pool
+  offline. Debian and Ubuntu ship that way, as does Fedora until its first `pvcreate` or `vgcreate`. Thin volumes are safe unless `scan_lvs=1`. A devices file that exists protects both.
+- **Chosen:** run `lvmdiskscan` in the background, compare it by device number with what's exported, and report under `warnings` in `/v1/system`. It gives LVM's own answer, after its
+  devices file, filters and `scan_lvs`, so this doesn't have to work those out. That was checked against each of them, and it took about 0.05 s with 300 thin volumes.
+- **Why ask LVM, rather than read its configuration:** `use_devicesfile=1` means nothing if the file doesn't exist, as on a Fedora machine that has never used LVM, which reading the setting would have got wrong.
+- **Rejected: `pvs -a`,** which was tried first. It leaves out what has no PV on it, so it only warned after a client had already made LVM.
+- **Rejected: flags on nvweaver's own LVM commands,** such as `--devices`. It's the host's own activation at boot that takes the disk, which they can't stop.
+- **Rejected: changing the host's LVM configuration.** Only the admin knows which disks are the machine's own, and a wrong devices file can stop it booting. nvweaver adopts what's there, and
+  doesn't initialize.
+- **Rejected: refusing to export a disk that LVM can read.** That's the default on Debian and Ubuntu, and only matters if a client uses LVM.
+- **In the background,** because it has to scan, and `/v1/system` should stay fast. So a warning can be up to 30 seconds late after a change.
+
+## 33. Storage stays independent of the protocol that exports it
+
+- **Chosen:** pools, volumes and snapshots know nothing of how they're exported. Anything specific to a protocol goes on the mapping, not on them. A volume is storage, and exporting it is a separate step.
+- **Why:** it keeps a second protocol, such as iSCSI, from rewriting the storage API that the CLI and CSI driver are built on. From reading the spec, iSCSI would mostly add resources beside `/v1/subsystems`, which is an estimate
+  until the probe in `TODO.md` has run.
+- **What already touches NVMe:** `mapped_to` on a volume names a subsystem and namespace, so it would need extending, which can be done without breaking clients. `uuid` and `nguid` stay as a volume's identity: an iSCSI WWN might be
+  derived from `nguid`, which is untested.
+- **Consequence:** if a volume or pool seems to need another NVMe-specific field, put it on the mapping instead.
+- **Rejected: `transport: iscsi` on ports.** `transport` is for ways of carrying NVMe, as in decision 26, and iSCSI is a different protocol.
+- **Not chosen yet: building iSCSI.** It's in the "Later" section of `TODO.md`, after the CLI and CSI driver.
+

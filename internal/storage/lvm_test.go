@@ -212,3 +212,18 @@ func TestLVMListIgnoresOthers(t *testing.T) {
 		t.Errorf("%v, %v", names, err)
 	}
 }
+
+func TestParseDiskscan(t *testing.T) {
+	out := `  /dev/zram0          [      <3.82 GiB] 
+  /dev/nvwlab/nvw-1   [      64.00 MiB] 
+  /dev/vdc            [       8.00 GiB] LVM physical volume
+  4 disks
+  305 partitions
+  1 LVM physical volume whole disk
+  0 LVM physical volumes
+`
+	got := strings.Join(parseDiskscan(out), " ")
+	if want := "/dev/zram0 /dev/nvwlab/nvw-1 /dev/vdc"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

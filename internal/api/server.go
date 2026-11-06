@@ -219,6 +219,7 @@ func (s *Server) getSystem(w http.ResponseWriter, _ *http.Request) error {
 			"ports":        len(st.Ports),
 			"hosts":        len(st.Hosts),
 			"subsystems":   len(st.Subsystems),
+			"warnings":     s.m.Warnings(),
 		})
 		return nil
 	})

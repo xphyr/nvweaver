@@ -29,6 +29,30 @@ between targets and hosts see the same UUID, NGUID, block size and data.
 | CPU | x86-64 or arm64 | x86-64-v2 or newer (about 2009 onward), or arm64 with CRC instructions, tested on Cortex-A72 (Raspberry Pi 4) |
 | Memory | About 8 MB plus kernel use | About 240 MB (`NVWEAVER_SPDK_MEM_MB`, default 1024, is its limit) |
 
+### Tools
+
+The images and the release tarball's binary are self-contained, apart from what's here. nvweaver is a single static binary, and it runs very few other programs.
+
+**On the machine running the service, depending on how it runs and what it uses:**
+
+| Needed for | Tool or package | In a container |
+|---|---|---|
+| Kernel target | Kernel modules `nvmet` and `nvmet-tcp`, and configfs. `modprobe` (`kmod`) loads them, if they aren't already | The image has `modprobe`, and needs the host's `/lib/modules` |
+| SPDK target | `nvmf_tgt` on the `PATH`. Building SPDK isn't covered here, so use the image | In the SPDK image |
+| LVM thin pools | `lvm2`, and `thin_check` from `device-mapper-persistent-data` on Fedora and RHEL, or `thin-provisioning-tools` on Debian and Ubuntu. There, it's only a recommended package, so `--no-install-recommends` leaves it out. Also the kernel's `dm_thin_pool` module | Uses the host's, through `nsenter`, which the images have. Run it privileged with `--pid=host` |
+| Checking whether LVM can read what's exported | `lvmdiskscan`, from `lvm2`. With no LVM on the machine, there's nothing to check | As above. Without `--pid=host`, `warnings` says that it couldn't check |
+| Reflink pools | XFS or btrfs, for the directory | The same, on the volume it's given |
+
+Passthrough, HTTPS and DH-HMAC-CHAP need no other tools. nvweaver makes its own system calls to clone files and set their attributes, so it doesn't need `cp` or `chattr`.
+LVM has only been tested at version 2.03.38, on Fedora: see [Debian in `TODO.md`](TODO.md#testing-without-hardware).
+
+**On each client:** `nvme-cli` and the kernel's `nvme-tcp` module. This is the only client tested. Any NVMe/TCP initiator should work, though that hasn't been tested.
+
+**To build:** Go 1.26 and `make` for the binary, and Podman for the images. Docker is a fallback. The SPDK image downloads and compiles SPDK.
+
+**To run the tests:** `go test` needs only Go. `make lint` needs Podman. `e2e.sh` and `systemd-e2e.sh` need rootful Podman, and the kernel modules above. The VM suites need QEMU with
+KVM, including `qemu-img`, and `genisoimage`, and no root.
+
 ## Quick start
 
 ```sh
@@ -315,6 +339,9 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
 - **arm64 has less testing than x86-64.** `e2e.sh` runs on real Arm CI runners on both targets, but the suites with a separate
   initiator and with disks run only by hand, under emulation. Its performance and scale aren't measured, and the 16K-page kernel of
   a Raspberry Pi 5 is untested. Raspberry Pi OS's kernel has no NVMe/TCP target, so only SPDK can run there.
+- **If this machine's LVM can read an exported disk, a client's LVM on it gets activated here at boot,** and a volume group named like a pool's takes
+  that pool offline. `warnings` in `GET /v1/system` reports this. That's the default for exported disks on Debian and Ubuntu, and on Fedora until it has used LVM. See
+  ["Clients' LVM"](docs/pools.md#clients-lvm).
 - No formal NVMe conformance suite has been run. Protocol behaviour is the target's;
   the tests here exercise both with the Linux initiator only.
 - **Not yet tested on physical NVMe hardware or over a physical network.** Tests use

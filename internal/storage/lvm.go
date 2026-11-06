@@ -63,6 +63,10 @@ func hostLVM(args ...string) (string, error) {
 	}
 	if err != nil {
 		text := strings.TrimSpace(stderr.String())
+		if text == "" {
+			// JSON reports put LVM's messages here.
+			text = strings.Join(strings.Fields(stdout.String()), " ")
+		}
 		if strings.Contains(text, "executable file not found") || strings.Contains(text, "No such file") && strings.Contains(text, "lvm") && len(text) < 80 {
 			return "", fmt.Errorf("can't find lvm on the host: install lvm2 there")
 		}
@@ -90,6 +94,46 @@ func inHostPIDContainer() bool {
 	}
 	self, err := os.Readlink("/proc/self/ns/mnt")
 	return err == nil && host != self
+}
+
+// ErrNoLVM means this machine has no LVM at all, rather than that it couldn't be reached.
+var ErrNoLVM = errors.New("this machine has no LVM")
+
+// VisibleToLVM returns the devices that this machine's LVM can read, after its devices file and filters, whether they hold
+// a PV or not. It uses lvmdiskscan because "pvs -a" leaves out what has no PV on it. In a container with no way to the
+// host's LVM, it fails, as the host may well have LVM of its own.
+func VisibleToLVM() ([]string, error) {
+	out, err := hostLVM("lvmdiskscan")
+	if err != nil {
+		if strings.Contains(err.Error(), "can't find lvm") {
+			if isContainer() && !inHostPIDContainer() {
+				return nil, errors.New("this container can't reach the host's LVM: run it with --pid=host, or check the host by hand")
+			}
+			return nil, ErrNoLVM
+		}
+		return nil, err
+	}
+	return parseDiskscan(out), nil
+}
+
+// parseDiskscan takes the device from lines like "  /dev/sdb [ 8.00 GiB] LVM physical volume", leaving out its summary.
+func parseDiskscan(out string) []string {
+	var devices []string
+	for _, line := range strings.Split(out, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 && strings.HasPrefix(fields[0], "/dev/") {
+			devices = append(devices, fields[0])
+		}
+	}
+	return devices
+}
+
+func isContainer() bool {
+	for _, marker := range []string{"/run/.containerenv", "/.dockerenv"} {
+		if _, err := os.Stat(marker); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *lvmThinDriver) lv(name string) string   { return d.vg + "/" + name }
