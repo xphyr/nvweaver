@@ -26,6 +26,9 @@ The major differences between versions. For every change, see the commit history
 - **The API stays responsive while storage is busy.** Reads never wait for a change, and slow storage work no longer holds up other requests.
 - **The API can answer `503` with `Retry-After`** when too much is pending, or when an object is in the middle of another change. Clients should retry.
 - **SPDK stops much faster with many volumes,** without taking the target apart first.
+- **Removing a host now cuts it off straight away on the kernel target,** rather than when it next reconnects. Other hosts on that
+  subsystem stall for about 10 s while they reconnect, with no errors. See [known limits](README.md#known-limits).
+- **Too small an `fs.aio-max-nr` on SPDK gets a clear error** saying how to raise it. This also stops a saved configuration from starting.
 
 ### Planned for this release
 

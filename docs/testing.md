@@ -38,7 +38,7 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | `e2e.sh`, kernel target | Loopback in one VM | 209 of 209 |
 | `e2e.sh`, SPDK target | Loopback in one VM | 223 of 223 |
 | `systemd-e2e.sh` | Loopback in one VM | 68 of 68 |
-| `vm/vm-e2e.sh` | Between two VMs | 701 of 701 |
+| `vm/vm-e2e.sh` | Between two VMs | 762 of 762 |
 
 `go test -race` also passes. Earlier, smaller versions of these suites passed on GitHub's hosted runners, in
 CI run 41887410583 on commit `391e438`, with 2-vCPU VMs and Ubuntu's QEMU 8.2.
@@ -127,6 +127,18 @@ NGUID, and each read what the other wrote. Then A was removed from the allow lis
 | A's controller | Stays `live` | `connecting`, retrying |
 | A writes | **Succeeds** | Blocks |
 | A reconnects after disconnecting | Refused | Refused |
+
+That was the behaviour then. The kernel target now drops the subsystem's connections. `vm-e2e` tests it while all three writers run, with hosts A and B sharing a
+subsystem, and B on another one too:
+
+| After removal | Kernel target | SPDK |
+|---|---|---|
+| A's writes | None finish | None finish |
+| A's write reaching the disk, read back by B | No | No |
+| A's name, from another machine | Refused | Refused |
+| A's controller | Removed, so it has to connect again | Stays `live` until its I/O times out |
+| B on the shared subsystem | No errors, 10.3 s stall | No errors, 0.01 s stall |
+| B on the other subsystem | No errors, no stall | No errors, no stall |
 
 ### Storage pools
 
@@ -398,6 +410,11 @@ Checks that passed while proving nothing. Watch for these patterns:
 
 - **`/proc/PID/task/TID/children`** lists only that thread's children. Go can start a process from any thread, so
   reading thread 1 found no `nvmf_tgt` in 1 of 5 starts under emulation. Read `/proc/1/task/*/children`.
+- **`dd` to a device that has gone makes a file:** once a host lost its controller, `dd of=/dev/nvme0n1` created a regular file in `/dev` and appeared
+  to succeed, which also broke later tests. Use `conv=nocreat`.
+- **A flag file left by an earlier run:** `rm` without `sudo` couldn't remove root's file in `/tmp`, so a check for it passed on the next backend, having
+  shown nothing. The test now checks that it's gone first.
+- **A bare `wait` also waits for a background watcher,** which may be waiting for the caller. Wait for specific PIDs.
 - **`nvme connect -l`:** `-l 5` gives a host one reconnect attempt, after 10 seconds, and then it removes the controller.
   A slow target restart misses that, and the device is gone. `e2e.sh` now scales this with `TEST_TIMEOUT_SCALE`.
 - **A wait with no check after it:** in `e2e.sh`, after the `KEEP_ON_EXIT` refusal on SPDK, waiting for a host that gave

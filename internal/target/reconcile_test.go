@@ -2,6 +2,7 @@ package target_test
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -164,5 +165,102 @@ func TestRollbackPutsAFailedChangeBack(t *testing.T) {
 	}
 	if got, _ := c.ConfigFS.List("/nvmet/ports/1/subsystems"); len(got) != 2 {
 		t.Errorf("rollback should reattach the subsystem: %v", got)
+	}
+}
+
+func TestLosingAccessDropsConnections(t *testing.T) {
+	const a, b = "nqn.2026-11.test:a", "nqn.2026-11.test:b"
+	const nqn, other = "nqn.2026-11.test:s0", "nqn.2026-11.test:s1"
+	start := func() *target.State {
+		st := sized(2, 1)
+		st.Ports[2] = &target.Port{ID: 2, Transport: target.TransportTCP, Address: "127.0.0.2", Service: 4420}
+		st.Hosts[a] = &target.Host{NQN: a}
+		st.Hosts[b] = &target.Host{NQN: b}
+		st.Subsystems[nqn].AllowedHosts = []string{a, b}
+		st.Subsystems[nqn].Ports = []uint16{1, 2}
+		return st
+	}
+	bounce := func(id int) []string {
+		link := fmt.Sprintf("/nvmet/ports/%d/subsystems/%s", id, nqn)
+		return []string{"unlink " + link, "link " + link}
+	}
+	for _, tc := range []struct {
+		name   string
+		before func(*target.Subsystem)
+		change func(*target.State)
+		want   []string // Links that should be dropped and made again.
+	}{
+		{name: "a host is removed", change: func(s *target.State) { s.Subsystems[nqn].AllowedHosts = []string{b} },
+			want: append(bounce(1), bounce(2)...)},
+		{name: "any host is no longer allowed", before: func(s *target.Subsystem) { s.AllowAnyHost, s.AllowedHosts = true, nil },
+			change: func(s *target.State) {
+				s.Subsystems[nqn].AllowAnyHost = false
+				s.Subsystems[nqn].AllowedHosts = []string{a}
+			}, want: append(bounce(1), bounce(2)...)},
+		{name: "a host is added", change: func(s *target.State) {
+			s.Hosts["nqn.2026-11.test:c"] = &target.Host{NQN: "nqn.2026-11.test:c"}
+			s.Subsystems[nqn].AllowedHosts = []string{a, b, "nqn.2026-11.test:c"}
+		}},
+		{name: "any host becomes allowed", change: func(s *target.State) {
+			s.Subsystems[nqn].AllowAnyHost = true
+			s.Subsystems[nqn].AllowedHosts = nil
+		}},
+		{name: "a namespace is removed", change: func(s *target.State) { delete(s.Subsystems[nqn].Namespaces, 1) }},
+		{name: "another subsystem loses a host", change: func(s *target.State) { s.Subsystems[other].AllowedHosts = nil },
+			want: []string{"unlink /nvmet/ports/1/subsystems/" + other, "link /nvmet/ports/1/subsystems/" + other}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := start()
+			if tc.before != nil {
+				tc.before(st.Subsystems[nqn])
+			}
+			tgt, c := newTarget(t, st)
+			next := st.Clone()
+			tc.change(next)
+			c.ops = nil
+			if err := tgt.Reconcile(st, next); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, op := range c.ops {
+				if strings.Contains(op, "/ports/") {
+					got = append(got, op)
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("port links: %v, want %v", got, tc.want)
+			}
+			// However it got there, it must end up attached.
+			for _, sub := range next.Subsystems {
+				for _, id := range sub.Ports {
+					link := fmt.Sprintf("/nvmet/ports/%d/subsystems/%s", id, sub.NQN)
+					if !slices.Contains(c.ConfigFS.(*targettest.FS).Paths(), link) {
+						t.Errorf("%s isn't attached", link)
+					}
+				}
+			}
+		})
+	}
+}
+
+// The host has to be unable to reconnect by the time the connections drop, or it could simply come back.
+func TestAHostIsRemovedBeforeConnectionsDrop(t *testing.T) {
+	const a, b = "nqn.2026-11.test:a", "nqn.2026-11.test:b"
+	const nqn = "nqn.2026-11.test:s0"
+	st := sized(1, 1)
+	st.Hosts[a] = &target.Host{NQN: a}
+	st.Hosts[b] = &target.Host{NQN: b}
+	st.Subsystems[nqn].AllowedHosts = []string{a, b}
+	tgt, c := newTarget(t, st)
+	next := st.Clone()
+	next.Subsystems[nqn].AllowedHosts = []string{b}
+	c.ops = nil
+	if err := tgt.Reconcile(st, next); err != nil {
+		t.Fatal(err)
+	}
+	host := slices.Index(c.ops, "unlink /nvmet/subsystems/"+nqn+"/allowed_hosts/"+a)
+	port := slices.Index(c.ops, "unlink /nvmet/ports/1/subsystems/"+nqn)
+	if host < 0 || port < 0 || host > port {
+		t.Errorf("the host must go first: %v", c.ops)
 	}
 }

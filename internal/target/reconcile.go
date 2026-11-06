@@ -201,7 +201,45 @@ func (t *Target) Reconcile(prev, next *State) error {
 			}
 		}
 	}
+	return t.disconnectRemovedHosts(prev, next, portChanged)
+}
+
+// disconnectRemovedHosts cuts off hosts that have just lost access. The kernel only checks allowed_hosts when a host
+// connects, so one already connected could otherwise carry on reading and writing. It has no way to drop one host
+// from configfs, so this detaches the subsystem from its ports and attaches it again. Removing the host's link came
+// first, so it can't get back in. Every other host on this subsystem has to reconnect too, which stalls its I/O
+// without errors, for 10 s by default. Hosts on other subsystems aren't affected. See docs/testing.md.
+func (t *Target) disconnectRemovedHosts(prev, next *State, portChanged map[uint16]bool) error {
+	for _, nqn := range sortedKeys(prev.Subsystems) {
+		old, cur := prev.Subsystems[nqn], next.Subsystems[nqn]
+		if cur == nil || !lostAccess(old, cur) {
+			continue
+		}
+		for _, id := range cur.Ports {
+			// A new link, or one to a port that changed, has no connections to drop.
+			if !contains(old.Ports, id) || portChanged[id] {
+				continue
+			}
+			if err := t.unlink(t.portLink(id, nqn)); err != nil {
+				return err
+			}
+			if err := t.link(t.subsysDir(nqn), t.portLink(id, nqn)); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+// lostAccess reports whether any host that could connect before no longer can.
+func lostAccess(old, cur *Subsystem) bool {
+	if cur.AllowAnyHost {
+		return false
+	}
+	if old.AllowAnyHost {
+		return true
+	}
+	return slices.ContainsFunc(old.AllowedHosts, func(h string) bool { return !contains(cur.AllowedHosts, h) })
 }
 
 func subsystemPorts(s *Subsystem) []uint16 {

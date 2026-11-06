@@ -293,3 +293,15 @@ there, not as absolute numbers.
 - **Stopping SPDK no longer takes it apart first:** its configuration goes with its process, and doing so took about 100 s at 5,000 volumes.
 - **SPDK is limited to 8,192 subsystems,** rather than its default of 1,024. It's fixed at startup, and beyond it a request is refused with a clear
   error. The kernel target reached 5,000 with no limit in the way, and the difference is documented in the README.
+
+## 30. Removing a host drops the subsystem's connections on the kernel target
+
+- **The problem:** the kernel only checks `allowed_hosts` when a host connects. A removed host stayed connected, and kept writing with no errors, so
+  removal couldn't fence it, and differed from SPDK.
+- **Chosen:** when a host loses access, detach the subsystem from its ports and attach it again, after removing the host's link. Any connected
+  host on that subsystem is dropped, and the removed one can't return. Tested in `vm-e2e`: its write never reaches the disk.
+- **The cost:** another host on that subsystem stalled for 10.3 s, its default reconnect delay, with no errors. A host on another subsystem on the same port
+  saw no effect. The usual case of one host per subsystem disturbs nobody, but a shared subsystem does stall, as after a live migration.
+- **Rejected: nvmet's debugfs,** which is thought to allow dropping one controller. That's unconfirmed, as Fedora's kernel is built without
+  `CONFIG_NVME_TARGET_DEBUGFS`, so it can't be tried here. It's worth revisiting if the distributions turn it on, since it could avoid the stall.
+- **Rejected, for now: an option to keep connections.** Nothing needs it yet. The CSI driver might, for live migration: see `TODO.md`.

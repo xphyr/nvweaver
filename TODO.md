@@ -59,11 +59,11 @@ and CLI once, against the result.
 - [ ] Find out why every SPDK RPC takes about 8 ms, and how long `nvmf_tgt` takes to exit at 5,000 volumes if it isn't killed
 - [ ] Test the systemd timeouts at 5,000 volumes, under systemd
 - [x] Add an intent log for pool operations, and internal names for volumes
-- [ ] Make removing a host force its connections off on the kernel target, and test the effect on other hosts
+- [x] Make removing a host force its connections off on the kernel target, and test the effect on other hosts: see decision 30
 - [x] Fix SPDK's slow list, which fetched its entire configuration for each namespace
 - [ ] Report to SPDK that AIO bdevs ignore FUA while reporting a write cache. See decision 28. An upstream fix would let us drop
       the sync attribute, and also cover block devices
-- [ ] Check `fs.aio-max-nr` on SPDK at startup, and give a clear error. Each volume needs 128 per core
+- [x] Check `fs.aio-max-nr` on SPDK at startup, and give a clear error. Each volume needs 128 per core
 - [x] Handle long-running operations such as full clones, without blocking the API behind its
       single lock
 - [x] Add support for an LVM backend, using thin provisioning only. Adopt existing pools only. In a container, use
@@ -123,7 +123,8 @@ Production-like scale is a requirement, so measure this before building on it.
   - [ ] Make volume creation idempotent by name in the API, because CSI retries calls
   - [ ] Use the snapshot and cloning features
   - [ ] Map volumes into per-node subsystems, and each shared volume into its own subsystem
-  - [ ] Test RWX block volumes and KubeVirt live migration with the real thing
+  - [ ] Test RWX block volumes and KubeVirt live migration with the real thing. On the kernel target, removing the source host
+        stalls the destination for about 10 s: see decision 30. A shorter reconnect delay may help, and hasn't been measured
   - [ ] Scope names per cluster, so that several clusters can share one target
   - [ ] Detect nodes sharing a `hostnqn`, common on cloned images, which breaks access
         control

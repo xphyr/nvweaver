@@ -40,7 +40,11 @@ type Backend struct {
 	needsFull bool
 	rpc       Caller
 	keyDir    string
-	proc      *process
+	// reactors is how many cores SPDK runs on. Zero skips the check on fs.aio-max-nr.
+	reactors int
+	// aioLimit reads fs.aio-max-nr.
+	aioLimit func() (int, error)
+	proc     *process
 	// probe reports why an address could not be listened on, if it couldn't.
 	probe func(address string) error
 	done  chan struct{}
@@ -52,6 +56,41 @@ func (b *Backend) Name() string { return "spdk" }
 // Capabilities implements target.Backend.
 func (b *Backend) Capabilities() target.Capabilities {
 	return target.Capabilities{Transports: []string{target.TransportTCP}}
+}
+
+// aioPerNamespace is how much of fs.aio-max-nr each namespace uses, on each core.
+const aioPerNamespace = 128
+
+func readAIOLimit() (int, error) {
+	b, err := os.ReadFile("/proc/sys/fs/aio-max-nr")
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(b)))
+}
+
+// checkAIO refuses what the kernel would, as SPDK only reports "Invalid argument", and only partway through.
+func (b *Backend) checkAIO(s *target.State) error {
+	if b.reactors == 0 || b.aioLimit == nil {
+		return nil
+	}
+	limit, err := b.aioLimit()
+	if err != nil {
+		return nil // It can't be read, so leave it to SPDK to find out.
+	}
+	namespaces := 0
+	for _, sub := range s.Subsystems {
+		for _, ns := range sub.Namespaces {
+			if ns.Enabled {
+				namespaces++
+			}
+		}
+	}
+	if namespaces*aioPerNamespace*b.reactors > limit {
+		return target.Invalid("%d namespaces on %d SPDK cores need fs.aio-max-nr to be at least %d, and it's %d: raise it on the host, with sysctl -w fs.aio-max-nr=1048576",
+			namespaces, b.reactors, namespaces*aioPerNamespace*b.reactors, limit)
+	}
+	return nil
 }
 
 // maxSubsystems is fixed when SPDK starts. Each one costs SPDK about 0.4 MB of memory, whether or not it's in use.
@@ -73,6 +112,9 @@ func (b *Backend) Check(s *target.State) error {
 	}
 	if len(s.Subsystems) > maxSubsystems {
 		return target.Invalid("the spdk backend is limited to %d subsystems: share a subsystem between volumes", maxSubsystems)
+	}
+	if err := b.checkAIO(s); err != nil {
+		return err
 	}
 	for _, sub := range s.Subsystems {
 		if sub.Passthru != "" {

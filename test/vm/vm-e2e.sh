@@ -192,6 +192,8 @@ backend_tests() { # BACKEND IMAGE [run args]
 	snapshot_tests "$backend" lvm-thin
 	concurrent_tests "$backend" reflink
 	concurrent_tests "$backend" lvm-thin
+	disconnect_tests "$backend"
+	[ "$backend" = spdk ] && aio_limit_tests
 	lvm_tests "$backend" "$image"
 	full_pool_tests "$backend"
 	power_tests "$backend" "$image" lvm-thin
@@ -499,6 +501,119 @@ EOF
 	fi
 	expect_eq "no change is left unfinished" 0 "$(t "sudo podman exec nvweaver-vm sh -c 'ls /var/lib/nvweaver/intents | wc -l'")"
 	api "forget the pool" 204 DELETE /v1/pools/many
+}
+
+# Removing a host has to stop it there and then, even mid-write, so it can be fenced. What that does to other hosts
+# matters as much. Host A is the other VM. Host B is the target VM's own kernel, with a volume shared with A, and one that isn't.
+disconnect_tests() { # BACKEND
+	local backend=$1 sub=$NQN:$1-fence other=$NQN:$1-fence-other b_host=$NQN:$1-host-b
+	local dev_a dev_b dev_other out removed
+	section "$backend: removing a host from a subsystem while it's writing"
+	api "second host" 201 POST /v1/hosts "{\"nqn\":\"$b_host\"}"
+	api "subsystem shared by both hosts" 201 POST /v1/subsystems "{\"nqn\":\"$sub\",\"allowed_hosts\":[\"$HOST\",\"$b_host\"],\"ports\":[1]}"
+	api "with a namespace" 201 POST "/v1/subsystems/$sub/namespaces" "{\"file\":{\"name\":\"$1-fence.img\",\"size_bytes\":67108864}}"
+	api "another subsystem on the same port, for the second host" 201 POST /v1/subsystems "{\"nqn\":\"$other\",\"allowed_hosts\":[\"$b_host\"],\"ports\":[1]}"
+	api "with a namespace" 201 POST "/v1/subsystems/$other/namespaces" "{\"file\":{\"name\":\"$1-fence-other.img\",\"size_bytes\":67108864}}"
+	out=$(connect "$sub") && ok "the first host connects" || bad "the first host connects" "$out"
+	t "sudo modprobe nvme-tcp"
+	for s in "$sub" "$other"; do
+		out=$(t "sudo nvme connect -t tcp -a $TARGET_IP -s $PORT -n $s --hostnqn=$b_host >/dev/null" 2>&1) && ok "the second host connects" || bad "the second host connects" "$out"
+	done
+	dev_a=$(ini_dev "$sub")
+	local find_dev='for _ in $(seq 1 40); do for s in /sys/class/nvme-subsystem/*; do [ "$(cat $s/subsysnqn 2>/dev/null)" = "$1" ] || continue; for n in $s/nvme*n*; do [ -b /dev/$(basename $n) ] && { echo /dev/$(basename $n); exit 0; }; done; done; sleep 0.25; done'
+	dev_b=$(t "bash -c '$find_dev' _ $sub")
+	dev_other=$(t "bash -c '$find_dev' _ $other")
+	if [ -z "$dev_a" ] || [ -z "$dev_b" ] || [ -z "$dev_other" ]; then
+		bad "the namespace appears on each host" "[$dev_a] [$dev_b] [$dev_other]"
+		return
+	fi
+	# Each line is when a write started, how long it took, and how it ended.
+	# nocreat, or once a host has lost its device, dd makes a file with its name in /dev, and appears to succeed.
+	local writer='while :; do s=$(date +%s.%N); if dd if=/dev/zero of=$1 bs=4k count=1 oflag=direct,sync conv=nocreat status=none 2>/dev/null; then r=ok; else r=ERR; fi; e=$(date +%s.%N); echo "$s $(awk -v a="$s" -v b="$e" "BEGIN { printf \"%.3f\", b - a }") $r"; sleep 0.1; done'
+	for pair in "i $dev_a /tmp/fence-a" "t $dev_b /tmp/fence-b" "t $dev_other /tmp/fence-other"; do
+		set -- $pair
+		$1 "cat > $3.sh <<'WRITER'
+$writer
+WRITER
+sudo nohup setsid bash $3.sh $2 > $3.log 2>&1 < /dev/null &"
+	done
+	sleep 3
+	expect_eq "all three are writing, with no errors" "0 0 0" "$(for f in i:a t:b t:other; do ${f%%:*} "grep -c ERR /tmp/fence-${f##*:}.log"; done | tr '\n' ' ' | sed 's/ $//')"
+
+	removed=$(t 'date +%s.%N')
+	api "remove the first host, while it's writing" 204 DELETE "/v1/subsystems/$sub/hosts/$HOST"
+	sleep $((2 * SCALE))
+	# Clocks differ between VMs, so A's writes are counted by its own clock.
+	local a_since
+	a_since=$(i 'date +%s.%N')
+	# This write can't finish, so it isn't waited for. If it reached the disk, the other host would see it below.
+	i "sudo nohup sh -c 'head -c 4096 /dev/urandom > /tmp/fence-mark; dd if=/tmp/fence-mark of=$dev_a bs=4k seek=4096 count=1 oflag=direct,sync conv=nocreat' >/dev/null 2>&1 < /dev/null &"
+	sleep $((13 * SCALE))
+	expect_eq "it has no write finish after that" 0 "$(i "awk -v s=$a_since '\$1 + \$2 >= s && \$3 == \"ok\"' /tmp/fence-a.log | wc -l")"
+	expect_eq "and a write it tried didn't reach the disk" 0 "$(t "sudo dd if=$dev_b bs=4k skip=4096 count=1 iflag=direct status=none | tr -d '\\0' | wc -c")"
+	# What the host's controller shows varies, as SPDK's hosts take until an I/O timeout to notice. The target's answer doesn't.
+	if out=$(t "sudo nvme connect -t tcp -a $TARGET_IP -s $PORT -n $sub --hostnqn=$HOST 2>&1"); then
+		bad "the target refuses that host's name, from anywhere" "$out"
+		t "sudo nvme disconnect -n $sub >/dev/null 2>&1"
+		bad "skipping the rest, as that also disconnected the other host"
+		return
+	else
+		ok "the target refuses that host's name, from anywhere"
+	fi
+
+	expect_eq "the host sharing the subsystem has no write errors" 0 "$(t "grep -c ERR /tmp/fence-b.log")"
+	expect_eq "and is connected" live "$(t "for s in /sys/class/nvme-subsystem/*; do [ \"\$(cat \$s/subsysnqn)\" = $sub ] && cat \$s/nvme[0-9]*/state; done | head -1")"
+	expect_eq "and is writing again" 1 "$(t "awk -v s=\$(date +%s) '\$1 >= s - 2 && \$3 == \"ok\"' /tmp/fence-b.log | wc -l | awk '{print (\$1 > 0)}'")"
+	echo "        (its longest stall was $(t "awk -v s=$removed '\$1 + \$2 >= s && \$2 > m { m = \$2 } END { printf \"%.2f\", m }' /tmp/fence-b.log") s)"
+	expect_eq "the same host on another subsystem has no write errors" 0 "$(t "grep -c ERR /tmp/fence-other.log")"
+	expect_eq "and no stall at all" 1 "$(t "awk -v s=$removed -v most=$((2 * SCALE)) '\$1 + \$2 >= s && \$2 > m { m = \$2 } END { print (m < most) }' /tmp/fence-other.log")"
+
+	api "allow the first host again" 204 PUT "/v1/subsystems/$sub/hosts/$HOST"
+	# A host told it isn't allowed may give up and remove its controller, and then has to connect again itself.
+	if [ -z "$(i "cat /sys/class/nvme-subsystem/*/nvme[0-9]*/state 2>/dev/null | head -1")" ]; then
+		echo "        (this host's controller was removed, so it connects again itself)"
+		out=$(connect "$sub") && ok "the host can connect again" || bad "the host can connect again" "$out"
+	fi
+	dev_a=$(ini_dev "$sub")
+	# Not waited for directly, as it may block until the host has recovered.
+	# With sudo, as root made it. Left there, the previous backend's would pass this.
+	i "sudo rm -f /tmp/fence-ok"
+	expect_eq "(nothing left over to pass this check)" "" "$(i '[ -e /tmp/fence-ok ] && echo left')"
+	i "sudo nohup sh -c 'dd if=/dev/zero of=$dev_a bs=4k seek=8192 count=1 oflag=direct,sync conv=nocreat && touch /tmp/fence-ok' >/dev/null 2>&1 < /dev/null &"
+	for _ in $(seq 1 $((240 * SCALE))); do
+		[ "$(i '[ -e /tmp/fence-ok ] && echo yes')" = yes ] && break
+		sleep 0.5
+	done
+	expect_eq "and a write finishes" yes "$(i '[ -e /tmp/fence-ok ] && echo yes')"
+
+	# They must really have stopped: device names get reused, and a later test's disk could be written to.
+	for r in i t; do
+		$r "sudo pkill -f '^bash /tmp/fence-'; sleep 0.5; sudo pkill -x dd; true"
+		expect_eq "its writers have stopped" 0 "$($r "pgrep -fc '^bash /tmp/fence-'; true")"
+	done
+	disconnect "$sub"
+	t "sudo nvme disconnect -n $sub >/dev/null 2>&1; sudo nvme disconnect -n $other >/dev/null 2>&1"
+	api "remove the subsystem" 204 DELETE "/v1/subsystems/$sub"
+	api "remove the other" 204 DELETE "/v1/subsystems/$other"
+	api "remove the second host" 204 DELETE "/v1/hosts/$b_host"
+}
+
+# The figure in the check has to match real SPDK: up to the limit has to work, and past it has to be refused clearly.
+aio_limit_tests() {
+	local sub=$NQN:aio have before
+	section "spdk: running out of fs.aio-max-nr"
+	before=$(t 'cat /proc/sys/fs/aio-max-nr')
+	have=$(t "curl -s $API/v1/subsystems | jq '[.[].namespaces[]] | length'")
+	api "subsystem" 201 POST /v1/subsystems "{\"nqn\":\"$sub\",\"ports\":[1]}"
+	t "sudo sysctl -q -w fs.aio-max-nr=$(((have + 2) * 128))"
+	api "a namespace that fits" 201 POST "/v1/subsystems/$sub/namespaces" '{"nsid":1,"file":{"name":"aio1.img","size_bytes":1048576}}'
+	expect_eq "and is served" true "$(t "jq .live_enabled /tmp/b")"
+	api "the last that fits" 201 POST "/v1/subsystems/$sub/namespaces" '{"nsid":2,"file":{"name":"aio2.img","size_bytes":1048576}}'
+	expect_eq "and is served" true "$(t "jq .live_enabled /tmp/b")"
+	api "one too many is refused" 422 POST "/v1/subsystems/$sub/namespaces" '{"nsid":3,"file":{"name":"aio3.img","size_bytes":1048576}}'
+	expect_has "saying what to do" "sysctl -w fs.aio-max-nr" "$(t 'cat /tmp/b')"
+	t "sudo sysctl -q -w fs.aio-max-nr=$before"
+	api "remove the subsystem" 204 DELETE "/v1/subsystems/$sub"
 }
 
 # What's particular to LVM: its rules on sizes, what else is in the volume group, and crashing.

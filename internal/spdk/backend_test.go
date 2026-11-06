@@ -668,3 +668,36 @@ func TestTooManySubsystemsAreRefusedClearly(t *testing.T) {
 		t.Errorf("past the limit: %v", err)
 	}
 }
+
+func TestFsAioMaxNrIsCheckedClearly(t *testing.T) {
+	b, _ := newBackend()
+	s := state()
+	namespaces := 0
+	for _, sub := range s.Subsystems {
+		for _, ns := range sub.Namespaces {
+			if ns.Enabled {
+				namespaces++
+			}
+		}
+	}
+	if namespaces == 0 {
+		t.Fatal("the test state needs a namespace")
+	}
+	const reactors = 2
+	b.reactors = reactors
+	need := namespaces * aioPerNamespace * reactors
+	b.aioLimit = func() (int, error) { return need, nil }
+	if err := b.Check(s); err != nil {
+		t.Errorf("exactly enough: %v", err)
+	}
+	b.aioLimit = func() (int, error) { return need - 1, nil }
+	err := b.Check(s)
+	var ve *target.ValidationError
+	if !errors.As(err, &ve) || !strings.Contains(err.Error(), "sysctl -w fs.aio-max-nr") {
+		t.Errorf("one short: %v", err)
+	}
+	b.aioLimit = func() (int, error) { return 0, errors.New("no /proc") }
+	if err := b.Check(s); err != nil {
+		t.Errorf("if it can't be read, that's not a reason to refuse: %v", err)
+	}
+}

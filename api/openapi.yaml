@@ -466,7 +466,9 @@ paths:
     delete:
       operationId: denyHost
       summary: Stop allowing a host to use a subsystem
-      description: Idempotent.
+      description: >-
+        Idempotent. The host is cut off straight away, even if it's connected. On the kernel target, this also drops other
+        hosts on the subsystem, whose I/O stalls until they reconnect, which they do by themselves.
       tags: [subsystems]
       responses:
         '204':

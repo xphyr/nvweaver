@@ -1,6 +1,7 @@
 package spdk
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -137,6 +138,13 @@ func (b *Backend) initialise(socket string, done <-chan struct{}) error {
 	if err := b.rpc.Call("framework_wait_init", nil, nil); err != nil {
 		return err
 	}
+	var reactors struct {
+		Reactors []json.RawMessage `json:"reactors"`
+	}
+	if err := b.rpc.Call("framework_get_reactors", nil, &reactors); err != nil {
+		return err
+	}
+	b.reactors, b.aioLimit = len(reactors.Reactors), readAIOLimit
 	return b.rpc.Call("nvmf_create_transport", map[string]any{"trtype": "TCP"}, nil)
 }
 

@@ -283,13 +283,14 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
 ## Known limits
 
 - NVMe/TCP only.
-- **On the kernel target, removing a host doesn't cut off a connection it already has.** It can keep reading and
-  writing until it disconnects, though it can't reconnect. SPDK drops the connection straight away. Don't rely on
-  removal to fence a host that's misbehaving.
+- **On the kernel target, removing a host from a subsystem briefly stalls other hosts on that subsystem.** The kernel can't drop one
+  host's connection, so all of that subsystem's are dropped, and the others reconnect. They saw no errors, but their I/O stopped for
+  10 s, which is the host's default reconnect delay. Hosts on other subsystems aren't affected, and neither is anyone on SPDK. A removed host
+  can't read or write from then on in both cases, but on the kernel target it also loses its controller, and has to connect again if it's allowed back.
 - **On SPDK, the kernel's `fs.aio-max-nr` limits volumes.** Each volume uses 128 per SPDK core, so the
-  default of 65,536 allows 512 volumes on one core. Beyond that, adding a namespace fails with an
-  unhelpful error. Raise it on the host with `sysctl -w fs.aio-max-nr=1048576`: a container with no
-  capabilities can't do this itself.
+  default of 65,536 allows 512 volumes on one core. Beyond that, adding a namespace is refused, and if the saved
+  configuration needs more, the service won't start. Raise it on the host with `sysctl -w fs.aio-max-nr=1048576`: a
+  container with no capabilities can't do this itself.
 - **Tested to 5,000 volumes,** either across 100 subsystems or with one subsystem each. See [the numbers](docs/testing.md).
 - **SPDK allows up to 8,192 subsystems,** and each uses about 0.37 MB of memory. Beyond the limit, creating one is refused. Starting SPDK
   also takes longer than the kernel target: about 150 s with 5,000 volumes, or 310 s with a subsystem for each.
