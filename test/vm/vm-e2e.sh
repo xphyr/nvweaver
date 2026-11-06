@@ -121,6 +121,8 @@ t "sudo pvcreate -q -y --metadatasize 16m $LVM_DISK && sudo vgcreate -q $VG $LVM
 expect_eq "initiator can reach the target only over the link" "$TARGET_IP" "$(i "ip -o route get $TARGET_IP | sed -E 's/.* dev lab0 .*/$TARGET_IP/'")"
 
 # --pid=host is what lets the service use the host's LVM.
+warnings() { t "curl -s $API/v1/system | jq -r '.warnings | join(\" \")'"; }
+
 start_service() { # BACKEND IMAGE
 	t "sudo podman rm -f nvweaver-vm >/dev/null 2>&1; sudo podman run -d --pull=never --name nvweaver-vm --privileged --network host --pid=host \
 		-v /lib/modules:/lib/modules:ro -v /dev:/dev -v nvweaver-vm-data:/var/lib/nvweaver \
@@ -653,6 +655,17 @@ lvm_tests() { # BACKEND IMAGE
 	t "sudo lvremove -q -y $VG/nvw-stray"
 	api "delete the volume" 204 DELETE /v1/volumes/small
 	expect_eq "it's gone" 0 "$(our_lvs)"
+	# The service looks on the host, through nsenter, as nothing like this is in the image.
+	t "sudo mv /usr/sbin/thin_check /usr/sbin/thin_check.hidden"
+	start_service "$backend" "$image"
+	wait_api || bad "service starts without thin_check" "$(t 'sudo podman logs nvweaver-vm 2>&1 | tail -5')"
+	sleep 3 # For the check at startup.
+	expect_has "a missing thin_check is reported" "thin_check isn't installed" "$(warnings)"
+	t "sudo mv /usr/sbin/thin_check.hidden /usr/sbin/thin_check"
+	start_service "$backend" "$image"
+	wait_api || bad "service starts again"
+	sleep 3
+	expect_lacks "and clears when it's back" thin_check "$(warnings)"
 
 	# Everything the service said it did must still be true after a crash, with nothing left over.
 	local round in_progress=0 n
@@ -857,7 +870,6 @@ client_lvm_tests() { # BACKEND IMAGE
 		[ -n "${3:-}" ] && t "sudo sed -i -E 's#^(\\s*)\\# global_filter = .*#\\1global_filter = $3#' /etc/lvm/lvm.conf"
 		true
 	}
-	warnings() { t "curl -s $API/v1/system | jq -r '.warnings | join(\" \")'"; }
 	# A change is checked up to 30 seconds later.
 	wait_warning() { # TEXT
 		for _ in $(seq 1 $((25 * SCALE))); do
@@ -1097,6 +1109,21 @@ api "adopt the thin pool, with no container involved" 201 POST /v1/pools "{\"nam
 api "a volume" 201 POST /v1/volumes '{"name":"sv","size_bytes":67108864}'
 api "a snapshot" 201 POST /v1/snapshots '{"name":"ss","volume":"sv"}'
 api "a clone" 201 POST /v1/volumes '{"name":"sc","source":{"snapshot":"ss"}}'
+# With no container: running it natively is where a missing tool is most likely.
+t "sudo mv /usr/sbin/thin_check /usr/sbin/thin_check.hidden; sudo systemctl restart nvweaver"
+sleep 3 # For the check at startup.
+expect_has "natively, a missing thin_check is reported" "thin_check isn't installed" "$(warnings)"
+t "sudo mv /usr/sbin/thin_check.hidden /usr/sbin/thin_check; sudo mv /usr/sbin/lvm /usr/sbin/lvm.hidden; sudo systemctl restart nvweaver"
+sleep 3
+expect_has "as is a missing lvm, with an LVM pool" "can't find lvm" "$(warnings)"
+api "the pool can still be asked about" 200 GET /v1/pools/svc
+expect_eq "and reports that it's missing" missing "$(t 'jq -r .state /tmp/b')"
+expect_has "saying why" "can't find lvm" "$(t 'jq -r ".warnings | join(\" \")" /tmp/b')"
+expect_has "the service keeps running" active "$(t 'systemctl is-active nvweaver')"
+t "sudo mv /usr/sbin/lvm.hidden /usr/sbin/lvm; sudo systemctl restart nvweaver"
+sleep 3
+expect_lacks "and it clears when they're back" "thin_check" "$(warnings)"
+expect_lacks "both of them" "can't find lvm" "$(warnings)"
 api "subsystem for it" 201 POST /v1/subsystems "{\"nqn\":\"$LSUB\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
 api "map the clone" 201 POST "/v1/subsystems/$LSUB/namespaces" '{"volume":"sc"}'
 out=$(connect "$LSUB" "-l 300 -c 5") && ok "host connects to it" || bad "host connects to it" "$out"

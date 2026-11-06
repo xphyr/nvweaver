@@ -227,3 +227,28 @@ func TestParseDiskscan(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+func TestMissingThinCheck(t *testing.T) {
+	const config = `thin_check_executable="/usr/sbin/thin_check"` + "\n"
+	found := func(string) (bool, error) { return true, nil }
+	absent := func(string) (bool, error) { return false, nil }
+	unknown := func(string) (bool, error) { return false, errors.New("can't run test") }
+	if got := missingThinCheck(config, found); len(got) != 0 {
+		t.Errorf("it's there, but got %v", got)
+	}
+	got := missingThinCheck(config, absent)
+	if len(got) != 1 || !strings.Contains(got[0], "/usr/sbin/thin_check") || !strings.Contains(got[0], "thin-provisioning-tools") {
+		t.Errorf("got %v", got)
+	}
+	if got := missingThinCheck(config, unknown); len(got) != 0 {
+		t.Errorf("not being able to tell isn't the same as missing, but got %v", got)
+	}
+	if got := missingThinCheck(`thin_check_executable=""`, absent); len(got) != 0 {
+		t.Errorf("LVM is set not to use it, but got %v", got)
+	}
+	var asked string
+	missingThinCheck(`thin_check_executable="/opt/lvm/thin_check"`, func(p string) (bool, error) { asked = p; return true, nil })
+	if asked != "/opt/lvm/thin_check" {
+		t.Errorf("should look where LVM is configured to, but looked at %q", asked)
+	}
+}

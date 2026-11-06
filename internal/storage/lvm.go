@@ -46,10 +46,7 @@ func newLVMThin(p *target.Pool) (Driver, error) {
 // hostLVM runs lvm. A container started with --pid=host sees the host's init as PID 1, in other
 // namespaces from its own, so it goes through nsenter. As a plain service, it's already there.
 func hostLVM(args ...string) (string, error) {
-	argv := append([]string{"lvm"}, args...)
-	if inHostPIDContainer() {
-		argv = append([]string{"nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p"}, argv...)
-	}
+	argv := hostCommand(append([]string{"lvm"}, args...)...)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -74,6 +71,14 @@ func hostLVM(args ...string) (string, error) {
 	}
 	logWarnings(args[0], stderr.String())
 	return stdout.String(), nil
+}
+
+// hostCommand returns how to run something where LVM runs, so that a check looks in the same place as what it's checking for.
+func hostCommand(argv ...string) []string {
+	if inHostPIDContainer() {
+		return append([]string{"nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p"}, argv...)
+	}
+	return argv
 }
 
 // logWarnings reports what LVM says when it succeeds anyway, since some of it matters, such as not being
@@ -125,6 +130,49 @@ func parseDiskscan(out string) []string {
 		}
 	}
 	return devices
+}
+
+// MissingLVMTools says what LVM thin pools should have that this machine doesn't. Without thin_check, LVM still activates a thin pool,
+// but skips checking its metadata, so damage goes unnoticed. On Debian and Ubuntu, it's only a recommended package. If this can't tell, it
+// says nothing, as the pool's own state will report trouble.
+func MissingLVMTools() []string {
+	out, err := hostLVM("lvmconfig", "--type", "full", "global/thin_check_executable")
+	if err != nil {
+		if strings.Contains(err.Error(), "can't find lvm") {
+			return []string{"LVM thin pools are in use, but " + err.Error()}
+		}
+		return nil
+	}
+	return missingThinCheck(out, hostExecutable)
+}
+
+// missingThinCheck takes lvmconfig's output, such as: thin_check_executable="/usr/sbin/thin_check". LVM can be set to not use it.
+func missingThinCheck(config string, executable func(string) (bool, error)) []string {
+	_, value, _ := strings.Cut(strings.TrimSpace(config), "=")
+	path := strings.Trim(value, `"`)
+	if path == "" {
+		return nil
+	}
+	if found, err := executable(path); err != nil || found {
+		return nil
+	}
+	return []string{fmt.Sprintf("LVM thin pools are in use, but %s isn't installed, so LVM activates them without checking their metadata: "+
+		"install device-mapper-persistent-data on Fedora and RHEL, or thin-provisioning-tools on Debian and Ubuntu", path)}
+}
+
+// hostExecutable reports whether a program is there. An error means that it couldn't tell.
+func hostExecutable(path string) (bool, error) {
+	argv := hostCommand("test", "-x", path)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C"}
+	err := cmd.Run()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func isContainer() bool {

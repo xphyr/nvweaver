@@ -346,3 +346,10 @@ there, not as absolute numbers.
 - **Rejected: `transport: iscsi` on ports.** `transport` is for ways of carrying NVMe, as in decision 26, and iSCSI is a different protocol.
 - **Not chosen yet: building iSCSI.** It's in the "Later" section of `TODO.md`, after the CLI and CSI driver.
 
+## 34. Missing tools stop the service only if the chosen target can't run
+
+- **Chosen:** what the chosen target can't run without stops it at startup, as it already did: `nvmet-tcp`, or `nvmf_tgt`. Anything else is only reported under `warnings`, and only if something saved needs it. So far that means `lvm` and `thin_check`, with an LVM pool saved.
+- **Why not stop for those too:** a pool's tools going missing shouldn't take down everything else this machine exports. Someone using reflink pools doesn't need LVM at all. And without `thin_check`, tested, LVM still activates thin pools, only skipping its check of their metadata.
+- **It looks where the tool would run,** on the host through `nsenter` in a container, as checking inside the container would give the wrong answer. It asks LVM where `thin_check` should be, as that's configurable.
+- **Not checked: `modprobe` and `nsenter`.** A missing `modprobe` only matters if the module isn't loaded, and its error already says what to do. `nsenter` is in both images.
+

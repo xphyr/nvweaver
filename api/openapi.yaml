@@ -1427,7 +1427,7 @@ components:
           type: array
           description: |
             Problems with how this machine is set up, which are empty if there are none. So far, this means that LVM on this machine can
-            read exported devices, or that this couldn't be checked. It's checked in the background, so a change takes a little
+            read exported devices, that this couldn't be checked, or that an LVM pool's tools are missing. It's checked in the background, so a change takes a little
             while to show here. See "Clients' LVM" in `docs/pools.md`.
           items:
             type: string

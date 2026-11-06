@@ -39,12 +39,13 @@ The images and the release tarball's binary are self-contained, apart from what'
 |---|---|---|
 | Kernel target | Kernel modules `nvmet` and `nvmet-tcp`, and configfs. `modprobe` (`kmod`) loads them, if they aren't already | The image has `modprobe`, and needs the host's `/lib/modules` |
 | SPDK target | `nvmf_tgt` on the `PATH`. Building SPDK isn't covered here, so use the image | In the SPDK image |
-| LVM thin pools | `lvm2`, and `thin_check` from `device-mapper-persistent-data` on Fedora and RHEL, or `thin-provisioning-tools` on Debian and Ubuntu. There, it's only a recommended package, so `--no-install-recommends` leaves it out. Also the kernel's `dm_thin_pool` module | Uses the host's, through `nsenter`, which the images have. Run it privileged with `--pid=host` |
+| LVM thin pools | `lvm2`, and `thin_check` from `device-mapper-persistent-data` on Fedora and RHEL, or `thin-provisioning-tools` on Debian and Ubuntu. There, it's only a recommended package, so `--no-install-recommends` leaves it out. Without it, LVM still activates thin pools, but skips checking their metadata. Also the kernel's `dm_thin_pool` module | Uses the host's, through `nsenter`, which the images have. Run it privileged with `--pid=host` |
 | Checking whether LVM can read what's exported | `lvmdiskscan`, from `lvm2`. With no LVM on the machine, there's nothing to check | As above. Without `--pid=host`, `warnings` says that it couldn't check |
 | Reflink pools | XFS or btrfs, for the directory | The same, on the volume it's given |
 
 Passthrough, HTTPS and DH-HMAC-CHAP need no other tools. nvweaver makes its own system calls to clone files and set their attributes, so it doesn't need `cp` or `chattr`.
-LVM has only been tested at version 2.03.38, on Fedora: see [Debian in `TODO.md`](TODO.md#testing-without-hardware).
+If an LVM pool is saved and `lvm` or `thin_check` is missing, nvweaver says so in `warnings` in `GET /v1/system` and in its log, without stopping. It looks where it would run them, on the host if it's in a container.
+It does stop at startup if the chosen target can't run. LVM has only been tested at version 2.03.38, on Fedora: see [Debian in `TODO.md`](TODO.md#testing-without-hardware).
 
 **On each client:** `nvme-cli` and the kernel's `nvme-tcp` module. This is the only client tested. Any NVMe/TCP initiator should work, though that hasn't been tested.
 

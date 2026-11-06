@@ -9,7 +9,7 @@ The major differences between versions. For every change, see the commit history
 - **HTTPS for the API,** with `NVWEAVER_TLS_CERT` and `NVWEAVER_TLS_KEY`. Renewing a certificate needs no restart. Without them, serving off
   loopback now logs a warning that the token is in clear text.
 - **`warnings` in `GET /v1/system`,** which reports if this machine's LVM can read exported devices. A client's LVM on one can get activated here at boot, and can
-  take a pool offline. See ["Clients' LVM"](docs/pools.md#clients-lvm).
+  take a pool offline. See ["Clients' LVM"](docs/pools.md#clients-lvm). They also report if an LVM pool's `lvm` or `thin_check` is missing.
 
 ## v0.2.0
 

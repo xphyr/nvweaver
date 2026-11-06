@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -99,5 +100,43 @@ func TestLVMExposureWhenItCantTell(t *testing.T) {
 	got := lvmWarnings(lvmState("/dev/sdb"), func() ([]string, error) { return nil, errors.New("no access") }, fakeIDs)
 	if len(got) != 1 || !strings.Contains(got[0], "couldn't check") || !strings.Contains(got[0], "no access") {
 		t.Errorf("not being able to tell must be reported, but got %v", got)
+	}
+}
+
+func TestMissingToolsOnlyMatterIfSomethingNeedsThem(t *testing.T) {
+	missing := func() []string { return []string{"no thin_check"} }
+	st := target.NewState()
+	if got := toolWarnings(st, missing); len(got) != 0 {
+		t.Errorf("with no pools, got %v", got)
+	}
+	st.Pools["r"] = &target.Pool{Name: "r", Type: storage.TypeReflink}
+	if got := toolWarnings(st, missing); len(got) != 0 {
+		t.Errorf("a reflink pool doesn't need LVM, but got %v", got)
+	}
+	st.Pools["l"] = &target.Pool{Name: "l", Type: storage.TypeLVMThin}
+	if got := toolWarnings(st, missing); len(got) != 1 || got[0] != "no thin_check" {
+		t.Errorf("with an LVM pool, got %v", got)
+	}
+}
+
+func TestWarningsCollectEveryProblemAndClear(t *testing.T) {
+	m := &Manager{log: slog.New(slog.DiscardHandler)}
+	st := lvmState("/dev/sdb")
+	st.Pools["l"] = &target.Pool{Name: "l", Type: storage.TypeLVMThin}
+	m.state.Store(st)
+	m.visibleToLVM = func() ([]string, error) { return nil, errors.New("no access") }
+	m.missingLVMTools = func() []string { return []string{"no thin_check"} }
+	if got := m.Warnings(); got == nil || len(got) != 0 {
+		t.Errorf("before any check, want an empty list for the API, got %#v", got)
+	}
+	m.checkLVM()
+	if got := m.Warnings(); len(got) != 2 {
+		t.Errorf("want both problems, got %v", got)
+	}
+	m.visibleToLVM = func() ([]string, error) { return nil, storage.ErrNoLVM }
+	m.missingLVMTools = func() []string { return nil }
+	m.checkLVM()
+	if got := m.Warnings(); got == nil || len(got) != 0 {
+		t.Errorf("once they're fixed, want an empty list for the API, got %#v", got)
 	}
 }

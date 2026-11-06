@@ -38,7 +38,7 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | `e2e.sh`, kernel target | Loopback in one VM | 228 of 228 |
 | `e2e.sh`, SPDK target | Loopback in one VM | 242 of 242 |
 | `systemd-e2e.sh` | Loopback in one VM | 74 of 74 |
-| `vm/vm-e2e.sh` | Between two VMs | 878 of 878 |
+| `vm/vm-e2e.sh` | Between two VMs | 890 of 890 |
 
 `go test -race` also passes. Earlier, smaller versions of these suites passed on GitHub's hosted runners, in
 CI run 41887410583 on commit `391e438`, with 2-vCPU VMs and Ubuntu's QEMU 8.2.
@@ -338,6 +338,11 @@ scripts tried each setup in fresh VMs, with a client making a volume group, and 
 
 Hosts kept connecting and reading their data throughout, and this machine's copy of the client's LV wasn't open. `lvmdiskscan` took about 0.05 s with 300 thin volumes, on a VM. It hasn't been timed at 5,000.
 The defaults for Debian 13 and Ubuntu 22.04 and 24.04 were read from their packages in containers. Nothing has run on those distributions.
+
+### Without `thin_check`
+
+By hand, on Fedora's LVM: with it moved away, `vgchange -ay` still activated a thin pool and its volumes, with exit status 0, saying "Check is skipped, please install recommended missing binary".
+A new thin pool could be created too. So it's a lost safety check, rather than an outage. What LVM does on Debian without it hasn't been tried.
 
 ### The API's TLS under SELinux
 

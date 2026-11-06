@@ -41,6 +41,8 @@ type Manager struct {
 	newDriver func(*target.Pool) (storage.Driver, error)
 	// visibleToLVM lists the devices this machine's LVM can read. Tests substitute a fake.
 	visibleToLVM func() ([]string, error)
+	// missingLVMTools says what LVM thin pools need that's missing. Tests substitute a fake.
+	missingLVMTools func() []string
 	// lvmChanged asks WatchLVM for another check.
 	lvmChanged chan struct{}
 	// warnings holds what WatchLVM last found.
@@ -63,8 +65,9 @@ func NewManager(b target.Backend, dataDir string, log *slog.Logger) (*Manager, e
 		log:       log,
 		newDriver: storage.New,
 
-		visibleToLVM: storage.VisibleToLVM,
-		lvmChanged:   make(chan struct{}, 1),
+		visibleToLVM:    storage.VisibleToLVM,
+		missingLVMTools: storage.MissingLVMTools,
+		lvmChanged:      make(chan struct{}, 1),
 	}
 	m.state.Store(target.NewState())
 	if err := os.MkdirAll(m.volumeDir, 0o700); err != nil {

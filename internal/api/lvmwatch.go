@@ -66,13 +66,25 @@ func (m *Manager) Warnings() []string {
 }
 
 func (m *Manager) checkLVM() {
-	warnings := lvmWarnings(m.state.Load(), m.visibleToLVM, deviceIDs)
+	st := m.state.Load()
+	warnings := append(lvmWarnings(st, m.visibleToLVM, deviceIDs), toolWarnings(st, m.missingLVMTools)...)
 	if !slices.Equal(warnings, m.Warnings()) {
 		for _, w := range warnings {
 			m.log.Warn(w)
 		}
 	}
 	m.warnings.Store(&warnings)
+}
+
+// toolWarnings reports missing tools, only if something saved here needs them. That's a warning, rather than stopping the service,
+// as nothing else depends on them. What the chosen backend can't run without stops it at startup.
+func toolWarnings(st *target.State, missing func() []string) []string {
+	for _, pool := range st.Pools {
+		if pool.Type == storage.TypeLVMThin {
+			return missing()
+		}
+	}
+	return nil
 }
 
 // lvmWarnings compares what's exported with what LVM says it can read. It only asks LVM if there's a device to ask about.

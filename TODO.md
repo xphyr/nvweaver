@@ -90,7 +90,7 @@ and CLI once, against the result.
       configuration can prevent it, so nvweaver reports it under `warnings`, and documents the fix. See decision 32 and "Clients' LVM" in `docs/pools.md`
 - [x] Add TLS to the API, needed before the web UI or CSI driver use it over a network. See decision 31
 - [ ] By 1.0: make serving the API in clear text off loopback an explicit choice by the admin deploying it, rather than a warning. See decision 31
-- [ ] Check at startup that the tools in "Tools" in the README are there, for running outside a container too. Stop if the chosen backend can't work, which it mostly does already. Report anything optional under `warnings` in `/v1/system`, such as `lvm` or `thin_check` missing with an LVM pool saved. Look through `nsenter` in a container, as the service does
+- [x] Check at startup that the tools in "Tools" in the README are there. See decision 34
 - [ ] Create a shared Go API client from the spec, for the CLI and CSI driver to use
 - [ ] Add an endpoint showing connected hosts, including each connection's transport
 - [ ] Keep `info.version` in the API spec current: `v0.2.0` shipped saying `0.1.0`. Check it in the release workflow
@@ -135,7 +135,9 @@ Production-like scale is a requirement, so measure this before building on it.
   - [ ] Pass the `csi-sanity` conformance suite
   - [ ] Test at production-like volume and node counts
   - [ ] Document that there is a single target, with no failover
-
+  - [ ] Test a clone of a volume with LVM inside it, on a node that also has the original. Its PV UUID and VG name match its source's, so the node's LVM should
+        see duplicates. Nothing has tested this yet. Real arrays have the same problem, and the target can't fix it without changing the client's data. Find
+        out what happens to pods on both volumes, then either document it or have the node plugin handle it, as with `vgimportclone`
 ## Later (low priority)
 
 - [ ] iSCSI as a second protocol, once the CLI and CSI driver have settled the API. It would be new resources, such as `/v1/iscsi/targets`, not a
