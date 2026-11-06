@@ -19,15 +19,14 @@ Work through these in order: each phase depends on the ones before it.
 - [ ] Prove CI on a pull request from a fork: it reads the SPDK cache without logging in
 - [x] Make the first release: `v0.1.0`, on x86-64
 - [x] Install from a release tarball on a clean machine, using `v0.1.0` on fresh VMs
-- [ ] Prove the Quadlet in the release tarball against a published image, at the next release. The
-      `v0.1.0` tarball's Quadlet needs the image tagged by hand, or its `Image=` line changed
+- [x] Prove the Quadlet in the release tarball against a published image, using `v0.2.0-rc2` on x86-64 and a real CM4
 - [ ] Publish cross-platform releases for x86-64 and arm64, starting with v0.2.0. See decision 27
   - [x] Probe it: `e2e.sh` passes on both targets on a real Arm kernel. See `docs/testing.md`
   - [x] Choose the SPDK baseline by architecture: `Containerfile.spdk` already does
   - [x] Add an Arm job to CI that runs the unit tests and `e2e.sh` on both targets
-  - [ ] For v0.2.0: publish multi-arch images and an arm64 tarball, built natively on Arm runners. Written, and
-        `publish-images.sh` tested against a local registry, but the workflows haven't run: prove it with a pre-release
-  - [ ] Pull a published arm64 image and run it on real Arm, such as the CM4, after that pre-release
+  - [x] For v0.2.0: publish multi-arch images and an arm64 tarball, built natively on Arm runners. Proved with
+        `v0.2.0-rc2`. Moving `latest` first runs on GitHub at `v0.2.0`
+  - [x] Pull a published arm64 image and run it on real Arm, using `v0.2.0-rc2` on a CM4
   - [x] For v0.2.0: say in the README what's supported on Arm. See decision 27
   - [x] Check that `armv8-a+crc` runs on older Arm CPUs: Cortex-A72, emulated and on a real CM4
   - [x] Give the SPDK Quadlet a longer Podman stop timeout than its 10-second default, below `TimeoutStopSec`. A slow

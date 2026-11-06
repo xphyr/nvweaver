@@ -309,6 +309,20 @@ bigger problems. The emulated A72 run hasn't been repeated with the fix.
 Not covered on real Arm: the kernel target on this OS, which needs a different kernel; the plain systemd unit; a Pi 5
 and its 16K-page kernel; a physical initiator, as this one was a VM; physical NVMe; snapshots and clones, which aren't built.
 
+### A published release, installed as a user would
+
+`v0.2.0-rc2`, downloaded from its public release, following the README, with a throwaway script that isn't in the repository.
+Each did 64 MiB through a separate initiator, read back after reconnecting, and again after restarting the service. No step failed:
+
+| Architecture and target | Installed with | Path |
+|---|---|---|
+| arm64, SPDK, real CM4 | Tarball's Quadlet, published image | From a VM on another machine, over a physical 1 Gb network |
+| x86-64, kernel target, Fedora VM | Tarball's native unit | Between two VMs |
+| x86-64, SPDK, Fedora VM | Tarball's Quadlet, published image | Between two VMs |
+
+Checksums and attestations for both tarballs and both multi-arch tags verified, and the published `-spdk` and kernel arm64 images
+report the right version on the CM4. CI on the same code gave the full counts on a real Arm runner: 209 and 223, with none skipped.
+
 ## Not tested
 
 Deferred until hardware is available, as tracked in `TODO.md`:
@@ -324,9 +338,8 @@ Not tested for other reasons:
 - Docker since Podman became the default. It's a fallback: see `TODO.md`
 - SPDK on a real older CPU. Nehalem was under QEMU, and only as far as a running reactor
 - Scale. Nothing has been measured beyond a handful of objects
-- The release workflow's arm64 path on GitHub. `publish-images.sh` was tested on Podman 4.9, as on the runners, against a local
-  registry with small stand-in images, and the tarball checks with cross-compiled binaries. The Arm build, ghcr.io and
-  attestations of multi-arch tags haven't run yet
+- Moving `latest` to a multi-arch list on GitHub, which only a final release does. It passed against a local registry, on the
+  runners' Podman 4.9
 
 ## Benchmarks
 
@@ -476,6 +489,7 @@ Checks that passed while proving nothing. Watch for these patterns:
   rather than 209 and 223. CI now puts Podman's volumes on XFS, and sets `REQUIRE_REFLINK=1` so that skipping fails. Compare the counts.
 - **`linux-modules-extra` on Arm runners:** there's no such package for the `azure` 7.0 kernel on arm64, and installing it fails the
   job. `nvmet-tcp` and `nvme-tcp` are in its base modules. The first probe saw this, but tolerated the error, so it went unnoticed.
+- **`gh attestation verify` prints nothing when not on a terminal,** even on success. Check its exit status, not its output.
 - **One machine:** an initiator can't see the same namespace twice. Two host NQNs on one
   kernel also share a multipath device, so test multi-host by disconnecting one and reading
   through the other.
