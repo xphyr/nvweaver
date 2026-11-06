@@ -742,6 +742,33 @@ paths:
           $ref: '#/components/responses/Conflict'
         '503':
           $ref: '#/components/responses/Busy'
+  /v1/volumes/{volume}/usage:
+    get:
+      operationId: getVolumeUsage
+      summary: How much of a volume's size is really allocated
+      description: |
+        This asks the storage, so it's slower than reading a volume, and is kept apart from it, for programs that don't need it. It includes what's shared
+        with snapshots and clones, so that adding up a pool's volumes can come to more than the pool has used.
+      tags: [volumes]
+      parameters:
+        - $ref: '#/components/parameters/VolumeName'
+      responses:
+        '200':
+          description: The volume's usage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VolumeUsage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          description: The storage couldn't say, as when a pool is offline.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/snapshots:
     get:
       operationId: listSnapshots
@@ -1232,6 +1259,18 @@ components:
           oneOf:
             - $ref: '#/components/schemas/VolumeMapping'
             - type: 'null'
+    VolumeUsage:
+      type: object
+      required: [size_bytes, used_bytes]
+      properties:
+        size_bytes:
+          type: integer
+          format: int64
+          description: The size that hosts see.
+        used_bytes:
+          type: integer
+          format: int64
+          description: What's really allocated, which is less on thin storage until it's written.
     VolumePage:
       type: object
       required: [items]

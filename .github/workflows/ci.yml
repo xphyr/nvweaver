@@ -78,6 +78,33 @@ jobs:
           path: build/*
           retention-days: 3
 
+  # The interface in a real browser, with a fake target, so this needs no VM or privileges, only somewhere with reflink.
+  web-interface:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Make somewhere with reflink
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends xfsprogs
+          truncate -s 2G "$RUNNER_TEMP/demo.xfs"
+          mkfs.xfs -q "$RUNNER_TEMP/demo.xfs"
+          mkdir "$RUNNER_TEMP/demo"
+          sudo mount -o loop "$RUNNER_TEMP/demo.xfs" "$RUNNER_TEMP/demo"
+          sudo chown "$(id -u):$(id -g)" "$RUNNER_TEMP/demo"
+      - name: Run it
+        run: WORK_IN="$RUNNER_TEMP/demo" ./test/webui-e2e.sh "$RUNNER_TEMP/shots"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: web-interface-screenshots
+          path: ${{ runner.temp }}/shots
+          retention-days: 14
+
   # Arm runners have no KVM, so these suites run directly on the runner, without the VMs. They load
   # kernel modules there, which is fine as the runner is disposable. A release publishes what's
   # built and tested here, with the amd64 images.

@@ -370,6 +370,23 @@ func (d *lvmThinDriver) List() ([]string, error) {
 }
 
 // Activate implements Driver. Snapshots stay inactive, because of their activation-skip flag.
+func (d *lvmThinDriver) Used(internal string) (int64, error) {
+	got, err := d.report(d.lv(internal), "lv_size", "data_percent")
+	if err != nil {
+		return 0, err
+	}
+	size, err := strconv.ParseInt(got["lv_size"], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse lv_size %q: %w", got["lv_size"], err)
+	}
+	percent, err := strconv.ParseFloat(got["data_percent"], 64)
+	if err != nil {
+		// It's empty for a volume that isn't active, as LVM can't tell.
+		return 0, fmt.Errorf("LVM doesn't report what %s has used, which may mean that it isn't active", internal)
+	}
+	return int64(float64(size) * percent / 100), nil
+}
+
 func (d *lvmThinDriver) Activate() error {
 	_, err := d.run("vgchange", "-ay", d.vg)
 	return err

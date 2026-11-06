@@ -24,6 +24,7 @@ BACKEND=spdk ./test/e2e.sh        # SPDK target, end to end
 ./test/systemd-e2e.sh             # make install, the unit and the Quadlet, under systemd
 ./test/vm/vm-e2e.sh               # separate initiator, emulated disks, passthrough, real reboot
 ./test/bench.sh                   # NVMe/TCP overhead against null_blk; also BACKEND=spdk
+./test/webui-e2e.sh [DIR]         # the web interface in a real browser, with no root. DIR keeps its screenshots. Look at them
 ```
 
 `test/vm/lab.sh` manages disposable VMs with their own kernels, which need no root on the machine

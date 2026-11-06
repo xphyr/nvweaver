@@ -226,6 +226,12 @@ type Volume struct {
 	MappedTo     *VolumeMapping    `json:"mapped_to"`
 }
 
+// VolumeUsage says how much of a volume is really allocated.
+type VolumeUsage struct {
+	SizeBytes int64 `json:"size_bytes"`
+	UsedBytes int64 `json:"used_bytes"`
+}
+
 // VolumePage is one page of volumes. NextAfter is empty on the last.
 type VolumePage struct {
 	Items     []Volume `json:"items"`

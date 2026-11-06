@@ -121,10 +121,16 @@ Production-like scale is a requirement, so measure this before building on it.
 
 **Next, by choice,** ahead of what's left of phases 3 and 5, so that there's something to see.
 
-- [ ] Create a web UI for manually handling CRUD tasks, embedded in the binary
-  - [ ] The web UI should allow for token auth or simple username/password authentication
-  - [ ] Hash passwords, and protect sessions against CSRF
-  - [ ] Cover the volumes, snapshots and clones from phase 2
+- [x] Read-only screens, embedded in the binary, tested in a real browser. See decision 37
+- [ ] Sign in with a username and password, decided with the user:
+  - [ ] A users file, at `NVWEAVER_USERS_FILE`, of `name:$2y$...` lines, in bcrypt only, using `golang.org/x/crypto`, this project's first dependency. Update the stdlib-only rule, and the notices
+  - [ ] `nvweaver passwd`, to make a hash. `htpasswd -B` also works
+  - [ ] Refuse password logins over plain HTTP off loopback by default, with a setting to override it, so that the admin deciding is explicit. It may be the same setting as the 1.0 item in phase 3
+  - [ ] Sessions in a random, `HttpOnly`, `SameSite=Strict` cookie, held in memory, with an expiry and a logout. `CrossOriginProtection` already covers CSRF
+  - [ ] Rate limit logins, don't reveal which usernames exist, and take the same time for an unknown one
+  - [ ] Re-read the file when it changes. Refuse to start if others can read it
+  - [ ] Keep `NVWEAVER_API_TOKEN` for programs, which can't type a password. Everyone is an admin for now
+- [ ] Create and delete, for everything, including the volumes, snapshots and clones from phase 2
 
 ## 7. Kubernetes CSI driver
 

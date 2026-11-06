@@ -268,3 +268,39 @@ func TestCloneSizes(t *testing.T) {
 		t.Errorf("a failed clone must leave nothing behind: %v", names)
 	}
 }
+
+// A sparse file allocates nothing until it's written, which is what thin storage is.
+func TestReflinkUsedCountsWhatsAllocated(t *testing.T) {
+	d := &reflinkDriver{dir: t.TempDir()}
+	path, err := d.Create("nvw-a", 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, err := d.Used("nvw-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty >= 1<<20 {
+		t.Errorf("a new sparse file has %d allocated", empty)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt(make([]byte, 8<<20), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(f.Sync(), f.Close()); err != nil {
+		t.Fatal(err)
+	}
+	written, err := d.Used("nvw-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written < 8<<20 || written >= 1<<30 {
+		t.Errorf("after writing 8 MiB of 1 GiB, %d is allocated", written)
+	}
+	if _, err := d.Used("nvw-missing"); err == nil {
+		t.Error("a missing file has no usage")
+	}
+}

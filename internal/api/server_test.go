@@ -63,6 +63,13 @@ func (f *fakePools) driver(p *target.Pool) (storage.Driver, error) {
 type fakeDriver struct{ *fakePools }
 
 func (d fakeDriver) Check() error { return d.checkErr }
+func (d fakeDriver) Used(internal string) (int64, error) {
+	size, ok := d.files[internal]
+	if !ok {
+		return 0, errors.New("no such volume")
+	}
+	return size / 2, nil
+}
 func (d fakeDriver) AlignSize(size int64) (int64, error) {
 	if d.alignTo == 0 {
 		return size, nil

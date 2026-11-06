@@ -23,7 +23,7 @@ func TestClientTypesMatchTheSpec(t *testing.T) {
 		"Namespace": client.Namespace{}, "NamespaceCreate": client.NamespaceCreate{}, "NamespaceUpdate": client.NamespaceUpdate{},
 		"PoolCapacity": client.PoolCapacity{}, "Pool": client.Pool{}, "PoolCreate": client.PoolCreate{}, "PoolUpdate": client.PoolUpdate{},
 		"VolumeSource": client.VolumeSource{}, "VolumeMapping": client.VolumeMapping{}, "Volume": client.Volume{},
-		"VolumePage": client.VolumePage{}, "VolumeCreate": client.VolumeCreate{}, "VolumeUpdate": client.VolumeUpdate{},
+		"VolumeUsage": client.VolumeUsage{}, "VolumePage": client.VolumePage{}, "VolumeCreate": client.VolumeCreate{}, "VolumeUpdate": client.VolumeUpdate{},
 		"Snapshot": client.Snapshot{}, "SnapshotPage": client.SnapshotPage{}, "SnapshotCreate": client.SnapshotCreate{},
 	}
 	for schema, props := range s.schemas {
@@ -199,6 +199,14 @@ func TestClientReachesEveryOperation(t *testing.T) {
 	must("update volume", err)
 	if grownVol.SizeBytes != bigger {
 		t.Errorf("volume came back as %+v", grownVol)
+	}
+	usage, err := c.GetVolumeUsage(ctx, "v")
+	must("volume usage", err)
+	if usage.SizeBytes != bigger || usage.UsedBytes != bigger/2 {
+		t.Errorf("usage came back as %+v", usage)
+	}
+	if _, err := c.GetVolumeUsage(ctx, "gone"); !client.IsNotFound(err) {
+		t.Errorf("usage of a missing volume: got %v", err)
 	}
 	mapped, err := c.CreateNamespace(ctx, nqn, client.NamespaceCreate{Volume: "v"})
 	must("map volume", err)

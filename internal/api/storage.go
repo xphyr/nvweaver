@@ -596,6 +596,36 @@ func (s *Server) getVolume(w http.ResponseWriter, r *http.Request) error {
 	})
 }
 
+// getVolumeUsage asks the storage, outside any lock, so that a slow answer holds up nothing else.
+func (s *Server) getVolumeUsage(w http.ResponseWriter, r *http.Request) error {
+	name := r.PathValue("volume")
+	var vol target.Volume
+	var pool *target.Pool
+	if err := s.m.view(func(st *target.State) error {
+		found := st.Volumes[name]
+		if found == nil {
+			return notFound("no such volume %s", name)
+		}
+		vol, pool = *found, st.Pools[found.Pool]
+		return nil
+	}); err != nil {
+		return err
+	}
+	if pool == nil {
+		return notFound("no such pool %s", vol.Pool)
+	}
+	driver, err := s.m.newDriver(pool)
+	if err != nil {
+		return err
+	}
+	used, err := driver.Used(vol.InternalName)
+	if err != nil {
+		return fmt.Errorf("volume %s: %w", name, err)
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"size_bytes": vol.SizeBytes, "used_bytes": used})
+	return nil
+}
+
 func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) error {
 	name := r.PathValue("volume")
 	var req struct {

@@ -132,6 +132,17 @@ Run `nvweaver help` for every command, and `--help` after one for its flags. Siz
 - `--output json` prints what the API returns, and nothing at all for commands with nothing to show. Warnings about pools and the machine are in the data there, and printed below the table otherwise.
 - Nothing asks for confirmation, so `nvweaver volume delete` deletes straight away.
 
+## Web interface
+
+`nvweaverd` serves a browser interface at `/ui/`, on the same address as the API, and `/` leads there. It's in the binary, so there's nothing else to install. So far it only shows things: pools and how full they are, volumes with their snapshots and how much of each is really allocated, subsystems,
+hosts, ports and any warnings. To change anything, use the command line or API for now. If the API has a token, it asks for that, and keeps it only for that browser tab.
+
+To see it with no root or real target, using sample data on a fake target, run this on XFS or btrfs:
+
+```sh
+go run ./test/webui-demo     # then open http://127.0.0.1:8421/
+```
+
 ## What can back a namespace
 
 | Backing | How | Notes |
@@ -336,6 +347,7 @@ go test ./...      # needs no privileges; uses a fake configfs
 ./test/bench.sh    # NVMe/TCP overhead, measured against null_blk
 ./test/systemd-e2e.sh  # the installed service under real systemd, in a container
 ./test/vm/vm-e2e.sh    # separate initiator, emulated disks, passthrough, real install and reboot
+./test/webui-e2e.sh    # the web interface in a real browser, with a fake target and no root
 ```
 
 Set `BACKEND=spdk` to run `e2e.sh` and `bench.sh` against SPDK. `systemd-e2e.sh` installs

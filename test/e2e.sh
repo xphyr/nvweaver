@@ -558,6 +558,12 @@ evil 404 "which didn't take effect either" "$API/v1/hosts/$ATTACK"
 evil 200 "curl still works" "$API/v1/system"
 evil 200 "by name too" "http://localhost:18420/v1/system"
 
+section "Web interface"
+expect_eq "the real image serves it" 200 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:18420/ui/")"
+expect_eq "with its script" 200 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:18420/ui/app.js")"
+expect_has "and its security policy" "default-src 'none'" "$(ini "curl -s -m 10 -D - -o /dev/null http://127.0.0.1:18420/ui/")"
+expect_eq "the address on its own leads there" /ui/ "$(ini "curl -s -m 10 -o /dev/null -D - http://127.0.0.1:18420/ | tr -d '\r' | sed -n 's/^[Ll]ocation: //p'")"
+
 section "Command line"
 CLIP=/var/lib/nvweaver/cli-pool
 $ENGINE exec "$TGT" mkdir -p "$CLIP"

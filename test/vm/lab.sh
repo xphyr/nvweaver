@@ -309,7 +309,7 @@ cmd_sync() { # VM
 	local port
 	port=$(ssh_port "$1") || exit 1
 	rsync -a --delete --exclude .git --exclude CLAUDE.local.md --exclude /nvweaverd \
-		--exclude /nvweaver --exclude /nvweaver.service -e "ssh ${SSH_OPTS[*]} -p $port" "$ROOT/" lab@127.0.0.1:nvweaver/
+		--exclude /nvweaver --exclude /nvweaver.service --exclude '/.webui-demo-*' -e "ssh ${SSH_OPTS[*]} -p $port" "$ROOT/" lab@127.0.0.1:nvweaver/
 }
 
 cmd_load() { # VM IMAGE

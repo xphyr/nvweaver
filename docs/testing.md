@@ -35,10 +35,10 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | Suite | Path | Result |
 |---|---|---|
 | Unit tests | | Pass |
-| `e2e.sh`, kernel target | Loopback in one VM | 266 of 266 |
-| `e2e.sh`, SPDK target | Loopback in one VM | 280 of 280 |
+| `e2e.sh`, kernel target | Loopback in one VM | 270 of 270 |
+| `e2e.sh`, SPDK target | Loopback in one VM | 284 of 284 |
 | `systemd-e2e.sh` | Loopback in one VM | 76 of 76 |
-| `vm/vm-e2e.sh` | Between two VMs | 890 of 890 |
+| `vm/vm-e2e.sh` | Between two VMs | 906 of 906 |
 
 `go test -race` also passes. Earlier, smaller versions of these suites passed on GitHub's hosted runners, in
 CI run 41887410583 on commit `391e438`, with 2-vCPU VMs and Ubuntu's QEMU 8.2.
@@ -339,9 +339,16 @@ scripts tried each setup in fresh VMs, with a client making a volume group, and 
 Hosts kept connecting and reading their data throughout, and this machine's copy of the client's LV wasn't open. `lvmdiskscan` took about 0.05 s with 300 thin volumes, on a VM. It hasn't been timed at 5,000.
 The defaults for Debian 13 and Ubuntu 22.04 and 24.04 were read from their packages in containers. Nothing has run on those distributions.
 
+### The web interface
+
+`test/webui-e2e.sh` runs the real API and interface on a fake target, in Chromium, through Playwright in a container: every screen, real data, filtering, markup staying text, the security policy really applying, signing in with a token, warnings, a phone-sized screen, and
+losing the service. There's no real target or real browser against one in this. `e2e.sh` only checks that the real images serve the files.
+
+**A real web page from another origin attacked the API here.** With `guardBrowsers` switched off, in a throwaway copy, its request created a host, and that check failed. With it on, the request had no effect. Chromium reported "sent" both times, so what the browser says proves nothing: check what happened.
+
 ### Web pages using the API
 
-`internal/api/browser_test.go` first failed with the attack working: a cross-site request got 201 and took effect, and DNS rebinding read `/v1/system`. `e2e.sh` sends the same requests to both real targets, using `curl` to send what a browser would. No real browser has tried this yet.
+`internal/api/browser_test.go` first failed with the attack working: a cross-site request got 201 and took effect, and DNS rebinding read `/v1/system`. `e2e.sh` sends the same requests to both real targets, using `curl` to send what a browser would. A real browser's attack is under "The web interface".
 
 ### The client and command line
 
@@ -531,6 +538,10 @@ Checks that passed while proving nothing. Watch for these patterns:
 - **`linux-modules-extra` on Arm runners:** there's no such package for the `azure` 7.0 kernel on arm64, and installing it fails the
   job. `nvmet-tcp` and `nvme-tcp` are in its base modules. The first probe saw this, but tolerated the error, so it went unnoticed.
 - **`gh attestation verify` prints nothing when not on a terminal,** even on success. Check its exit status, not its output.
+- **`test/webui-demo` keeps sparse volumes in `.webui-demo-*` in the repository,** which `rsync` copies at full size unless it's excluded: tens of GB of zeros, as happened once. Sync with `--exclude '/.webui-demo-*'`, or stop the demo first.
+- **Playwright's `waitForFunction` needs `eval`,** which the interface's security policy refuses. Use `waitForSelector`, rather than turning the policy off for tests.
+- **Moving between screens only changes the hash,** so a check right after that can read the old screen. Wait for something on the new one.
+- **A unit test can depend on the machine by accident:** one looked up `/dev/sdb` for real, and passed where that exists.
 - **`use_devicesfile=0` deletes the devices file,** at the next LVM command of any kind, keeping a backup. So a test that turns it off and on again has to make a new one. It looks as if the setting did nothing.
 - **`pvs -a` doesn't list everything LVM can read:** it leaves out a disk with no PV on it, whatever else is on it, though the first experiment suggested otherwise. Use `lvmdiskscan`.
 - **`ausearch` reads stdin when it isn't a terminal,** so in a script piped to `bash -s`, it swallows the rest of the script. Use `</dev/null`.

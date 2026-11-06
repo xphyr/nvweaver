@@ -45,6 +45,8 @@ type Driver interface {
 	// Clone makes a new volume from a volume or snapshot, returning the path to export. It may
 	// be larger than its source, and 0 means the same size. It fails if the name exists.
 	Clone(source, internal string, sizeBytes int64) (string, error)
+	// Used reports how many bytes of a volume are really allocated, including what it shares with snapshots and clones.
+	Used(internal string) (int64, error)
 	// List returns the internal names of volumes and snapshots on disk, to find any that nothing refers to.
 	List() ([]string, error)
 }

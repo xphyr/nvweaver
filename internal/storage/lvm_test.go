@@ -252,3 +252,20 @@ func TestMissingThinCheck(t *testing.T) {
 		t.Errorf("should look where LVM is configured to, but looked at %q", asked)
 	}
 }
+
+func TestLVMUsed(t *testing.T) {
+	d, f := lvmDriver("vg")
+	f.replies["lvs"] = lvsJSON(`"lv_size":"1073741824", "data_percent":"25.00"`)
+	got, err := d.Used("nvw-a")
+	if err != nil || got != 1<<28 {
+		t.Errorf("got %d, %v", got, err)
+	}
+	if !strings.Contains(f.calls[0], "vg/nvw-a") {
+		t.Errorf("asked %q", f.calls[0])
+	}
+	// LVM leaves it empty for a volume that isn't active.
+	f.replies["lvs"] = lvsJSON(`"lv_size":"1073741824", "data_percent":""`)
+	if _, err := d.Used("nvw-a"); err == nil || !strings.Contains(err.Error(), "active") {
+		t.Errorf("an inactive volume: got %v", err)
+	}
+}

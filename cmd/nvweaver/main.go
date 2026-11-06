@@ -47,7 +47,7 @@ Commands:
             allow NQN HOST | deny NQN HOST | attach NQN PORT | detach NQN PORT
   namespace list NQN | get NQN NSID | create NQN | update NQN NSID | delete NQN NSID
   pool      list | get NAME | create NAME | update NAME | delete NAME
-  volume    list | get NAME | create NAME | update NAME | delete NAME
+  volume    list | get NAME | usage NAME | create NAME | update NAME | delete NAME
   snapshot  list | get NAME | create NAME | delete NAME
 
 Run "nvweaver <command> <action> --help" for an action's flags.
@@ -259,7 +259,7 @@ func (a *app) dispatch(args []string) error {
 			"delete": a.subsystemDelete, "allow": a.subsystemAllow, "deny": a.subsystemDeny, "attach": a.subsystemAttach, "detach": a.subsystemDetach},
 		"namespace": {"list": a.namespaceList, "get": a.namespaceGet, "create": a.namespaceCreate, "update": a.namespaceUpdate, "delete": a.namespaceDelete},
 		"pool":      {"list": a.poolList, "get": a.poolGet, "create": a.poolCreate, "update": a.poolUpdate, "delete": a.poolDelete},
-		"volume":    {"list": a.volumeList, "get": a.volumeGet, "create": a.volumeCreate, "update": a.volumeUpdate, "delete": a.volumeDelete},
+		"volume":    {"list": a.volumeList, "get": a.volumeGet, "usage": a.volumeUsage, "create": a.volumeCreate, "update": a.volumeUpdate, "delete": a.volumeDelete},
 		"snapshot":  {"list": a.snapshotList, "get": a.snapshotGet, "create": a.snapshotCreate, "delete": a.snapshotDelete},
 	}[noun]
 	if !ok {
@@ -1132,6 +1132,21 @@ func (a *app) volumeGet(args []string) error {
 		return err
 	}
 	return a.showVolume(a.client.GetVolume(a.ctx, pos[0]))
+}
+
+func (a *app) volumeUsage(args []string) error {
+	pos, err := a.parse(a.flags("volume usage"), args, "NAME")
+	if err != nil {
+		return err
+	}
+	u, err := a.client.GetVolumeUsage(a.ctx, pos[0])
+	if err != nil {
+		return err
+	}
+	return a.emit(u, func(w io.Writer) {
+		row(w, "SIZE", "USED", "PERCENT")
+		row(w, humanSize(u.SizeBytes), humanSize(u.UsedBytes), fmt.Sprintf("%.1f%%", 100*float64(u.UsedBytes)/float64(max(u.SizeBytes, 1))))
+	})
 }
 
 func (a *app) volumeCreate(args []string) error {

@@ -17,6 +17,7 @@ import (
 
 	"nvweaver/internal/storage"
 	"nvweaver/internal/target"
+	"nvweaver/internal/webui"
 )
 
 const defaultModel = "nvweaver"
@@ -152,6 +153,7 @@ func (s *Server) Handler() http.Handler {
 	route("PATCH /v1/volumes/{volume}", s.updateVolume)
 	route("DELETE /v1/volumes/{volume}", s.deleteVolume)
 
+	route("GET /v1/volumes/{volume}/usage", s.getVolumeUsage)
 	route("GET /v1/snapshots", s.listSnapshots)
 	route("POST /v1/snapshots", s.createSnapshot)
 	route("GET /v1/snapshots/{snapshot}", s.getSnapshot)
@@ -172,6 +174,10 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	root.Handle(webui.Path, webui.Handler())
+	root.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, webui.Path, http.StatusFound)
 	})
 	root.Handle("/", authed)
 	return s.guardBrowsers(root)

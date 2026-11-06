@@ -136,3 +136,24 @@ func TestWithATokenAnyNameWorksAndCrossSiteStillDoesnt(t *testing.T) {
 		t.Errorf("cross-site, even with the token: status %d", rec.Code)
 	}
 }
+
+func TestTheInterfaceIsServedWithoutAToken(t *testing.T) {
+	h := browserServer(t, "secret")
+	for path, want := range map[string]int{"/ui/": 200, "/": 302, "/v1/system": 401} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Host = "storage.example:8420"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		if rec.Code != want {
+			t.Errorf("%s: status %d, want %d", path, rec.Code, want)
+		}
+	}
+	// It holds no secrets, but the name check still applies with no token, as a rebinding page shouldn't get a working copy of it.
+	r := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	r.Host = "evil.example"
+	rec := httptest.NewRecorder()
+	browserServer(t, "").ServeHTTP(rec, r)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("by another name, with no token: status %d", rec.Code)
+	}
+}

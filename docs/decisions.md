@@ -374,3 +374,18 @@ there, not as absolute numbers.
 - **Rejected: requiring `Content-Type: application/json`.** It would stop the writes but not rebinding, and would break plain `curl -d`, as the README's own examples use.
 - **It's on by default, and only tests can turn the `Host` check off.**
 
+## 37. The web interface is static files that use the public API
+
+- **Chosen:** plain HTML, CSS and JavaScript in `internal/webui`, embedded with `go:embed`, and served at `/ui/`. It has no build step and no dependencies, and it reaches the service only through the public API, so it can do nothing that the API can't.
+- **Why no framework:** a framework brings a build toolchain and many dependencies to audit, for a small set of tables. Reconsider if it grows into something that needs one.
+- **A strict Content-Security-Policy:** only this service's own scripts, styles, images and API. Data reaches the page through `textContent` only, and a test fails if the script uses `innerHTML` or similar. A label with markup in it is tested in a real browser.
+- **It's tested in a real browser,** with Playwright in a container, against `test/webui-demo`, which is the real API on a fake target. That caught what unit tests can't: a page script with a syntax error, and a stray word under every table. Screenshots caught what the checks then missed, so look at them.
+- **The files need no token,** as they're the same for everyone. The API decides what a browser may do.
+- **The icons are copies of those in `images/`,** as `go:embed` can't reach outside its package. A test fails if they differ.
+
+## 38. A volume's usage has its own request
+
+- **Chosen:** `GET /v1/volumes/{volume}/usage`, rather than a field on a volume. It asks the storage, which runs `lvs` on LVM. Listing or reading a volume stays a read of memory, as programs like the CSI driver do that a lot, and don't need this.
+- **It includes what's shared with snapshots and clones,** as that's what both kinds of storage report, and working out what's exclusive would take far more. So a pool's volumes can add up to more than the pool has used, which the interface says.
+- **It's only shown for one volume at a time** in the interface for now, for the same reason. Reconsider a column in the list if it's wanted, using one `lvs` for a whole page.
+
