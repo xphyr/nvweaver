@@ -539,6 +539,50 @@ section "Teardown"
 disconnect "$SA"
 disconnect "$SB"
 
+section "Command line"
+CLIP=/var/lib/nvweaver/cli-pool
+$ENGINE exec "$TGT" mkdir -p "$CLIP"
+# Through the real binary, from the image, against the real target, doing what a user would.
+cli() { $ENGINE exec "$TGT" nvweaver --api "$API" "$@"; }
+CSUB=$NQN:cli
+CHOST=$NQN:cli-host
+expect_has "system shows the backend" "$BACKEND" "$(cli system)"
+expect_has "version comes with the image" "nvweaver " "$($ENGINE exec "$TGT" nvweaver version)"
+expect_eq "health is fine" ok "$(cli health | tr -d ' ')"
+cli port create --id 77 --address 127.0.0.1 --service 14477 >/dev/null && ok "create a port" || bad "create a port"
+cli host create "$CHOST" >/dev/null && ok "create a host" || bad "create a host"
+cli subsystem create "$CSUB" --port 77 --allow-host "$CHOST" >/dev/null && ok "create a subsystem" || bad "create a subsystem"
+expect_has "export a new file" 16M "$(cli namespace create "$CSUB" --file cli.img --size 16M)"
+out=$(connect "$CHOST" "$(ini 'cat /proc/sys/kernel/random/uuid')" "$CSUB" 14477) && ok "a host connects to what it made" || bad "a host connects to what it made" "$out"
+CDEV=$(wait_dev "$CSUB")
+ini "dd if=/tmp/pat of=$CDEV bs=1M oflag=direct status=none"
+expect_eq "and data round trips" "$(ini 'cat /tmp/pat.md5')" "$(ini "dd if=$CDEV bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
+disconnect "$CSUB"
+expect_has "JSON output has the real object" "\"nqn\": \"$CSUB\"" "$(cli subsystem get "$CSUB" -o json)"
+cli port get 999 >/dev/null 2>&1
+expect_eq "something missing exits 1" 1 "$?"
+cli port get >/dev/null 2>&1
+expect_eq "a wrong command exits 2" 2 "$?"
+cli namespace delete "$CSUB" 1 --delete-file >/dev/null && ok "delete the namespace, and its file" || bad "delete the namespace, and its file"
+cli subsystem delete "$CSUB" >/dev/null && ok "delete the subsystem" || bad "delete the subsystem"
+cli host delete "$CHOST" >/dev/null && ok "delete the host" || bad "delete the host"
+cli port delete 77 >/dev/null && ok "delete the port" || bad "delete the port"
+out=$(cli pool create clip --type reflink --path "$CLIP" 2>&1)
+if echo "$out" | grep -q "doesn't support reflink"; then
+	skip_reflink
+else
+	expect_has "adopt a pool" clip "$out"
+	expect_has "create a volume" 64M "$(cli volume create cliv --size 64M --pool clip --label a=b)"
+	expect_has "grow it" 128M "$(cli volume update cliv --size 128M)"
+	expect_has "snapshot it" cliv "$(cli snapshot create clis --volume cliv)"
+	expect_has "clone the snapshot" clis "$(cli volume create clic --from-snapshot clis)"
+	expect_has "they're all listed" clic "$(cli volume list --pool clip)"
+	cli volume delete clic >/dev/null && ok "delete the clone" || bad "delete the clone"
+	cli snapshot delete clis >/dev/null && ok "delete the snapshot" || bad "delete the snapshot"
+	cli volume delete cliv >/dev/null && ok "delete the volume" || bad "delete the volume"
+	cli pool delete clip >/dev/null && ok "forget the pool" || bad "forget the pool"
+fi
+
 section "API over TLS"
 TLS_DIR=$(mktemp -d)
 TLS_URL=https://127.0.0.1:18420
@@ -599,6 +643,11 @@ expect_has "and logs why" "keeping the current API TLS certificate" "$($ENGINE l
 install_part tls1.key tls.key
 expect_eq "then finishing it works" 200 "$(tls_code tls1)"
 expect_has "the configuration is unaffected" "$SA" "$(ini "curl -s -m 10 --cacert /tmp/tls1.crt -H 'Authorization: Bearer $TLS_TOKEN' $TLS_URL/v1/subsystems")"
+install_part tls1.crt ca.crt
+expect_has "the command line works over HTTPS, trusting the CA" "$BACKEND" "$($ENGINE exec -e NVWEAVER_API_TOKEN="$TLS_TOKEN" "$TGT" nvweaver --api "$TLS_URL" --ca /tls/ca.crt system)"
+expect_has "and refuses a server it doesn't trust" "certificate" "$($ENGINE exec -e NVWEAVER_API_TOKEN="$TLS_TOKEN" "$TGT" nvweaver --api "$TLS_URL" system 2>&1)"
+# Blanked, as the service's own token is in this container's environment.
+expect_has "and needs the token" "token" "$($ENGINE exec -e NVWEAVER_API_TOKEN= "$TGT" nvweaver --api "$TLS_URL" --ca /tls/ca.crt port list 2>&1)"
 
 $ENGINE stop -t 20 "$TGT" >/dev/null 2>&1
 start_target false || bad "restart without TLS"

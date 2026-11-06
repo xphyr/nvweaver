@@ -353,3 +353,15 @@ there, not as absolute numbers.
 - **It looks where the tool would run,** on the host through `nsenter` in a container, as checking inside the container would give the wrong answer. It asks LVM where `thin_check` should be, as that's configurable.
 - **Not checked: `modprobe` and `nsenter`.** A missing `modprobe` only matters if the module isn't loaded, and its error already says what to do. `nsenter` is in both images.
 
+## 35. The client is written by hand, and tested against the spec and the real handlers
+
+- **Chosen:** `internal/client`, using the standard library, with its types written out. The command line utility uses only this, as the CSI driver will, so neither can do anything the API can't.
+- **Why not generate it:** a generator would be this project's first dependency, even if only at build time, and the API is small. What generating would have guaranteed, tests check instead: every schema's fields against the
+  client's types, in both directions, and every operation in the spec reached successfully against the real handlers.
+- **It retries `503`,** which the API only sends having changed nothing, for up to a minute, as `Retry-After` says. It doesn't retry a network error, as that doesn't say whether anything happened. Each caller would otherwise write this itself.
+- **It doesn't follow redirects,** as the API never sends one, so something else is answering.
+- **It's under `internal/`,** as nothing outside this repository uses it. The module path isn't importable from elsewhere anyway. Reconsider if someone needs it.
+- **The utility takes secrets only from files or the environment,** as other users of a machine can see command lines. That applies to the token and DH-HMAC-CHAP keys, and a `--token` flag is refused.
+- **Rejected, for now: a confirmation prompt on delete.** It's for automation first, and the API refuses to delete what's in use.
+- **Rejected, for now: an option to skip verifying certificates.** `--ca` covers a lab's own certificate, and it's easy to add if it's really needed.
+

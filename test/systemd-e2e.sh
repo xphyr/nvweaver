@@ -224,6 +224,10 @@ ini "pkill -f 'nc -l -p $PORT'"
 wait_active 30 && ok "starts by itself once the address is free" || bad "starts by itself once the address is free"
 expect_eq "API is usable" 200 "$(ini "curl -s -m 2 -o /dev/null -w '%{http_code}' $API/healthz")"
 
+section "The command line utility, as installed"
+expect_eq "it's installed, and reaches the service" ok "$(sd 'nvweaver health' | tr -d ' ')"
+expect_has "and reports what's there" "$SUB" "$(sd 'nvweaver subsystem list')"
+
 section "Settings from the environment file"
 sd "echo NVWEAVER_KEEP_ON_EXIT=true >> /etc/nvweaver/nvweaver.env; systemctl restart $UNIT"
 ini "nvme connect -t tcp -a 127.0.0.1 -s $PORT -n $SUB --hostnqn=$HOST -l 30 >/dev/null" && ok "host connects" || bad "host connects"

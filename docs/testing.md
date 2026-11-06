@@ -35,9 +35,9 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | Suite | Path | Result |
 |---|---|---|
 | Unit tests | | Pass |
-| `e2e.sh`, kernel target | Loopback in one VM | 228 of 228 |
-| `e2e.sh`, SPDK target | Loopback in one VM | 242 of 242 |
-| `systemd-e2e.sh` | Loopback in one VM | 74 of 74 |
+| `e2e.sh`, kernel target | Loopback in one VM | 257 of 257 |
+| `e2e.sh`, SPDK target | Loopback in one VM | 271 of 271 |
+| `systemd-e2e.sh` | Loopback in one VM | 76 of 76 |
 | `vm/vm-e2e.sh` | Between two VMs | 890 of 890 |
 
 `go test -race` also passes. Earlier, smaller versions of these suites passed on GitHub's hosted runners, in
@@ -338,6 +338,12 @@ scripts tried each setup in fresh VMs, with a client making a volume group, and 
 
 Hosts kept connecting and reading their data throughout, and this machine's copy of the client's LV wasn't open. `lvmdiskscan` took about 0.05 s with 300 thin volumes, on a VM. It hasn't been timed at 5,000.
 The defaults for Debian 13 and Ubuntu 22.04 and 24.04 were read from their packages in containers. Nothing has run on those distributions.
+
+### The client and command line
+
+`internal/api/client_contract_test.go` compares every field with the spec, in both directions, and reaches every operation in the spec through the client, against the real handlers. Breaking each on purpose was caught: renaming a
+field, not calling an operation, and a wrong path. `cmd/nvweaver` runs against the real handlers too, with a fake configfs and no real storage, so what needs pools is only checked by what it sends there. `e2e.sh` runs the binary from the image against both
+real targets, including pools, a host writing data, and HTTPS.
 
 ### Without `thin_check`
 

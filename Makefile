@@ -12,10 +12,13 @@ ENVFILE = $(SYSCONFDIR)/nvweaver/nvweaver.env
 .PHONY: all build test lint images package install install-quadlet uninstall clean
 all: build
 
-build: nvweaverd
+build: nvweaverd nvweaver
 
 nvweaverd: go.mod $(shell find cmd internal -name '*.go')
 	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -X main.version=$(VERSION)' -o $@ ./cmd/nvweaverd
+
+nvweaver: go.mod $(shell find cmd internal -name '*.go')
+	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -X main.version=$(VERSION)' -o $@ ./cmd/nvweaver
 
 nvweaver.service: dist/systemd/nvweaver.service.in
 	sed -e 's|@BINDIR@|$(BINDIR)|g' -e 's|@DOCDIR@|$(DOCDIR)|g' $< > $@
@@ -45,10 +48,10 @@ images:
 
 # The release tarball and its checksum, in build/, for the architecture that Go is building for.
 PACKAGE = nvweaver-$(VERSION)-linux-$(shell go env GOARCH)
-package: nvweaverd nvweaver.service
+package: nvweaverd nvweaver nvweaver.service
 	rm -rf build
 	install -d build/$(PACKAGE)
-	install -m 0755 nvweaverd build/$(PACKAGE)/
+	install -m 0755 nvweaverd nvweaver build/$(PACKAGE)/
 	install -m 0644 nvweaver.service dist/systemd/nvweaver.env README.md LICENSE THIRD_PARTY_NOTICES.md \
 		build/$(PACKAGE)/
 	# A release has a published image to use, unlike a build from source.
@@ -66,8 +69,9 @@ define install-envfile
 	[ -e $(DESTDIR)$(ENVFILE) ] || install -m 0600 dist/systemd/nvweaver.env $(DESTDIR)$(ENVFILE)
 endef
 
-install: nvweaverd nvweaver.service
+install: nvweaverd nvweaver nvweaver.service
 	install -D -m 0755 nvweaverd $(DESTDIR)$(BINDIR)/nvweaverd
+	install -D -m 0755 nvweaver $(DESTDIR)$(BINDIR)/nvweaver
 	install -D -m 0644 nvweaver.service $(DESTDIR)$(UNITDIR)/nvweaver.service
 	install -D -m 0644 README.md $(DESTDIR)$(DOCDIR)/README.md
 	install -D -m 0644 LICENSE $(DESTDIR)$(DOCDIR)/LICENSE
@@ -86,9 +90,9 @@ install-quadlet:
 # Leaves the environment file and /var/lib/nvweaver, which hold configuration and
 # possibly data. Stop and disable the service first.
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/nvweaverd $(DESTDIR)$(UNITDIR)/nvweaver.service \
+	rm -f $(DESTDIR)$(BINDIR)/nvweaverd $(DESTDIR)$(BINDIR)/nvweaver $(DESTDIR)$(UNITDIR)/nvweaver.service \
 		$(DESTDIR)$(QUADLETDIR)/nvweaver-spdk.container $(DESTDIR)$(DOCDIR)/README.md \
 		$(DESTDIR)$(DOCDIR)/LICENSE $(DESTDIR)$(DOCDIR)/THIRD_PARTY_NOTICES.md
 
 clean:
-	rm -rf nvweaverd nvweaver.service build
+	rm -rf nvweaverd nvweaver nvweaver.service build

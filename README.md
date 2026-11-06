@@ -103,6 +103,35 @@ nvme connect  -t tcp -a 192.0.2.10 -s 4420 -n $SUB --hostnqn=$HOST
 Open the port in the target's firewall. The kernel serves discovery on every
 port; add one on 8009 if your initiators expect the standard discovery port.
 
+## Command line
+
+`nvweaver` manages the service through its API, from this machine or another. It's in the images, the release tarball and `make install`, and needs nothing else.
+
+```sh
+export NVWEAVER_API_URL=https://storage.example:8420
+export NVWEAVER_API_TOKEN=...                 # or --token-file FILE
+export NVWEAVER_CA=/etc/nvweaver/tls/ca.crt   # or --ca FILE, if it isn't a publicly trusted certificate
+
+nvweaver system                               # the service, and any warnings
+nvweaver port create --address 192.0.2.10
+nvweaver host create nqn.2026-11.lab.example:client1
+nvweaver pool create fast --type reflink --path /srv/nvweaver
+nvweaver volume create vol1 --size 10G
+nvweaver subsystem create nqn.2026-11.lab.example:vol1 --port 1 --allow-host nqn.2026-11.lab.example:client1
+nvweaver namespace create nqn.2026-11.lab.example:vol1 --volume vol1
+
+nvweaver snapshot create snap1 --volume vol1
+nvweaver volume create clone1 --from-snapshot snap1
+nvweaver volume list -o json                  # JSON, for scripts
+```
+
+Run `nvweaver help` for every command, and `--help` after one for its flags. Sizes take K, M, G, T or P, which are powers of 1024.
+
+- **Exit status:** 0 on success, 1 if the request failed, and 2 if the command itself was wrong. A busy API is retried for up to a minute.
+- **Tokens and DH-HMAC-CHAP keys** are only read from files or the environment, never from the command line, where other users of the machine could see them.
+- `--output json` prints what the API returns, and nothing at all for commands with nothing to show. Warnings about pools and the machine are in the data there, and printed below the table otherwise.
+- Nothing asks for confirmation, so `nvweaver volume delete` deletes straight away.
+
 ## What can back a namespace
 
 | Backing | How | Notes |
@@ -189,7 +218,7 @@ sha256sum -c SHA256SUMS
 tar xzf nvweaver-*-linux-amd64.tar.gz
 cd nvweaver-*-linux-amd64
 
-sudo install -m 0755 nvweaverd /usr/local/bin/nvweaverd
+sudo install -m 0755 nvweaverd nvweaver /usr/local/bin/
 sudo install -m 0644 nvweaver.service /etc/systemd/system/
 sudo install -d -m 0755 /etc/nvweaver
 sudo install -m 0600 nvweaver.env /etc/nvweaver/

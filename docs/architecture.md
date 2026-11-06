@@ -33,6 +33,8 @@ below it, never through this process.
 
 | Path | Purpose |
 |---|---|
+| `cmd/nvweaver` | The command line utility, which only uses `internal/client` |
+| `internal/client` | Go client for the API, for the command line utility and CSI driver |
 | `cmd/nvweaverd` | Startup: settings, backend selection, API server, shutdown |
 | `internal/api` | HTTP handlers (`server.go`), state and safety checks (`manager.go`), checking whether this machine's LVM can read exports (`lvmwatch.go`) |
 | `internal/target` | State model and validation (`model.go`), `Backend` interface (`backend.go`), kernel backend (`reconcile.go`) |

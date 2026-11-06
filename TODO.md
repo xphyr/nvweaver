@@ -34,6 +34,13 @@ Work through these in order: each phase depends on the ones before it.
   - [ ] `test/systemd-e2e.sh` has a fixed `-l 30`, which doesn't scale with `TEST_TIMEOUT_SCALE`
   - [ ] In `e2e.sh`, stop waiting for a reconnect once the host has removed its controller
   - [ ] Arm runners have no KVM, so CI runs `e2e.sh` directly. Decide whether Arm needs the VM suites
+- [ ] For v0.3.0: publish an SBOM with each release, so that consumers know what's in it. Generate SPDX JSON in the release workflow with a pinned tool such as Syft, from the
+      tested images and tarballs, for both architectures. Attach them to the GitHub release, and attest them, as with provenance
+  - [ ] Check whether a scanner sees SPDK, DPDK and ISA-L inside `nvmf_tgt`. They're compiled from source into one binary, so it probably doesn't, which would look clean while leaving out
+        the most security-relevant code. If so, record their exact versions at build time and add them
+  - [ ] Have CI fail if the SBOM doesn't list what's in `THIRD_PARTY_NOTICES.md`, so that this can't quietly go stale
+- [ ] For v0.3.0: publish the `nvweaver` command line utility as its own artifact, as `nvweaver-cli-<version>-linux-<arch>`, for people who only want the client. Linux on amd64 and arm64,
+      built natively, as the suites and the Arm runner already test it. Include them in the checksums, attestations and SBOM, and say in the README how to get them
 - [ ] Pin base images in the Containerfiles by digest, with automated updates
 - [x] Add a `LICENSE` (MIT)
 - [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)
@@ -91,14 +98,14 @@ and CLI once, against the result.
 - [x] Add TLS to the API, needed before the web UI or CSI driver use it over a network. See decision 31
 - [ ] By 1.0: make serving the API in clear text off loopback an explicit choice by the admin deploying it, rather than a warning. See decision 31
 - [x] Check at startup that the tools in "Tools" in the README are there. See decision 34
-- [ ] Create a shared Go API client from the spec, for the CLI and CSI driver to use
+- [x] Create a shared Go API client, for the CLI and CSI driver to use. See decision 35
 - [ ] Add an endpoint showing connected hosts, including each connection's transport
 - [ ] Keep `info.version` in the API spec current: `v0.2.0` shipped saying `0.1.0`. Check it in the release workflow
 - [ ] Add an endpoint listing available block devices. Pools are adopted for now, so nothing needs it yet
 
 ## 4. Command line utility
 
-- [ ] Create a command line utility for CRUD actions, using the shared client
+- [x] Create a command line utility for CRUD actions, using the shared client
 
 ## 5. Scale
 
@@ -111,6 +118,8 @@ Production-like scale is a requirement, so measure this before building on it.
       connection per CPU, so per-volume subsystems add up quickly
 
 ## 6. Web UI
+
+**Next, by choice,** ahead of what's left of phases 3 and 5, so that there's something to see.
 
 - [ ] Create a web UI for manually handling CRUD tasks, embedded in the binary
   - [ ] The web UI should allow for token auth or simple username/password authentication
@@ -140,6 +149,11 @@ Production-like scale is a requirement, so measure this before building on it.
         out what happens to pods on both volumes, then either document it or have the node plugin handle it, as with `vgimportclone`
 ## Later (low priority)
 
+- [ ] Publish the `nvweaver` command line utility for macOS, on arm64 and amd64, and Windows on amd64. Only the client: the service stays Linux only. Name them as the Linux ones are, and include them in
+      the checksums, attestations and SBOM
+  - [ ] Add a smoke test on hosted macOS and Windows runners, running the real binary against a fake API, as nothing has run there yet. Don't publish those builds without it. All these targets
+        cross-compile, but `go test ./cmd/nvweaver` won't there, as its tests use the Linux-only `internal/target`
+  - [ ] Check what differs there: file paths for `--token-file` and `--ca`, the system's certificates, and signals on Windows
 - [ ] iSCSI as a second protocol, once the CLI and CSI driver have settled the API. It would be new resources, such as `/v1/iscsi/targets`, not a
       `transport` on ports. Pools, volumes and snapshots should carry over: see decision 33
   - [ ] First, probe whether it's really feasible, before any design, as with Arm: drive LIO and SPDK's iSCSI target by hand on a throwaway VM, with
