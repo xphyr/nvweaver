@@ -123,7 +123,7 @@ function capacityBar(capacity, warningPercent) {
 }
 
 const PAGE_SIZES = [10, 25, 50, 100, 250];
-const DEFAULT_PAGE_SIZE = 25;
+const DEFAULT_PAGE_SIZE = 10;
 const PAGE_SIZE_KEY = "nvweaver-page-size";
 
 // How many rows to show is a preference, so it's kept in this browser. It's not a secret, and it's fine if the browser refuses.
@@ -231,17 +231,47 @@ function sizeField(field) {
   };
 }
 
+// A list of tickboxes, whose value is the ones ticked.
+function checksField(field) {
+  const boxes = field.options.map((o) => el("input", { type: "checkbox", value: o.value, checked: (field.value || []).includes(o.value) }));
+  return {
+    node: el("div", { class: "checks", id: "field-" + field.name, role: "group", "aria-label": field.label },
+      field.options.length ? boxes.map((box, i) => el("label", { class: "check" }, box, el("span", { class: "mono" }, field.options[i].label))) : el("p", { class: "hint" }, field.empty)),
+    focus: boxes[0],
+    value: () => boxes.filter((b) => b.checked).map((b) => (/^\d+$/.test(b.value) ? Number(b.value) : b.value)),
+  };
+}
+
+function tickField(field) {
+  const box = el("input", { type: "checkbox", id: "field-" + field.name, checked: field.value });
+  return { node: el("label", { class: "check" }, box, el("span", {}, field.text)), focus: box, value: () => box.checked, noLabel: true };
+}
+
+// A choice of one, as radio buttons, which decides what else the dialog asks.
+function radioField(field) {
+  const radios = field.options.map((o) => el("input", { type: "radio", name: "field-" + field.name, value: o.value, checked: o.value === field.value, disabled: o.disabled }));
+  return {
+    node: el("div", { id: "field-" + field.name, role: "radiogroup", "aria-label": field.label },
+      radios.map((r, i) => el("label", { class: "check" }, r, el("span", {}, field.options[i].label)))),
+    focus: radios.find((r) => r.checked) || radios[0],
+    value: () => (radios.find((r) => r.checked) || {}).value,
+  };
+}
+
 function plainField(field) {
   const attrs = { id: "field-" + field.name, required: field.required, placeholder: field.placeholder, autocomplete: "off", spellcheck: "false" };
   const input = field.options
     ? el("select", attrs, field.options.map((o) => el("option", { value: o.value, selected: o.value === field.value }, o.label)))
-    : el("input", { ...attrs, type: "text", value: field.value });
-  return { node: input, focus: input, value: () => input.value.trim() };
+    : el("input", { ...attrs, type: "text", value: field.value, list: field.suggestions ? `suggest-${field.name}` : undefined });
+  // Suggestions, rather than a dropdown, as there can be thousands to search.
+  const list = field.suggestions && el("datalist", { id: `suggest-${field.name}` }, field.suggestions.map((value) => el("option", { value })));
+  return { node: list ? el("div", {}, input, list) : input, focus: input, value: () => input.value.trim() };
 }
 
 // openDialog asks for something, and stays open showing the API's answer if it's refused, with what was typed still there.
 function openDialog({ title, intro, fields = [], submit, danger, confirmText, action, done }) {
-  const built = fields.map((field) => ({ field, ...(field.size ? sizeField(field) : plainField(field)) }));
+  const makers = { checks: checksField, tick: tickField, radio: radioField };
+  const built = fields.map((field) => ({ field, ...(field.size ? sizeField(field) : (makers[field.kind] || plainField)(field)) }));
   const notice = el("div", {});
   const go = el("button", { type: "submit", class: danger ? "danger" : "primary", id: "dialog-submit" }, submit);
   const typed = confirmText && el("input", { type: "text", id: "field-confirm", autocomplete: "off", spellcheck: "false", required: true });
@@ -259,11 +289,10 @@ function openDialog({ title, intro, fields = [], submit, danger, confirmText, ac
     go.textContent = "Working...";
     notice.replaceChildren();
     try {
-      const values = Object.fromEntries(built.map((b) => [b.field.name, b.value()]));
-      const result = await action(values);
+      const result = await action(currentValues());
       working = false;
       dialog.close();
-      done(result, values);
+      done(result);
     } catch (err) {
       working = false;
       if (err instanceof Unauthorized) { dialog.close(); rerender(); return; }
@@ -275,15 +304,29 @@ function openDialog({ title, intro, fields = [], submit, danger, confirmText, ac
     el("h2", {}, title),
     intro && el("p", {}, intro),
     notice,
-    built.map((b) => [
-      el("label", { for: "field-" + b.field.name }, b.field.label),
-      b.node,
-      b.field.hint && el("p", { class: "hint" }, b.field.hint),
-    ]),
+    built.map((b) => {
+      b.wrap = el("div", { class: "field" },
+        !b.noLabel && el("label", { for: "field-" + b.field.name }, b.field.label),
+        b.node,
+        b.field.hint && el("p", { class: "hint" }, b.field.hint));
+      return b.wrap;
+    }),
     typed && [el("label", { for: "field-confirm" }, ["Type ", el("code", {}, confirmText), " to confirm"]), typed],
     el("div", { class: "dialog-actions" },
       el("button", { type: "button", id: "dialog-cancel", onclick: () => { if (!working) dialog.close(); } }, "Cancel"),
       go)));
+  const currentValues = () => Object.fromEntries(built.map((b) => [b.field.name, b.value()]));
+  // Some fields only apply to some choices. A hidden one mustn't stop the form being submitted.
+  const applyVisibility = () => {
+    const values = currentValues();
+    for (const b of built) {
+      const show = !b.field.when || b.field.when(values);
+      b.wrap.hidden = !show;
+      if (b.field.required && b.focus) b.focus.required = show;
+    }
+  };
+  dialog.addEventListener("change", applyVisibility);
+  applyVisibility();
   // Escape shouldn't look like it stopped something that's already been sent.
   dialog.addEventListener("cancel", (e) => { if (working) e.preventDefault(); });
   dialog.addEventListener("close", () => dialog.remove());
@@ -342,6 +385,117 @@ function cloneDialog(source, what) {
     fields: [{ name: "name", label: "New volume's name", required: true, value: `${source}-copy` }],
     action: (v) => send("POST", "/v1/volumes", { name: v.name, source: { [what]: source } }),
     done: (vol) => { notify(`Created ${vol.name}.`); showVolume(vol.name); },
+  });
+}
+
+// What's asked for by a new subsystem's name. It's only a suggestion, as the domain should be the admin's.
+const suggestedNQN = (name) => `nqn.${new Date().toISOString().slice(0, 7)}.local.nvweaver:${name}`;
+
+async function exportDialog(vol) {
+  const [hosts, ports, subsystems] = await Promise.all([api("/v1/hosts"), api("/v1/ports"), api("/v1/subsystems")]);
+  const usable = subsystems.filter((s) => !s.passthru_device);
+  const isNew = (v) => v.mode !== "existing";
+  openDialog({
+    title: `Export ${vol.name}`,
+    intro: "This lets hosts connect to it over NVMe/TCP.",
+    submit: "Export",
+    fields: [
+      ...(usable.length ? [{ name: "mode", kind: "radio", label: "Where", value: "new", options: [
+        { value: "new", label: "A new subsystem" },
+        { value: "existing", label: "An existing subsystem" },
+      ] }] : []),
+      ...(usable.length ? [{ name: "existing", label: "Subsystem", when: (v) => v.mode === "existing", value: usable[0].nqn, options: usable.map((s) => ({ value: s.nqn, label: `${s.nqn} (${(s.namespaces || []).length})` })) }] : []),
+      { name: "nqn", label: "Subsystem name (NQN)", required: true, when: isNew, value: suggestedNQN(vol.name) },
+      { name: "anyHost", kind: "tick", when: isNew, text: "Let any host connect, with no list of who may" },
+      { name: "hosts", kind: "checks", label: "Hosts that may connect", when: (v) => isNew(v) && !v.anyHost, options: hosts.map((h) => ({ value: h.nqn, label: h.nqn })), empty: "No hosts yet, so add one below." },
+      { name: "newHost", label: "Add a host", placeholder: "nqn.2014-08.org.nvmexpress:uuid:...", when: (v) => isNew(v) && !v.anyHost, hint: "From /etc/nvme/hostnqn on the host." },
+      ...(ports.length
+        ? [{ name: "ports", kind: "checks", label: "Ports to offer it on", when: isNew, value: ports.length === 1 ? [String(ports[0].id)] : [], options: ports.map((p) => ({ value: String(p.id), label: `${p.address}:${p.service} (port ${p.id})` })) }]
+        : [{ name: "address", label: "Address to listen on", required: true, when: isNew, placeholder: "192.0.2.10", hint: "There are no ports yet, so this makes one, on the usual TCP port, 4420." }]),
+    ],
+    action: async (v) => {
+      if (!isNew(v)) {
+        await send("POST", `/v1/subsystems/${encodeURIComponent(v.existing)}/namespaces`, { volume: vol.name });
+        return;
+      }
+      const allowed = [...(v.hosts || [])];
+      if (v.newHost && !v.anyHost) {
+        await send("POST", "/v1/hosts", { nqn: v.newHost }).catch((err) => {
+          // Already known is fine: it's only being added to the list.
+          if (!hosts.some((h) => h.nqn === v.newHost)) throw err;
+        });
+        if (!allowed.includes(v.newHost)) allowed.push(v.newHost);
+      }
+      let portIds = v.ports || [];
+      if (v.address) {
+        const made = await send("POST", "/v1/ports", { address: v.address });
+        portIds = [made.id];
+      }
+      const path = "/v1/subsystems/" + encodeURIComponent(v.nqn);
+      await send("POST", "/v1/subsystems", { nqn: v.nqn, allow_any_host: Boolean(v.anyHost), allowed_hosts: v.anyHost ? [] : allowed, ports: portIds });
+      try {
+        await send("POST", path + "/namespaces", { volume: vol.name });
+      } catch (err) {
+        // Don't leave an empty subsystem behind, so that trying again works.
+        await send("DELETE", path).catch(() => {});
+        throw err;
+      }
+    },
+    done: () => { notify(`Exported ${vol.name}.`); rerender(); },
+  });
+}
+
+// Every volume that isn't exported, following the API's pages.
+async function unexportedVolumes() {
+  const names = [];
+  let after = "";
+  do {
+    const params = new URLSearchParams();
+    if (after) params.set("after", after);
+    const page = await api(`/v1/volumes?${params}`);
+    names.push(...(page.items || []).filter((v) => !v.mapped_to).map((v) => v.name));
+    after = page.next_after || "";
+  } while (after);
+  return names;
+}
+
+async function addVolumeDialog(subsystem) {
+  const names = await unexportedVolumes();
+  openDialog({
+    title: "Add a volume",
+    intro: `Hosts allowed on ${subsystem.nqn} can then reach it.`,
+    submit: "Add volume",
+    fields: [{ name: "volume", label: "Volume", required: true, suggestions: names, placeholder: names.length ? "Type to search" : "There are none that aren't exported",
+      hint: names.length ? `${names.length} aren't exported.` : undefined }],
+    action: async (v) => {
+      await send("POST", `/v1/subsystems/${encodeURIComponent(subsystem.nqn)}/namespaces`, { volume: v.volume });
+      return v.volume;
+    },
+    done: (name) => { notify(`Exported ${name}.`); rerender(); },
+  });
+}
+
+function unexportDialog(vol, subsystem, keepSubsystem) {
+  const nsid = vol.mapped_to.nsid;
+  const alone = (subsystem.namespaces || []).length <= 1;
+  openDialog({
+    title: `Un-export ${vol.name}`,
+    intro: "The volume and its data are kept, but connected hosts lose access to it at once, so anything using it will see I/O errors.",
+    submit: "Un-export",
+    danger: true,
+    fields: alone ? [{ name: "removeSubsystem", kind: "tick", value: !keepSubsystem, text: `Also remove ${subsystem.nqn}, as nothing else is in it` }] : [],
+    action: async (v) => {
+      const path = "/v1/subsystems/" + encodeURIComponent(subsystem.nqn);
+      await send("DELETE", `${path}/namespaces/${nsid}`);
+      if (v.removeSubsystem) await send("DELETE", path);
+      return v.removeSubsystem;
+    },
+    done: (removed) => {
+      notify(`${vol.name} is no longer exported.`);
+      // Its own page has gone, if that's where this was.
+      if (removed && location.hash.startsWith("#/subsystems/")) location.hash = "#/subsystems";
+      else rerender();
+    },
   });
 }
 
@@ -473,17 +627,23 @@ async function volumes(pool) {
 
 async function volume(name) {
   const path = "/v1/volumes/" + encodeURIComponent(name);
-  const [v, usage, snaps] = await Promise.all([
+  const [v, usage, snaps, allPorts] = await Promise.all([
     api(path),
     // If the storage can't say, the rest of the page is still worth showing.
     api(path + "/usage", { retries: 0 }).catch((err) => { if (err instanceof Unauthorized) throw err; return null; }),
     pagedList("/v1/snapshots", `volume=${encodeURIComponent(name)}`),
+    api("/v1/ports"),
   ]);
+  const sub = v.mapped_to ? await api("/v1/subsystems/" + encodeURIComponent(v.mapped_to.subsystem)) : null;
+  const offered = sub ? allPorts.filter((p) => (sub.ports || []).includes(p.id)) : [];
   return [
     el("p", { class: "crumb" }, el("a", { href: "#/volumes" }, "Volumes")),
     el("h1", {}, v.name),
     el("div", { class: "toolbar" },
-      el("button", { class: "primary", id: "take-snapshot", onclick: () => snapshotDialog(v) }, "Take snapshot"),
+      sub
+        ? el("button", { class: "danger-quiet", id: "unexport-volume", onclick: () => unexportDialog(v, sub) }, "Un-export")
+        : el("button", { class: "primary", id: "export-volume", onclick: () => exportDialog(v) }, "Export"),
+      el("button", { id: "take-snapshot", onclick: () => snapshotDialog(v) }, "Take snapshot"),
       el("button", { id: "clone-volume", onclick: () => cloneDialog(v.name, "volume") }, "Clone"),
       el("button", { id: "grow-volume", onclick: () => growDialog(v) }, "Grow"),
       el("button", { class: "danger-quiet", id: "delete-volume", disabled: Boolean(v.mapped_to), onclick: () => deleteVolumeDialog(v) }, "Delete"),
@@ -492,6 +652,10 @@ async function volume(name) {
       fact("Space", usageBar(usage)),
       fact("Pool", link(v.pool, "volumes", v.pool)),
       fact("Exported", v.mapped_to ? [link(v.mapped_to.subsystem, "subsystems", v.mapped_to.subsystem), ` as namespace ${v.mapped_to.nsid}`] : pill("Not exported", "quiet")),
+      sub && fact("Who can connect", sub.allow_any_host ? pill("Any host", "warn") : (sub.allowed_hosts || []).length ? sub.allowed_hosts.map((h) => el("div", {}, mono(h))) : pill("Nobody yet", "warn")),
+      sub && fact("To connect", offered.length
+        ? offered.map((p) => el("div", {}, el("code", { class: "command" }, `nvme connect -t ${p.transport} -a ${p.address} -s ${p.service} -n ${sub.nqn}`)))
+        : pill("It isn't on any port, so hosts can't reach it", "warn")),
       v.source && fact("Cloned from", v.source.snapshot ? `snapshot ${v.source.snapshot}` : link(v.source.volume, "volume", v.source.volume)),
       fact("Created", humanTime(v.created_at)),
       fact("UUID", mono(v.uuid)), fact("NGUID", mono(v.nguid)),
@@ -548,14 +712,18 @@ async function subsystem(nqn) {
       s.passthru_device && fact("Passes through", mono(s.passthru_device)),
       fact("Who can connect", s.allow_any_host ? pill("Any host", "warn") : (s.allowed_hosts || []).length ? (s.allowed_hosts).map((h) => el("div", {}, mono(h))) : "Nobody yet"),
       fact("Ports", (s.ports || []).length ? (s.ports).map((id) => el("div", {}, link(`Port ${id}`, "ports"))) : "None, so hosts can't reach it")),
-    el("h2", {}, "Namespaces"),
+    el("div", { class: "section-head" },
+      el("h2", {}, "Namespaces"),
+      !s.passthru_device && el("button", { class: "primary", id: "add-volume", onclick: () => addVolumeDialog(s) }, "Add volume")),
     table([
       { title: "NSID", cell: (n) => n.nsid },
       { title: "Serving", cell: (n) => (n.live_enabled ? pill("Live", "ok") : n.enabled ? pill("Not serving", "bad") : pill("Disabled", "quiet")) },
       { title: "Size", num: true, cell: (n) => humanSize(n.size_bytes) },
       { title: "Backed by", cell: (n) => [n.volume ? link(n.volume, "volume", n.volume) : null, el("span", { class: n.volume ? "sub" : "" }, mono(n.device_path))] },
       { title: "NGUID", cell: (n) => mono(n.nguid) },
-    ], s.namespaces || [], { filter: false, empty: "Nothing exported yet. Add something with: nvweaver namespace create", state: stateOf("namespaces") }),
+      { title: "", cell: (n) => n.volume && el("div", { class: "row-actions" },
+        el("button", { class: "danger-quiet", onclick: () => unexportDialog({ name: n.volume, mapped_to: { nsid: n.nsid } }, s, true) }, "Un-export")) },
+    ], s.namespaces || [], { filter: false, empty: "Nothing is exported here yet.", state: stateOf("namespaces") }),
   ];
 }
 

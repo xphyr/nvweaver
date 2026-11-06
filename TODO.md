@@ -119,7 +119,8 @@ Production-like scale is a requirement, so measure this before building on it.
 
 - [x] Benchmark the API with thousands of subsystems, namespaces, hosts and volumes
 - [x] Replace the full reconcile and single lock. The whole-state save stays, as it no longer limits scale: see decision 29
-- [ ] Add pagination to list endpoints
+- [ ] Add pagination to list endpoints: subsystems, hosts and ports still come as one list
+- [ ] Add server-side search to the volume and snapshot lists. The web interface's filter only sees what's loaded so far, and its picker for adding a volume reads every volume, which won't do at 5,000
 - [ ] Measure target limits with many connections: each connection opens roughly one TCP
       connection per CPU, so per-volume subsystems add up quickly
 
@@ -130,7 +131,13 @@ Production-like scale is a requirement, so measure this before building on it.
 - [x] Read-only screens, embedded in the binary, tested in a real browser. See decision 37
 - [x] Sign in with a username and password, from a users file in bcrypt. See decision 40
 - [ ] Try signing in over real TLS, in a browser
-- [ ] Create and delete, for everything, including the volumes, snapshots and clones from phase 2
+- [x] Create, grow, clone and delete volumes, take, clone and delete snapshots, and export and un-export volumes from their own pages and from subsystems
+- [x] Show tables a page at a time, 10 rows by default
+- [ ] Create and delete subsystems, hosts and ports, including who's allowed and which ports, and namespaces on raw devices and files
+- [ ] Adopt and forget pools
+- [ ] Set DH-HMAC-CHAP keys on hosts
+- [ ] Show which hosts are connected before un-exporting, once the phase 3 endpoint for that exists
+- [ ] Run one browser test against a real target in a VM: create, export, a real host writing data, un-export and delete. So far, browsers have only driven the fake target
 
 ## 7. Kubernetes CSI driver
 

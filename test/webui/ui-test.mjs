@@ -13,8 +13,10 @@ const bad = (name, why) => { fail++; console.log(`  FAIL  ${name}`); if (why) co
 const check = (name, cond, why) => (cond ? ok(name) : bad(name, why));
 
 const browser = await chromium.launch();
-async function newPage(opts = {}) {
+// Most checks look across a whole list, so they ask for plenty of rows, as someone could. Only checks of the default itself don't.
+async function newPage({ defaults, ...opts } = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, ...opts });
+  if (!defaults) await context.addInitScript(() => { try { if (!localStorage.getItem("nvweaver-page-size")) localStorage.setItem("nvweaver-page-size", "100"); } catch {} });
   const page = await context.newPage();
   page.problems = [];
   page.on("console", (m) => { if (m.type() === "error") page.problems.push("console: " + m.text()); });
@@ -188,7 +190,7 @@ check("a request from another site didn't take effect", !(await page.textContent
 
 console.log("\nPages");
 // Made-up lists, so that this can have thousands, as the API would send them: 500 at a time.
-const paged = await newPage();
+const paged = await newPage({ defaults: true });
 const allVolumes = Array.from({ length: 1234 }, (_, i) => ({ name: "v" + String(i + 1).padStart(4, "0"), pool: "fast", size_bytes: 2 ** 30, uuid: "u", nguid: "n" + i, state: "online", mapped_to: null, source: null, created_at: "2026-11-06T00:00:00Z", internal_name: "i", device_path: "/d" }));
 let volumeRequests = 0;
 await paged.route("**/v1/volumes?*", (r) => handleVolumes(r));
@@ -208,15 +210,15 @@ const rows = (p) => p.locator("main tbody tr").count();
 const firstCell = (p) => p.locator("main tbody tr td").first().textContent();
 await visit(paged, "#/volumes");
 await paged.waitForSelector("main tbody tr");
-check("a long list shows 25 rows to begin with", (await rows(paged)) === 25, String(await rows(paged)));
-check("and says where it is, and that there's more", (await paged.textContent("#page-range")).replace(/\s/g, "") === "1\u201325of500+", await paged.textContent("#page-range"));
+check("a long list shows 10 rows to begin with", (await rows(paged)) === 10, String(await rows(paged)));
+check("and says where it is, and that there's more", (await paged.textContent("#page-range")).replace(/\s/g, "") === "1\u201310of500+", await paged.textContent("#page-range"));
 check("Previous can't go anywhere yet", await paged.isDisabled("#page-prev"));
 await paged.screenshot({ path: `${shots}/paged.png`, fullPage: true });
 await paged.click("#page-next");
-check("Next shows the next rows", (await firstCell(paged)).startsWith("v0026"), await firstCell(paged));
+check("Next shows the next rows", (await firstCell(paged)).startsWith("v0011"), await firstCell(paged));
 await paged.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
 await paged.waitForTimeout(400);
-check("a refresh keeps its place", (await firstCell(paged)).startsWith("v0026"), await firstCell(paged));
+check("a refresh keeps its place", (await firstCell(paged)).startsWith("v0011"), await firstCell(paged));
 await paged.click("#page-prev");
 check("Previous goes back", (await firstCell(paged)).startsWith("v0001"));
 await paged.selectOption("#page-size", "250");
@@ -244,8 +246,8 @@ check("where Next stops", await paged.isDisabled("#page-next"));
 await paged.fill('input[type="search"]', "v12");
 check("filtering goes back to the first page", (await firstCell(paged)).startsWith("v0012") || (await firstCell(paged)).startsWith("v12"), await firstCell(paged));
 await paged.fill('input[type="search"]', "");
-await paged.selectOption("#page-size", "25");
-const narrow = await newPage({ viewport: { width: 390, height: 800 } });
+await paged.selectOption("#page-size", "10");
+const narrow = await newPage({ defaults: true, viewport: { width: 390, height: 800 } });
 await narrow.route("**/v1/volumes?*", (r) => handleVolumes(r));
 await narrow.route("**/v1/volumes", (r) => handleVolumes(r));
 await visit(narrow, "#/volumes");
@@ -254,6 +256,15 @@ check("the pager fits a phone", !(await narrow.evaluate(() => document.documentE
 await visit(page, "#/ports");
 await page.waitForSelector("main tbody tr");
 check("a short list doesn't show a pager", (await page.locator(".pager").count()) === 0);
+const eleven = await newPage({ defaults: true });
+await visit(eleven, "#/hosts");
+await eleven.waitForSelector("main tbody tr");
+check("nor does a list that fits", (await eleven.locator(".pager").count()) === 0);
+await visit(eleven, "#/volumes");
+await eleven.waitForSelector("#page-next");
+check("a real list of 16 starts on 10 of them", (await eleven.locator("main tbody tr").count()) === 10 && (await eleven.textContent("#page-range")).includes("of 16"), await eleven.textContent("#page-range"));
+await eleven.click("#page-next");
+check("and shows the other 6 next", (await eleven.locator("main tbody tr").count()) === 6 && (await eleven.isDisabled("#page-next")));
 
 console.log("\nCreating and deleting");
 const ed = await newPage();
@@ -374,6 +385,175 @@ await ed.fill("#field-confirm", "ui-made");
 await submit();
 await closed();
 check("and everything made here is gone again", (await api("/v1/volumes?pool=archive")).body.items.length === 3);
+
+console.log("\nExporting");
+const nqn = "nqn.2026-11.net.example:ui-export";
+const subsystemsNow = async () => (await api("/v1/subsystems")).body.map((s) => s.nqn);
+const before6 = (await subsystemsNow()).length;
+await openOn("#/volume/vol-0009", "#export-volume");
+check("a volume that isn't exported can be", (await ed.locator("#unexport-volume").count()) === 0);
+await ed.click("#export-volume");
+await ed.waitForSelector("dialog[open]");
+await ed.screenshot({ path: `${shots}/export.png` });
+check("it suggests a subsystem name", (await ed.inputValue("#field-nqn")).includes("vol-0009"));
+check("and offers the hosts and ports there are", (await ed.locator("#field-hosts input").count()) === 3 && (await ed.locator("#field-ports input").count()) === 2);
+await ed.fill("#field-nqn", "not an nqn");
+await ed.check('#field-ports input[value="1"]');
+await submit();
+check("a bad name shows the API's reason", (await alertInDialog()).length > 3);
+check("and leaves nothing behind", (await subsystemsNow()).length === before6);
+await ed.fill("#field-nqn", nqn);
+await ed.check('#field-hosts input[value$="node-a"]');
+await ed.fill("#field-newHost", "nqn.2026-11.net.example:new-host");
+await submit();
+await closed();
+await ed.waitForSelector("#unexport-volume");
+const exported = (await api("/v1/subsystems/" + encodeURIComponent(nqn))).body;
+check("it makes a subsystem, with those hosts and that port", exported.ports.length === 1 && exported.ports[0] === 1 && exported.allowed_hosts.length === 2, JSON.stringify(exported).slice(0, 160));
+check("and the new host", (await api("/v1/hosts/" + encodeURIComponent("nqn.2026-11.net.example:new-host"))).status === 200);
+check("with the volume in it", exported.namespaces.length === 1 && exported.namespaces[0].volume === "vol-0009");
+const page9 = await ed.textContent("main");
+check("the page gives the command to connect", page9.includes(`nvme connect -t tcp -a 192.0.2.10 -s 4420 -n ${nqn}`), page9.slice(0, 200));
+check("and who may", page9.includes("node-a") && page9.includes("new-host"));
+check("and it can't be deleted now", await ed.isDisabled("#delete-volume"));
+await ed.screenshot({ path: `${shots}/exported.png`, fullPage: true });
+
+// A second volume, sharing that subsystem.
+await openOn("#/volume/vol-0010", "#export-volume");
+await ed.click("#export-volume");
+await ed.waitForSelector("dialog[open]");
+await ed.check('#field-mode input[value="existing"]');
+check("choosing an existing subsystem hides what doesn't apply", !(await ed.isVisible("#field-nqn")) && (await ed.isVisible("#field-existing")));
+await ed.selectOption("#field-existing", nqn);
+await submit();
+await closed();
+await ed.waitForSelector("#unexport-volume");
+check("a volume can join an existing subsystem", (await api("/v1/subsystems/" + encodeURIComponent(nqn))).body.namespaces.length === 2);
+
+await ed.click("#unexport-volume");
+await ed.waitForSelector("dialog[open]");
+check("un-exporting says hosts lose access, and data is kept", (await dialogText()).includes("lose access") && (await dialogText()).includes("data are kept"));
+check("with others in the subsystem, it doesn't offer to remove it", (await ed.locator("#field-removeSubsystem").count()) === 0);
+await submit();
+await closed();
+await ed.waitForSelector("#export-volume");
+check("the volume is still there", (await api("/v1/volumes/vol-0010")).status === 200);
+check("and the subsystem stays, for the other", (await api("/v1/subsystems/" + encodeURIComponent(nqn))).body.namespaces.length === 1);
+check("and it can be deleted again", !(await ed.isDisabled("#delete-volume")));
+
+await openOn("#/volume/vol-0009", "#unexport-volume");
+await ed.click("#unexport-volume");
+await ed.waitForSelector("dialog[open]");
+await ed.screenshot({ path: `${shots}/unexport.png` });
+check("with nothing else in it, it offers to remove the subsystem", await ed.isChecked("#field-removeSubsystem"));
+await submit();
+await closed();
+await ed.waitForSelector("#export-volume");
+check("and does", (await api("/v1/subsystems/" + encodeURIComponent(nqn))).status === 404 && (await subsystemsNow()).length === before6);
+
+// If the last step fails, the subsystem it made is removed, so that trying again works.
+await ed.route("**/namespaces", (r) => (r.request().method() === "POST" ? r.fulfill({ status: 500, json: { error: "the target refused it" } }) : r.continue()));
+await ed.click("#export-volume");
+await ed.waitForSelector("dialog[open]");
+await ed.fill("#field-nqn", nqn);
+await submit();
+check("a failure partway says why", (await alertInDialog()).includes("the target refused it"));
+check("and removes the subsystem it made", (await api("/v1/subsystems/" + encodeURIComponent(nqn))).status === 404);
+await ed.unroute("**/namespaces");
+await submit();
+await closed();
+await ed.waitForSelector("#unexport-volume");
+check("then trying again works", (await api("/v1/subsystems/" + encodeURIComponent(nqn))).body.namespaces.length === 1);
+await ed.click("#unexport-volume");
+await ed.waitForSelector("dialog[open]");
+await submit();
+await closed();
+await ed.waitForSelector("#export-volume");
+
+// Open to any host.
+await ed.click("#export-volume");
+await ed.waitForSelector("dialog[open]");
+await ed.fill("#field-nqn", nqn);
+await ed.check("#field-anyHost");
+check("any host hides the list", !(await ed.isVisible("#field-hosts")));
+await submit();
+await closed();
+await ed.waitForSelector("#unexport-volume");
+check("and the page warns that any host can", (await ed.locator("dl.facts .pill.warn", { hasText: "Any host" }).count()) === 1);
+await ed.click("#unexport-volume");
+await ed.waitForSelector("dialog[open]");
+await submit();
+await closed();
+await ed.waitForSelector("#export-volume");
+
+// With no ports yet, as on a new machine.
+await ed.route("**/v1/ports", (r) => (r.request().method() === "GET" ? r.fulfill({ json: [] }) : r.continue()));
+await ed.click("#export-volume");
+await ed.waitForSelector("dialog[open]");
+check("with no ports, it asks for an address instead", (await ed.locator("#field-address").count()) === 1 && (await ed.locator("#field-ports").count()) === 0);
+await ed.click("#dialog-cancel");
+await closed();
+await ed.unroute("**/v1/ports");
+await ed.evaluate(async () => { await fetch("/v1/hosts/" + encodeURIComponent("nqn.2026-11.net.example:new-host"), { method: "DELETE" }); });
+
+console.log("\nExporting from a subsystem's page");
+const sharedPath = "/v1/subsystems/" + encodeURIComponent("nqn.2026-11.net.example:shared");
+const routeShared = "#/subsystems/" + encodeURIComponent("nqn.2026-11.net.example:shared");
+await openOn(routeShared, "#add-volume");
+check("an empty subsystem says so", (await ed.textContent("main")).includes("Nothing is exported here yet"));
+await ed.click("#add-volume");
+await ed.waitForSelector("dialog[open]");
+const offeredVolumes = await ed.locator("#suggest-volume option").evaluateAll((o) => o.map((x) => x.value));
+check("it offers volumes that aren't exported", offeredVolumes.includes("vol-0005") && offeredVolumes.includes("backup-02"), offeredVolumes.join(" ").slice(0, 100));
+check("and not ones that are", !offeredVolumes.includes("vol-0001") && !offeredVolumes.includes("backup-01"));
+await ed.screenshot({ path: `${shots}/add-volume.png` });
+await ed.fill("#field-volume", "no-such-volume");
+await submit();
+check("a volume that doesn't exist is refused, with a reason", (await alertInDialog()).length > 3);
+await ed.fill("#field-volume", "vol-0005");
+await submit();
+await closed();
+await ed.locator("main tbody td", { hasText: "vol-0005" }).first().waitFor();
+check("adding it exports it", (await api(sharedPath)).body.namespaces.some((n) => n.volume === "vol-0005"));
+check("as its own page shows", (await api("/v1/volumes/vol-0005")).body.mapped_to.subsystem === "nqn.2026-11.net.example:shared");
+await ed.click("#add-volume");
+await ed.waitForSelector("dialog[open]");
+await ed.fill("#field-volume", "vol-0006");
+await submit();
+await closed();
+await ed.locator("main tbody td", { hasText: "vol-0006" }).first().waitFor();
+check("a second can join it", (await api(sharedPath)).body.namespaces.length === 2);
+await ed.screenshot({ path: `${shots}/subsystem-volumes.png`, fullPage: true });
+await ed.locator("main tbody tr", { hasText: "vol-0005" }).locator("button", { hasText: "Un-export" }).click();
+await ed.waitForSelector("dialog[open]");
+check("un-exporting one of two doesn't offer to remove the subsystem", (await ed.locator("#field-removeSubsystem").count()) === 0);
+check("and gives the same warning", (await dialogText()).includes("lose access"));
+await submit();
+await closed();
+await ed.locator("main tbody tr", { hasText: "vol-0005" }).waitFor({ state: "detached" });
+check("only that one goes", (await api(sharedPath)).body.namespaces.length === 1 && (await api("/v1/volumes/vol-0005")).body.mapped_to === null);
+await ed.locator("main tbody tr", { hasText: "vol-0006" }).locator("button", { hasText: "Un-export" }).click();
+await ed.waitForSelector("dialog[open]");
+check("for the last, here, removing the subsystem isn't the default", !(await ed.isChecked("#field-removeSubsystem")));
+await submit();
+await closed();
+await ed.waitForSelector("main .empty");
+check("so the subsystem stays", (await api(sharedPath)).status === 200 && (await api("/v1/volumes/vol-0006")).status === 200);
+// With a throwaway one, removing it should leave its page.
+const lastNqn = "nqn.2026-11.net.example:ui-last";
+await ed.evaluate(async ([nqn]) => {
+  await fetch("/v1/subsystems", { method: "POST", body: JSON.stringify({ nqn, allow_any_host: true }) });
+  await fetch(`/v1/subsystems/${encodeURIComponent(nqn)}/namespaces`, { method: "POST", body: JSON.stringify({ volume: "vol-0005" }) });
+}, [lastNqn]);
+await openOn("#/subsystems/" + encodeURIComponent(lastNqn), "main tbody tr");
+await ed.locator("main tbody tr", { hasText: "vol-0005" }).locator("button", { hasText: "Un-export" }).click();
+await ed.waitForSelector("dialog[open]");
+await ed.check("#field-removeSubsystem");
+await submit();
+await closed();
+await ed.locator("h1", { hasText: /^Subsystems$/ }).waitFor();
+check("ticking it removes the subsystem, and goes back to the list", (await api("/v1/subsystems/" + encodeURIComponent(lastNqn))).status === 404);
+check("and the volume is still there", (await api("/v1/volumes/vol-0005")).status === 200);
 
 // A refresh underneath mustn't lose what's being typed.
 await openOn("#/volumes", "#create-volume");
