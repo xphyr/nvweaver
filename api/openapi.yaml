@@ -9,7 +9,7 @@ info:
     A request either happens completely or not at all: if the target refuses part of a
     change, what was already applied is rolled back. Until version 1.0.0, this API may
     still change.
-  version: 0.1.0
+  version: 0.3.0-dev
   license:
     name: MIT
     identifier: MIT
@@ -65,6 +65,71 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Health'
+  /v1/session:
+    get:
+      operationId: getSession
+      summary: How to sign in here, and whether this request is signed in
+      description: Needs no token, for the web interface to find out what to ask for.
+      tags: [system]
+      security: []
+      responses:
+        '200':
+          description: How things stand.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+    post:
+      operationId: signIn
+      summary: Sign in with a username and password
+      description: |
+        For the web interface: programs should use the API's token. On success, this sets an `HttpOnly`, `SameSite=Strict` cookie. Over plain HTTP, other than on
+        loopback, it's refused unless `NVWEAVER_ALLOW_INSECURE_LOGIN` is set.
+      tags: [system]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignIn'
+      responses:
+        '200':
+          description: Signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The connection isn't protected, or it's from a web page on another site.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: Too many attempts, so wait for as long as `Retry-After` says.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: signOut
+      summary: Sign out
+      tags: [system]
+      security: []
+      responses:
+        '204':
+          description: Signed out, whether or not this was signed in.
   /v1/system:
     get:
       operationId: getSystem
@@ -1015,7 +1080,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: Required on everything but `/healthz`, when `NVWEAVER_API_TOKEN` is set. Without TLS, it crosses the network in clear text.
+      description: Required on everything but `/healthz` and `/v1/session`, when `NVWEAVER_API_TOKEN` or `NVWEAVER_USERS_FILE` is set, unless signed in with a password. Without TLS, it crosses the network in clear text.
   parameters:
     NQN:
       name: nqn
@@ -1376,6 +1441,29 @@ components:
       required: [error]
       properties:
         error:
+          type: string
+    Session:
+      type: object
+      required: [method, signed_in]
+      properties:
+        method:
+          type: string
+          enum: [none, token, password]
+          description: What's needed here. `none` is an API on loopback with no token.
+        signed_in:
+          type: boolean
+          description: Whether this request may use the API.
+        username:
+          type: string
+          description: Who's signed in, with a password.
+    SignIn:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
           type: string
     Health:
       type: object

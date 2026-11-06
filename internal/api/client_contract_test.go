@@ -30,8 +30,8 @@ func TestClientTypesMatchTheSpec(t *testing.T) {
 		if len(props) == 0 {
 			continue // Such as NQN, which is only a string.
 		}
-		if schema == "Error" {
-			continue // Handled by client.Error.
+		if schema == "Error" || schema == "Session" || schema == "SignIn" {
+			continue // Handled by client.Error, or only for browsers.
 		}
 		v, ok := types[schema]
 		if !ok {
@@ -256,14 +256,16 @@ func TestClientReachesEveryOperation(t *testing.T) {
 	if _, err := c.GetVolume(ctx, "gone"); !client.IsNotFound(err) {
 		t.Errorf("a missing volume: got %v", err)
 	}
+	// Signing in is for browsers: programs use the token.
+	browsersOnly := map[string]bool{"GET /v1/session": true, "POST /v1/session": true, "DELETE /v1/session": true}
 	for op := range s.operations {
-		if !reached[op] {
+		if !reached[op] && !browsersOnly[op] {
 			t.Errorf("the client never reached %s", op)
 		}
 	}
 	delete(reached, "")
-	if len(reached) != len(s.operations) {
-		t.Errorf("reached %d operations, of %d", len(reached), len(s.operations))
+	if len(reached) != len(s.operations)-len(browsersOnly) {
+		t.Errorf("reached %d operations, of %d", len(reached), len(s.operations)-len(browsersOnly))
 	}
 }
 

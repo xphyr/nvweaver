@@ -35,8 +35,8 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | Suite | Path | Result |
 |---|---|---|
 | Unit tests | | Pass |
-| `e2e.sh`, kernel target | Loopback in one VM | 270 of 270 |
-| `e2e.sh`, SPDK target | Loopback in one VM | 284 of 284 |
+| `e2e.sh`, kernel target | Loopback in one VM | 291 of 291 |
+| `e2e.sh`, SPDK target | Loopback in one VM | 305 of 305 |
 | `systemd-e2e.sh` | Loopback in one VM | 76 of 76 |
 | `vm/vm-e2e.sh` | Between two VMs | 906 of 906 |
 
@@ -346,6 +346,11 @@ losing the service. There's no real target or real browser against one in this. 
 
 **A real web page from another origin attacked the API here.** With `guardBrowsers` switched off, in a throwaway copy, its request created a host, and that check failed. With it on, the request had no effect. Chromium reported "sent" both times, so what the browser says proves nothing: check what happened.
 
+### Signing in
+
+`internal/auth` is tested with a real `htpasswd -B` hash. `e2e.sh` runs on both real targets, with `nvweaver passwd` from the image, against a service on `0.0.0.0`, reached by a real non-loopback address: a password over plain HTTP is refused, on loopback it's fine, and with the override it's allowed. The browser test signs in and out, and has a hostile page
+in the same browser, with the session in its cookies, try to read and change things through it, which had no effect. Not tested: signing in over real TLS in a browser, or under the Quadlet, with SELinux. `e2e.sh` checks that the service refuses plain HTTP, and a unit test that TLS is accepted and marks the cookie `Secure`.
+
 ### Web pages using the API
 
 `internal/api/browser_test.go` first failed with the attack working: a cross-site request got 201 and took effect, and DNS rebinding read `/v1/system`. `e2e.sh` sends the same requests to both real targets, using `curl` to send what a browser would. A real browser's attack is under "The web interface".
@@ -445,6 +450,12 @@ Things that looked like one problem and were another:
   from the `openssl` package.
 - **`bdev_aio_create` returning `Invalid argument`:** SPDK detects block size with an ioctl
   that fails on regular files, so files need an explicit `block_size`.
+
+## Escaped a scoped run
+
+Bugs that a full run on `main` or a release found, which a scoped run should have caught. Two between releases, or any one involving lost data or a security hole, means reconsidering decision 39.
+
+None so far.
 
 ## False passes so far
 

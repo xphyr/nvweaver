@@ -6,6 +6,7 @@ own licenses, and those notices are included where the code is:
 | Component | Where | License | Notice in the image |
 |---|---|---|---|
 | Go runtime and standard library | `nvweaverd`, in every image and native build | BSD-3-Clause, with a patent grant | `go/` |
+| [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) (`bcrypt`, `blowfish`) | `nvweaverd` and `nvweaver`, in every image and native build. Its source is in `vendor/` | BSD-3-Clause, with a patent grant | `vendor/golang.org/x/crypto/LICENSE`, in this repository |
 | [SPDK](https://spdk.io) | `nvmf_tgt`, in the SPDK image | BSD-3-Clause | `spdk/` |
 | [DPDK](https://www.dpdk.org) | `nvmf_tgt`, in the SPDK image | BSD-3-Clause; some files have other permissive licenses, as described in its `README` | `dpdk/` |
 | [ISA-L](https://github.com/intel/isa-l) | `nvmf_tgt`, in the SPDK image | BSD-3-Clause | `isa-l/` |

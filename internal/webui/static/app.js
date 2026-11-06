@@ -367,16 +367,62 @@ const main = document.getElementById("main");
 const nav = document.getElementById("nav");
 const statusLine = document.getElementById("status");
 const warnings = document.getElementById("warnings");
+const account = document.getElementById("account");
 let generation = 0;
 
 function drawNav(current) {
   nav.replaceChildren(...NAV.map(([label, target]) => el("a", { href: "#/" + target, "aria-current": target === current ? "page" : undefined }, label)));
 }
 
-function signIn(message) {
+function clearForSignIn() {
   nav.replaceChildren();
   warnings.replaceChildren();
   statusLine.textContent = "";
+  account.replaceChildren();
+}
+
+function passwordForm(message) {
+  clearForSignIn();
+  const user = el("input", { type: "text", id: "username", autocomplete: "username", autocapitalize: "none", spellcheck: "false", required: true });
+  const password = el("input", { type: "password", id: "password", autocomplete: "current-password", required: true });
+  const notice = el("div", {}, message && el("div", { class: "panel-notice bad", role: "alert" }, message));
+  const button = el("button", { class: "primary", type: "submit" }, "Sign in");
+  main.replaceChildren(el("form", { class: "signin", onsubmit: async (e) => {
+    e.preventDefault();
+    button.disabled = true;
+    try {
+      const resp = await fetch("/v1/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: user.value, password: password.value }),
+      });
+      if (resp.ok) {
+        rerender();
+        return;
+      }
+      const body = await resp.json().catch(() => ({}));
+      password.value = "";
+      notice.replaceChildren(el("div", { class: "panel-notice bad", role: "alert" }, body.error || `The service answered with status ${resp.status}`));
+      password.focus();
+    } catch (err) {
+      notice.replaceChildren(el("div", { class: "panel-notice bad", role: "alert" }, "Can't reach the service: " + err.message));
+    }
+    button.disabled = false;
+  } },
+    el("h1", {}, "Sign in"), notice,
+    el("label", { for: "username" }, "Username"), user,
+    el("label", { for: "password" }, "Password"), password,
+    button));
+  user.focus();
+}
+
+async function signOut() {
+  await fetch("/v1/session", { method: "DELETE" }).catch(() => {});
+  passwordForm();
+}
+
+function signIn(message) {
+  clearForSignIn();
   const input = el("input", { type: "password", id: "token", autocomplete: "off", required: true });
   main.replaceChildren(el("form", { class: "signin", onsubmit: (e) => {
     e.preventDefault();
@@ -397,6 +443,19 @@ async function drawWarnings() {
   warnings.replaceChildren(...(sys.warnings || []).map((w) => el("p", { class: "notice warn" }, w)));
 }
 
+// Who's signed in, with a way to leave. Asking each time also notices a session ending.
+let wasSignedIn = false;
+
+async function drawAccount() {
+  const how = await api("/v1/session").catch(() => null);
+  if (!how || how.method !== "password" || !how.username) {
+    account.replaceChildren();
+    return;
+  }
+  wasSignedIn = true;
+  account.replaceChildren(el("span", { class: "who" }, how.username), el("button", { id: "signout", onclick: signOut }, "Sign out"));
+}
+
 async function rerender() {
   const mine = ++generation;
   const { nav: current, draw } = route();
@@ -413,9 +472,16 @@ async function rerender() {
       if (box) { box.focus(); box.setSelectionRange(filter.start, filter.start); }
     }
     statusLine.textContent = "Updated " + new Date().toLocaleTimeString();
+    drawAccount();
   } catch (err) {
     if (mine !== generation) return;
     if (err instanceof Unauthorized) {
+      const how = await api("/v1/session").catch(() => ({ method: "token" }));
+      if (how.method === "password") {
+        passwordForm(wasSignedIn ? "You've been signed out. Sign in again to carry on." : "");
+        wasSignedIn = false;
+        return;
+      }
       const had = memoryToken || token();
       saveToken("");
       signIn(had ? "That token wasn't accepted." : "");
@@ -434,11 +500,13 @@ window.addEventListener("hashchange", () => {
   rerender();
   main.focus({ preventScroll: true });
 });
+// Not while someone's signing in, which would throw away what they've typed.
+const signingIn = () => document.querySelector("form.signin");
 setInterval(() => {
-  if (!document.hidden && !document.getElementById("token")) rerender();
+  if (!document.hidden && !signingIn()) rerender();
 }, REFRESH_MS);
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && !document.getElementById("token")) rerender();
+  if (!document.hidden && !signingIn()) rerender();
 });
 
 rerender();

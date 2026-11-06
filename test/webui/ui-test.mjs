@@ -6,6 +6,7 @@ const base = process.argv[2];
 const shots = process.argv[3];
 const tokenBase = process.argv[4];
 const tokenValue = process.argv[5];
+const passwordBase = process.argv[6];
 let pass = 0, fail = 0;
 const ok = (name) => { pass++; console.log(`  ok    ${name}`); };
 const bad = (name, why) => { fail++; console.log(`  FAIL  ${name}`); if (why) console.log(`        ${why}`); };
@@ -234,6 +235,73 @@ if (tokenBase) {
 } else {
   bad("no service with a token to test against");
 }
+
+console.log("\nSigning in with a password");
+const pw = await newPage();
+await pw.goto(passwordBase + "/ui/");
+await pw.waitForSelector("#username");
+check("it asks for a username and password", (await pw.textContent("h1")) === "Sign in" && (await pw.locator("#password").count()) === 1);
+check("and shows nothing else", (await pw.locator("nav a").count()) === 0 && !(await pw.textContent("main")).includes("Volumes"));
+await pw.screenshot({ path: `${shots}/login.png` });
+const direct = await pw.evaluate(async () => (await fetch("/v1/volumes")).status);
+check("the API refuses it until then", direct === 401, String(direct));
+const tryLogin = async (user, password) => {
+  await pw.fill("#username", user);
+  await pw.fill("#password", password);
+  await pw.click('button[type="submit"]');
+};
+await tryLogin("admin", "wrong");
+await pw.waitForSelector('[role="alert"]');
+const wrongPassword = await pw.textContent('[role="alert"]');
+check("a wrong password is refused", wrongPassword.includes("wrong username or password"), wrongPassword);
+check("and is cleared", (await pw.inputValue("#password")) === "");
+await tryLogin("nobody", "correct horse");
+await pw.locator('[role="alert"]').waitFor();
+check("an unknown user gets the same answer", (await pw.textContent('[role="alert"]')) === wrongPassword);
+await tryLogin("admin", "correct horse");
+await pw.waitForSelector(".cards");
+check("the right one signs in", (await pw.textContent("h1")) === "Overview");
+await pw.waitForSelector("#signout");
+check("it says who's signed in", (await pw.textContent(".who")) === "admin");
+await pw.screenshot({ path: `${shots}/signed-in.png` });
+const cookies = await pw.context().cookies();
+const cookie = cookies.find((c) => c.name === "nvweaver_session");
+check("the session is in a cookie that scripts can't read", cookie && cookie.httpOnly && cookie.sameSite === "Strict", JSON.stringify(cookie));
+check("and isn't visible to the page", !(await pw.evaluate(() => document.cookie)).includes("nvweaver_session"));
+const stored = await pw.evaluate(() => JSON.stringify(sessionStorage) + JSON.stringify(localStorage));
+check("no password or session is kept in the browser's storage", !stored.includes("correct horse") && !stored.includes(cookie.value));
+await pw.reload();
+await pw.waitForSelector(".cards");
+check("it survives a reload", (await pw.textContent("h1")) === "Overview");
+await pw.waitForSelector("#signout");
+
+// A hostile page, in the same browser, with the session in its cookies.
+await pw.context().route("https://evil.example/**", (r) => r.fulfill({ status: 200, contentType: "text/html", body: "<title>evil</title>" }));
+const evil = await pw.context().newPage();
+await evil.goto("https://evil.example/");
+const stolen = await evil.evaluate(async (api) => {
+  const out = {};
+  await fetch(api + "/v1/hosts", { method: "POST", mode: "no-cors", credentials: "include", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ nqn: "nqn.2026-11.net.example:evil-session" }) }).catch(() => {});
+  try {
+    const r = await fetch(api + "/v1/system", { credentials: "include" });
+    out.read = r.status + (await r.text());
+  } catch (e) { out.read = "blocked"; }
+  return out;
+}, passwordBase);
+check("a hostile page can't read through the session", stolen.read === "blocked" || !stolen.read.includes("backend"), stolen.read);
+await evil.close();
+await visit(pw, "#/hosts", passwordBase);
+await pw.waitForSelector("main tbody tr");
+check("or change anything through it", !(await pw.textContent("main")).includes("evil-session"));
+
+await pw.waitForSelector("#signout");
+await pw.click("#signout");
+await pw.waitForSelector("#username");
+check("signing out goes back to the form", (await pw.textContent("h1")) === "Sign in");
+await pw.context().addCookies([cookie]);
+const after = await pw.evaluate(async () => (await fetch("/v1/volumes")).status);
+check("and the old session no longer works, even if it's kept", after === 401, String(after));
+check("nothing went wrong in the browser's script", pw.problems.filter((p) => p.startsWith("exception")).length === 0, pw.problems.join("; "));
 
 console.log("\nCan't reach the service, and narrow screens");
 const phone = await newPage({ viewport: { width: 390, height: 800 } });

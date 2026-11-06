@@ -47,9 +47,15 @@ start_demo "$WORK/demo.log" "$PORT" "$WORK/files"
 # A second one with a token, for signing in.
 TOKEN=webui-test-token
 start_demo "$WORK/demo2.log" "$((PORT + 1))" "$WORK/files2" -token "$TOKEN"
+# A third with users too, for signing in with a password. This was made by a real htpasswd: htpasswd -nbB -C 5 admin "correct horse".
+USERS=$WORK/users
+# shellcheck disable=SC2016 # The dollar signs are part of the hash.
+printf '%s\n' 'admin:$2y$05$S59rbe.HBNjlebyPt896r.18ioUcnHVsPZfgr3rL.nNQujixCO3by' >"$USERS"
+chmod 600 "$USERS"
+start_demo "$WORK/demo3.log" "$((PORT + 2))" "$WORK/files3" -token "$TOKEN" -users "$USERS"
 
 # The browser's user inside the container needs to write the screenshots.
 chmod 777 "$SHOTS"
 $ENGINE run --rm --name "$CONTAINER" --network host -v "$ROOT/test/webui:/test:ro,Z" -v "$SHOTS:/shots:Z" -w /tmp "$BROWSER_IMAGE" sh -c "
 	npm install --silent --no-audit --no-fund playwright@$PLAYWRIGHT_VERSION >/dev/null 2>&1 || exit 1
-	cp /test/ui-test.mjs . && node ui-test.mjs http://127.0.0.1:$PORT /shots http://127.0.0.1:$((PORT + 1)) $TOKEN"
+	cp /test/ui-test.mjs . && node ui-test.mjs http://127.0.0.1:$PORT /shots http://127.0.0.1:$((PORT + 1)) $TOKEN http://127.0.0.1:$((PORT + 2))"

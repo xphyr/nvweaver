@@ -91,16 +91,22 @@ and CLI once, against the result.
 - [x] Add `transport` to ports, accepting only `tcp` for now, and `capabilities.transports`, before the CLI and CSI driver are written against the API. See "Transports" in `docs/storage-api.md`
 - [ ] Later: creating pools from raw disks, behind an explicit confirmation
 
+## Test suite
+
+- [ ] Add path filters to pull requests, using the table in decision 39, keeping the full run on `main` and releases
+- [ ] Audit the suites, once the web interface is done. Time each section, then remove candidates only if deliberately introduced bugs are still caught. `e2e.sh` and `vm-e2e.sh` overlap, but may fail for different reasons, and `e2e.sh` is all that runs on Arm
+- [ ] Check "Escaped a scoped run" in `docs/testing.md` at each release, and revisit decision 39 as it says
+
 ## 3. API foundations
 
 - [x] Deal with LVM that clients create inside their namespaces, before the CSI driver, as Kubernetes nodes may well use LVM. Only the machine's own LVM
       configuration can prevent it, so nvweaver reports it under `warnings`, and documents the fix. See decision 32 and "Clients' LVM" in `docs/pools.md`
 - [x] Add TLS to the API, needed before the web UI or CSI driver use it over a network. See decision 31
-- [ ] By 1.0: make serving the API in clear text off loopback an explicit choice by the admin deploying it, rather than a warning. See decision 31
+- [ ] By 1.0: make serving the API in clear text off loopback an explicit choice by the admin deploying it, rather than a warning. See decision 31. `NVWEAVER_ALLOW_INSECURE_LOGIN` already works this way for passwords, so it may become one setting
 - [x] Check at startup that the tools in "Tools" in the README are there. See decision 34
 - [x] Create a shared Go API client, for the CLI and CSI driver to use. See decision 35
 - [ ] Add an endpoint showing connected hosts, including each connection's transport
-- [ ] Keep `info.version` in the API spec current: `v0.2.0` shipped saying `0.1.0`. Check it in the release workflow
+- [ ] Check `info.version` in the API spec in the release workflow: `v0.2.0` shipped saying `0.1.0`
 - [ ] Add an endpoint listing available block devices. Pools are adopted for now, so nothing needs it yet
 
 ## 4. Command line utility
@@ -122,14 +128,8 @@ Production-like scale is a requirement, so measure this before building on it.
 **Next, by choice,** ahead of what's left of phases 3 and 5, so that there's something to see.
 
 - [x] Read-only screens, embedded in the binary, tested in a real browser. See decision 37
-- [ ] Sign in with a username and password, decided with the user:
-  - [ ] A users file, at `NVWEAVER_USERS_FILE`, of `name:$2y$...` lines, in bcrypt only, using `golang.org/x/crypto`, this project's first dependency. Update the stdlib-only rule, and the notices
-  - [ ] `nvweaver passwd`, to make a hash. `htpasswd -B` also works
-  - [ ] Refuse password logins over plain HTTP off loopback by default, with a setting to override it, so that the admin deciding is explicit. It may be the same setting as the 1.0 item in phase 3
-  - [ ] Sessions in a random, `HttpOnly`, `SameSite=Strict` cookie, held in memory, with an expiry and a logout. `CrossOriginProtection` already covers CSRF
-  - [ ] Rate limit logins, don't reveal which usernames exist, and take the same time for an unknown one
-  - [ ] Re-read the file when it changes. Refuse to start if others can read it
-  - [ ] Keep `NVWEAVER_API_TOKEN` for programs, which can't type a password. Everyone is an admin for now
+- [x] Sign in with a username and password, from a users file in bcrypt. See decision 40
+- [ ] Try signing in over real TLS, in a browser
 - [ ] Create and delete, for everything, including the volumes, snapshots and clones from phase 2
 
 ## 7. Kubernetes CSI driver

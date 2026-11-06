@@ -1,6 +1,7 @@
 FROM docker.io/library/golang:1.26-alpine AS build
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+COPY vendor ./vendor
 COPY cmd ./cmd
 COPY internal ./internal
 ARG VERSION=dev

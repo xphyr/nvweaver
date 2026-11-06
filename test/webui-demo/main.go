@@ -1,7 +1,7 @@
 // Command webui-demo runs the real API and Web UI against a fake target, with sample data, so that the interface can be seen and tested
 // with no root, no kernel modules and no VM. Nothing it does reaches a real target or disk: its files are in a temporary directory.
 //
-//	go run ./test/webui-demo [-listen 127.0.0.1:8421] [-token TOKEN] [-volumes N]
+//	go run ./test/webui-demo [-listen 127.0.0.1:8421] [-token TOKEN] [-users FILE] [-volumes N]
 package main
 
 import (
@@ -18,6 +18,7 @@ import (
 	"syscall"
 
 	"nvweaver/internal/api"
+	"nvweaver/internal/auth"
 	"nvweaver/internal/client"
 	"nvweaver/internal/target"
 	"nvweaver/internal/target/targettest"
@@ -27,15 +28,16 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8421", "address to listen on")
 	token := flag.String("token", "", "require this API token")
 	volumes := flag.Int("volumes", 12, "how many volumes to make, to see how it copes with many")
+	users := flag.String("users", "", "a users file, for signing in with a password")
 	dir := flag.String("dir", "", "where to keep its files, which needs reflink for pools. Defaults to a temporary directory here")
 	flag.Parse()
-	if err := run(*listen, *token, *volumes, *dir); err != nil {
+	if err := run(*listen, *token, *users, *volumes, *dir); err != nil {
 		fmt.Fprintln(os.Stderr, "webui-demo:", err)
 		os.Exit(1)
 	}
 }
 
-func run(listen, token string, volumes int, dir string) error {
+func run(listen, token, users string, volumes int, dir string) error {
 	if dir == "" {
 		// Here, rather than in /tmp, which is often tmpfs, where reflink pools don't work.
 		d, err := os.MkdirTemp(".", ".webui-demo-")
@@ -63,6 +65,9 @@ func run(listen, token string, volumes int, dir string) error {
 	}
 	srv := api.NewServer(m, token)
 	srv.Version = "demo"
+	if srv.Auth, err = auth.New(users, log); err != nil {
+		return err
+	}
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		return err
@@ -71,6 +76,7 @@ func run(listen, token string, volumes int, dir string) error {
 	errs := make(chan error, 1)
 	go func() { errs <- server.Serve(listener) }()
 
+	// With only a users file, the sample data can't be made through the API, so that needs a token too.
 	c, err := client.New(client.Options{URL: "http://" + listen, Token: token})
 	if err != nil {
 		return err

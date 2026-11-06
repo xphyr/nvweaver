@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"nvweaver/internal/api"
+	"nvweaver/internal/auth"
 	"nvweaver/internal/sdnotify"
 	"nvweaver/internal/spdk"
 	"nvweaver/internal/target"
@@ -55,7 +56,12 @@ func run(log *slog.Logger) error {
 	dataDir := env("NVWEAVER_DATA_DIR", "/var/lib/nvweaver")
 	keepOnExit := env("NVWEAVER_KEEP_ON_EXIT", "false") == "true"
 
-	if err := checkExposure(listen, token); err != nil {
+	// Before the target starts, so that a mistake here doesn't disturb hosts.
+	users, err := auth.New(env("NVWEAVER_USERS_FILE", ""), log)
+	if err != nil {
+		return err
+	}
+	if err := checkExposure(listen, token, users != nil); err != nil {
 		return err
 	}
 	// Before the target starts, so that a mistake here doesn't disturb hosts.
@@ -63,8 +69,15 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	allowInsecureLogin := env("NVWEAVER_ALLOW_INSECURE_LOGIN", "false") == "true"
 	if tlsConfig == nil && !isLoopback(listen) {
 		log.Warn("the API has no TLS, so its token crosses the network in clear text: set NVWEAVER_TLS_CERT and NVWEAVER_TLS_KEY")
+		switch {
+		case users != nil && allowInsecureLogin:
+			log.Warn("NVWEAVER_ALLOW_INSECURE_LOGIN is set, so passwords cross the network in clear text")
+		case users != nil:
+			log.Warn("signing in with a password is refused off this machine with no TLS: set NVWEAVER_TLS_CERT and NVWEAVER_TLS_KEY, or NVWEAVER_ALLOW_INSECURE_LOGIN=true to accept clear text")
+		}
 	}
 	backend, err := selectBackend(log)
 	if err != nil {
@@ -90,6 +103,8 @@ func run(log *slog.Logger) error {
 
 	apiServer := api.NewServer(mgr, token)
 	apiServer.Version = version
+	apiServer.Auth = users
+	apiServer.AllowInsecureLogin = allowInsecureLogin
 	srv := &http.Server{
 		Addr:              listen,
 		Handler:           apiServer.Handler(),
@@ -164,12 +179,12 @@ func notify(log *slog.Logger, state string) {
 
 // checkExposure refuses an unauthenticated API off the local machine: it can
 // export any block device on the host to the network.
-func checkExposure(listen, token string) error {
+func checkExposure(listen, token string, hasUsers bool) error {
 	if _, _, err := net.SplitHostPort(listen); err != nil {
 		return fmt.Errorf("NVWEAVER_LISTEN %q: %w", listen, err)
 	}
-	if token == "" && !isLoopback(listen) {
-		return fmt.Errorf("refusing to serve the API on %s without NVWEAVER_API_TOKEN set", listen)
+	if token == "" && !hasUsers && !isLoopback(listen) {
+		return fmt.Errorf("refusing to serve the API on %s without NVWEAVER_API_TOKEN or NVWEAVER_USERS_FILE set", listen)
 	}
 	return nil
 }

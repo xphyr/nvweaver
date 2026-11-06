@@ -135,7 +135,25 @@ Run `nvweaver help` for every command, and `--help` after one for its flags. Siz
 ## Web interface
 
 `nvweaverd` serves a browser interface at `/ui/`, on the same address as the API, and `/` leads there. It's in the binary, so there's nothing else to install. So far it only shows things: pools and how full they are, volumes with their snapshots and how much of each is really allocated, subsystems,
-hosts, ports and any warnings. To change anything, use the command line or API for now. If the API has a token, it asks for that, and keeps it only for that browser tab.
+hosts, ports and any warnings. To change anything, use the command line or API for now. 
+
+**Signing in.** To have it ask for a username and password, make a users file, and set `NVWEAVER_USERS_FILE`:
+
+```sh
+sudo install -d -m 0755 /etc/nvweaver/tls
+nvweaver passwd admin | sudo tee /etc/nvweaver/tls/users    # asks for the password
+sudo chmod 600 /etc/nvweaver/tls/users
+```
+
+- This directory is the one that the Quadlet's `Volume=` line mounts. Each line is `name:hash`, in bcrypt only, so `htpasswd -B` also works. Other formats, such as those in `/etc/shadow`, are refused.
+- The file is read again when it changes, so adding someone or changing a password needs no restart. Removing someone ends their sessions. A change that can't be used keeps the users as they were, and logs an error. At startup, a file that can't be used, or that others can read, stops the service.
+- **Passwords are refused over plain HTTP, except on loopback,** as anyone on the network could read them. Set `NVWEAVER_TLS_CERT` and `NVWEAVER_TLS_KEY`, or set `NVWEAVER_ALLOW_INSECURE_LOGIN=true` to accept that risk on an isolated network.
+- Sessions end after 8 hours unused, or 24 hours at most. They're only in memory, so restarting the service signs everyone out, and hosts and data aren't affected.
+- After 10 wrong passwords from one address, it waits up to 5 minutes. That's per address, so someone guessing can't lock out an admin.
+- Everyone who can sign in can do everything: there are no roles yet.
+- **The CLI and other programs keep using `NVWEAVER_API_TOKEN`,** as they can't type a password. With only a users file, the API can be on a network, but programs can't use it. Set both if you need both.
+
+With no users file, the interface asks for the API's token, if it has one, and keeps that only for that browser tab.
 
 To see it with no root or real target, using sample data on a fake target, run this on XFS or btrfs:
 
@@ -201,7 +219,9 @@ Behaviour worth knowing:
 | Variable | Default | Meaning |
 |---|---|---|
 | `NVWEAVER_LISTEN` | `127.0.0.1:8420` | API address. |
-| `NVWEAVER_API_TOKEN` | none | Bearer token. Required unless the API is on loopback. |
+| `NVWEAVER_API_TOKEN` | none | Bearer token. This or a users file is required unless the API is on loopback. |
+| `NVWEAVER_USERS_FILE` | none | Users for the web interface, as `name:hash` lines in bcrypt. See [Web interface](#web-interface). |
+| `NVWEAVER_ALLOW_INSECURE_LOGIN` | `false` | Accept passwords over plain HTTP off loopback, where anyone on the network can read them. |
 | `NVWEAVER_TLS_CERT` | none | PEM certificate, with any intermediates. Set this and the key to serve the API over HTTPS. |
 | `NVWEAVER_TLS_KEY` | none | PEM private key. Keep it mode 0600. |
 | `NVWEAVER_DATA_DIR` | `/var/lib/nvweaver` | Saved state and managed files. |
