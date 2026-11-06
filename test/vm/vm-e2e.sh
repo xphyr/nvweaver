@@ -220,6 +220,8 @@ snapshot_tests() { # BACKEND POOL-TYPE
 		api "adopt a pool" 201 POST /v1/pools "{\"name\":\"snap\",\"type\":\"lvm-thin\",\"volume_group\":\"$VG\",\"thin_pool\":\"pool0\"}"
 	fi
 	api "create a volume" 201 POST /v1/volumes '{"name":"fs","size_bytes":1073741824}'
+	api "ask what it has allocated" 200 GET /v1/volumes/fs/usage
+	expect_eq "a new thin volume has next to nothing" true "$(t 'jq ".size_bytes == 1073741824 and .used_bytes < 1048576" /tmp/b')"
 	for entry in "$sub:" "$sub_a:" "$sub_b:"; do
 		api "subsystem ${entry%:*}" 201 POST /v1/subsystems "{\"nqn\":\"${entry%:*}\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
 	done
@@ -234,6 +236,8 @@ snapshot_tests() { # BACKEND POOL-TYPE
 		ok "make and mount a filesystem on it" || bad "make and mount a filesystem on it"
 	i 'rm -f /tmp/snap.*; cd /mnt/snap && for n in $(seq 1 32); do head -c 8M /dev/urandom > base$n; done && sync -f . && md5sum base* > /tmp/snap.manifest'
 	expect_eq "write 256 MiB of files, and record their checksums" 32 "$(i 'wc -l < /tmp/snap.manifest')"
+	api "ask again" 200 GET /v1/volumes/fs/usage
+	expect_eq "it reports at least what was written, and less than its size" true "$(t 'jq ".used_bytes >= 268435456 and .used_bytes < 1073741824" /tmp/b')"
 
 	[ "$kind" = lvm-thin ] && before=$(pool_data_percent)
 	api "snapshot it with the filesystem mounted" 201 POST /v1/snapshots '{"name":"snap-a","volume":"fs"}'

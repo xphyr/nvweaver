@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"nvweaver/internal/api"
+	"nvweaver/internal/auth"
 	"nvweaver/internal/target"
 	"nvweaver/internal/target/targettest"
 )
@@ -380,5 +381,47 @@ func TestSharedFlagsWorkBeforeOrAfterTheCommand(t *testing.T) {
 	}
 	if r := x.run("--frob", "port", "list", "--api", url); r.code != exitUsage || !strings.Contains(r.stderr, "frob") {
 		t.Errorf("an unknown flag first: %+v", r)
+	}
+}
+
+func TestPasswdMakesALineTheServiceAccepts(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := passwd([]string{"admin"}, strings.NewReader("a good password\n"), &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	line := stdout.String()
+	if !strings.HasPrefix(line, "admin:$2") || strings.Contains(line, "a good password") {
+		t.Errorf("got %q", line)
+	}
+	file := filepath.Join(t.TempDir(), "users")
+	if err := os.WriteFile(file, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := auth.New(file, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.Login("c", "admin", "a good password"); err != nil {
+		t.Errorf("signing in with it: %v", err)
+	}
+}
+
+func TestPasswdRefusals(t *testing.T) {
+	cases := map[string]struct {
+		args []string
+		in   string
+	}{
+		"no name":              {nil, "password\n"},
+		"a password as a flag": {[]string{"--password", "x"}, ""},
+		"a bad name":           {[]string{"ad min"}, "password\n"},
+		"no password":          {[]string{"admin"}, ""},
+		"an empty password":    {[]string{"admin"}, "\n"},
+		"too long":             {[]string{"admin"}, strings.Repeat("x", auth.MaxPasswordBytes+1) + "\n"},
+	}
+	for name, c := range cases {
+		var stdout, stderr bytes.Buffer
+		if err := passwd(c.args, strings.NewReader(c.in), &stdout, &stderr); err == nil {
+			t.Errorf("%s was accepted: %s", name, stdout.String())
+		}
 	}
 }

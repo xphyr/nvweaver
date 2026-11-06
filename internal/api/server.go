@@ -15,8 +15,10 @@ import (
 	"strings"
 	"syscall"
 
+	"nvweaver/internal/auth"
 	"nvweaver/internal/storage"
 	"nvweaver/internal/target"
+	"nvweaver/internal/webui"
 )
 
 const defaultModel = "nvweaver"
@@ -29,6 +31,10 @@ type Server struct {
 	token   string
 	// patterns lists the routes, for comparing with the OpenAPI spec.
 	patterns []string
+	// Auth signs people in with a password, if there's a users file.
+	Auth *auth.Authenticator
+	// AllowInsecureLogin lets passwords cross the network in clear text.
+	AllowInsecureLogin bool
 	// anyHost skips checking the Host header with no token. Only tests set it, whose requests have made-up names.
 	anyHost bool
 }
@@ -152,6 +158,7 @@ func (s *Server) Handler() http.Handler {
 	route("PATCH /v1/volumes/{volume}", s.updateVolume)
 	route("DELETE /v1/volumes/{volume}", s.deleteVolume)
 
+	route("GET /v1/volumes/{volume}/usage", s.getVolumeUsage)
 	route("GET /v1/snapshots", s.listSnapshots)
 	route("POST /v1/snapshots", s.createSnapshot)
 	route("GET /v1/snapshots/{snapshot}", s.getSnapshot)
@@ -173,6 +180,17 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	for _, session := range []struct {
+		pattern string
+		handler handler
+	}{{"GET /v1/session", s.getSession}, {"POST /v1/session", s.signIn}, {"DELETE /v1/session", s.signOut}} {
+		s.patterns = append(s.patterns, session.pattern)
+		root.HandleFunc(session.pattern, s.wrap(session.handler))
+	}
+	root.Handle(webui.Path, webui.Handler())
+	root.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, webui.Path, http.StatusFound)
+	})
 	root.Handle("/", authed)
 	return s.guardBrowsers(root)
 }
@@ -183,7 +201,8 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) guardBrowsers(next http.Handler) http.Handler {
 	// A page from elsewhere can send a request without the server's permission, if it doesn't ask to read the answer.
 	crossOrigin := http.NewCrossOriginProtection().Handler(next)
-	if s.token != "" || s.anyHost {
+	// A session's cookie only goes to the name it came from, and a rebinding page doesn't have a token, so it's only with neither that the name matters.
+	if s.token != "" || s.Auth != nil || s.anyHost {
 		return crossOrigin
 	}
 	// DNS rebinding: a site can point its own name at 127.0.0.1, and to the browser, it's then the same origin, which lets it
@@ -208,18 +227,40 @@ func isLoopbackHost(hostport string) bool {
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
-	if s.token == "" {
+	if s.token == "" && s.Auth == nil {
 		return next
 	}
-	want := []byte("Bearer " + s.token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
+		if !s.signedIn(r) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid bearer token"})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid bearer token or session"})
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// signedIn reports whether a request may use the API, by token or session.
+func (s *Server) signedIn(r *http.Request) bool {
+	if s.token != "" {
+		want := []byte("Bearer " + s.token)
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) == 1 {
+			return true
+		}
+	}
+	_, ok := s.sessionUser(r)
+	return ok
+}
+
+func (s *Server) sessionUser(r *http.Request) (string, bool) {
+	if s.Auth == nil {
+		return "", false
+	}
+	cookie, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return "", false
+	}
+	return s.Auth.Check(cookie.Value)
 }
 
 func (s *Server) getSystem(w http.ResponseWriter, _ *http.Request) error {

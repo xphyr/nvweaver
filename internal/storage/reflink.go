@@ -83,6 +83,18 @@ func (d *reflinkDriver) AlignSize(sizeBytes int64) (int64, error) { return sizeB
 func (d *reflinkDriver) Activate() error { return nil }
 
 // Capacity implements Driver.
+func (d *reflinkDriver) Used(internal string) (int64, error) {
+	info, err := os.Stat(d.path(internal))
+	if err != nil {
+		return 0, err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("can't read what %s has allocated", internal)
+	}
+	return st.Blocks * 512, nil // Always in units of 512, whatever the filesystem's block size.
+}
+
 func (d *reflinkDriver) Capacity() (Capacity, error) {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(d.dir, &st); err != nil {

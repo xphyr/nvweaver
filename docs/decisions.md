@@ -374,3 +374,46 @@ there, not as absolute numbers.
 - **Rejected: requiring `Content-Type: application/json`.** It would stop the writes but not rebinding, and would break plain `curl -d`, as the README's own examples use.
 - **It's on by default, and only tests can turn the `Host` check off.**
 
+## 37. The web interface is static files that use the public API
+
+- **Chosen:** plain HTML, CSS and JavaScript in `internal/webui`, embedded with `go:embed`, and served at `/ui/`. It has no build step and no dependencies, and it reaches the service only through the public API, so it can do nothing that the API can't.
+- **Why no framework:** a framework brings a build toolchain and many dependencies to audit, for a small set of tables. Reconsider if it grows into something that needs one.
+- **A strict Content-Security-Policy:** only this service's own scripts, styles, images and API. Data reaches the page through `textContent` only, and a test fails if the script uses `innerHTML` or similar. A label with markup in it is tested in a real browser.
+- **It's tested in a real browser,** with Playwright in a container, against `test/webui-demo`, which is the real API on a fake target. That caught what unit tests can't: a page script with a syntax error, and a stray word under every table. Screenshots caught what the checks then missed, so look at them.
+- **The files need no token,** as they're the same for everyone. The API decides what a browser may do.
+- **Tables show 10 rows at a time, chosen by the user,** adjustable to 250, remembered in `localStorage`, which only ever holds that number. Volumes and snapshots come from the API 500 at a time, so a filter only searches what's loaded so far, and says so.
+- **The icons are copies of those in `images/`,** as `go:embed` can't reach outside its package. A test fails if they differ.
+
+## 38. A volume's usage has its own request
+
+- **Chosen:** `GET /v1/volumes/{volume}/usage`, rather than a field on a volume. It asks the storage, which runs `lvs` on LVM. Listing or reading a volume stays a read of memory, as programs like the CSI driver do that a lot, and don't need this.
+- **It includes what's shared with snapshots and clones,** as that's what both kinds of storage report, and working out what's exclusive would take far more. So a pool's volumes can add up to more than the pool has used, which the interface says.
+- **It's only shown for one volume at a time** in the interface for now, for the same reason. Reconsider a column in the list if it's wanted, using one `lvs` for a whole page.
+
+## 39. Run what a change can affect, and everything before it ships
+
+- **Chosen:** day to day, and later on pull requests, run the suites that a change can affect. Merges to `main` and releases always run everything, so that a wrong guess is caught before it ships. If in doubt, run more.
+
+  | What changed | What's enough |
+  |---|---|
+  | `internal/webui`, or the demo | Unit tests and the browser test |
+  | `cmd/nvweaver`, `internal/client` | Unit tests and `e2e.sh` |
+  | `internal/auth`, `internal/api` | Unit tests, the browser test and `e2e.sh`, and `vm-e2e.sh` if storage handling changed |
+  | `internal/storage`, `internal/target`, `internal/spdk` | Everything, as that's where data can be lost |
+  | Docs only | Lint |
+
+- **Why:** a full run takes about 25 minutes, and most of that tests storage that a Web UI change can't reach.
+- **The risk:** what depends on what isn't always in the path. A volume's usage looked like an interface feature, yet it added `lvm.go` code that only `vm-e2e.sh` tests for real.
+- **This is on probation, as the user asked.** A bug that a full run finds, which a scoped run should have caught, goes in "Escaped a scoped run" in `docs/testing.md`. **Two between releases, or any one that involves lost data or a security hole, means reconsidering this,** by widening the table or going back to full runs. Check the list at each release.
+
+## 40. People sign in from a users file, in bcrypt, and bcrypt is the one dependency
+
+- **Chosen by the user:** a file an admin keeps, at `NVWEAVER_USERS_FILE`, of `name:hash` lines. It fits how this is deployed, with no database or setup screen to secure, and can be managed like any other configuration.
+- **bcrypt only,** using `golang.org/x/crypto`, which the Go project maintains, and which is pure Go. `htpasswd -B` and `nvweaver passwd` both make it. The `$6$` and `$y$` formats in `/etc/shadow` have no maintained Go library to trust, and Argon2's memory use makes floods of logins harder to handle.
+- **It's vendored,** so that it can be read in this repository, and building needs no network for it. It's 56 KB, and this is the only dependency: don't add others without asking.
+- **Passwords are refused over plain HTTP off loopback, by default,** chosen by the user, as they're often reused, unlike a token. `NVWEAVER_ALLOW_INSECURE_LOGIN` overrides it. It looks at the address that the connection really arrived on, as a `Host` header says whatever the sender likes.
+- **Sessions are random IDs, in an `HttpOnly`, `SameSite=Strict` cookie, held in memory,** so a restart signs people out, and doesn't affect hosts. `http.CrossOriginProtection` covers CSRF.
+- **Guessing is limited per address, not per username,** so someone guessing can't lock out an admin. An unknown username is checked against a decoy of the same cost, so that timing doesn't reveal who exists.
+- **Programs keep using the token,** and the client has no sign-in. Rejected: a CLI login, as it has nowhere better to keep a credential than the token's file.
+- **Rejected, for now: roles.** Everyone can do everything. Reconsider when there's more than a small team of admins.
+

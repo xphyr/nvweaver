@@ -482,6 +482,11 @@ func (c *Client) GetVolume(ctx context.Context, name string) (*Volume, error) {
 	return get[Volume](ctx, c, p("v1", "volumes", name))
 }
 
+// GetVolumeUsage asks the storage how much of a volume is really allocated, including what it shares with snapshots and clones.
+func (c *Client) GetVolumeUsage(ctx context.Context, name string) (*VolumeUsage, error) {
+	return get[VolumeUsage](ctx, c, p("v1", "volumes", name, "usage"))
+}
+
 // CreateVolume creates a volume or clone. Asking again with the same settings returns the existing one.
 func (c *Client) CreateVolume(ctx context.Context, in VolumeCreate) (*Volume, error) {
 	return send[Volume](ctx, c, http.MethodPost, "/v1/volumes", in)

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -19,6 +21,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"nvweaver/internal/auth"
 	"nvweaver/internal/client"
 )
 
@@ -40,6 +43,7 @@ Commands:
   system                                      Show the service and target, and any warnings
   health                                      Check that the service can serve
   version                                     Show this program's version
+  passwd NAME                                 Make a line for the users file, asking for the password
 
   port      list | get ID | create | update ID | delete ID
   host      list | get NQN | create NQN | update NQN | delete NQN
@@ -47,7 +51,7 @@ Commands:
             allow NQN HOST | deny NQN HOST | attach NQN PORT | detach NQN PORT
   namespace list NQN | get NQN NSID | create NQN | update NQN NSID | delete NQN NSID
   pool      list | get NAME | create NAME | update NAME | delete NAME
-  volume    list | get NAME | create NAME | update NAME | delete NAME
+  volume    list | get NAME | usage NAME | create NAME | update NAME | delete NAME
   snapshot  list | get NAME | create NAME | delete NAME
 
 Run "nvweaver <command> <action> --help" for an action's flags.
@@ -92,6 +96,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		_, _ = fmt.Fprintln(stdout, "nvweaver "+version)
 		return exitOK
 	}
+	if args[0] == "passwd" {
+		if err := passwd(args[1:], stdin, stdout, stderr); err != nil {
+			var ue usageError
+			_, _ = fmt.Fprintf(stderr, "nvweaver: %v\n", err)
+			if errors.As(err, &ue) {
+				return exitUsage
+			}
+			return exitError
+		}
+		return exitOK
+	}
 	a := &app{ctx: ctx, stdout: stdout, stderr: stderr, getenv: getenv}
 	err := a.dispatch(args)
 	var ue usageError
@@ -107,6 +122,86 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		_, _ = fmt.Fprintf(stderr, "nvweaver: %v\n", err)
 		return exitError
 	}
+}
+
+// stdin is where passwd reads from, which tests replace.
+var stdin io.Reader = os.Stdin
+
+// passwd makes a line for the users file. The password is only read from a prompt or a pipe, as other users of a machine can see command lines.
+func passwd(args []string, in io.Reader, stdout, stderr io.Writer) error {
+	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
+		return usagef("passwd takes NAME, and asks for the password")
+	}
+	name := args[0]
+	password, err := readPassword(in, stderr)
+	if err != nil {
+		return err
+	}
+	hash, err := auth.Hash(password)
+	if err != nil {
+		return err
+	}
+	line := name + ":" + hash
+	// The same check that the service will make, so that a bad name is found now.
+	if _, err := auth.Parse([]byte(line)); err != nil {
+		return usageError{err.Error()}
+	}
+	_, err = fmt.Fprintln(stdout, line)
+	return err
+}
+
+func readPassword(in io.Reader, stderr io.Writer) (string, error) {
+	reader := bufio.NewReader(in)
+	line := func() (string, error) {
+		text, err := reader.ReadString('\n')
+		if err != nil && (!errors.Is(err, io.EOF) || text == "") {
+			return "", errors.New("no password was given")
+		}
+		return strings.TrimRight(text, "\r\n"), nil
+	}
+	if !isTerminal(in) {
+		return line()
+	}
+	restore := hideInput()
+	defer restore()
+	_, _ = fmt.Fprint(stderr, "Password: ")
+	first, err := line()
+	_, _ = fmt.Fprintln(stderr)
+	if err != nil {
+		return "", err
+	}
+	_, _ = fmt.Fprint(stderr, "Again: ")
+	second, err := line()
+	_, _ = fmt.Fprintln(stderr)
+	if err != nil {
+		return "", err
+	}
+	if first != second {
+		return "", errors.New("those didn't match")
+	}
+	return first, nil
+}
+
+func isTerminal(in io.Reader) bool {
+	f, ok := in.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+// hideInput stops a terminal showing what's typed, returning how to undo it, using stty rather than another dependency.
+func hideInput() func() {
+	run := func(arg string) error {
+		cmd := exec.Command("stty", arg)
+		cmd.Stdin = os.Stdin
+		return cmd.Run()
+	}
+	if err := run("-echo"); err != nil {
+		return func() {}
+	}
+	return func() { _ = run("echo") }
 }
 
 // hoistFlags moves the flags that every command has from before the command to after it, where they're parsed, so that both
@@ -259,7 +354,7 @@ func (a *app) dispatch(args []string) error {
 			"delete": a.subsystemDelete, "allow": a.subsystemAllow, "deny": a.subsystemDeny, "attach": a.subsystemAttach, "detach": a.subsystemDetach},
 		"namespace": {"list": a.namespaceList, "get": a.namespaceGet, "create": a.namespaceCreate, "update": a.namespaceUpdate, "delete": a.namespaceDelete},
 		"pool":      {"list": a.poolList, "get": a.poolGet, "create": a.poolCreate, "update": a.poolUpdate, "delete": a.poolDelete},
-		"volume":    {"list": a.volumeList, "get": a.volumeGet, "create": a.volumeCreate, "update": a.volumeUpdate, "delete": a.volumeDelete},
+		"volume":    {"list": a.volumeList, "get": a.volumeGet, "usage": a.volumeUsage, "create": a.volumeCreate, "update": a.volumeUpdate, "delete": a.volumeDelete},
 		"snapshot":  {"list": a.snapshotList, "get": a.snapshotGet, "create": a.snapshotCreate, "delete": a.snapshotDelete},
 	}[noun]
 	if !ok {
@@ -1132,6 +1227,21 @@ func (a *app) volumeGet(args []string) error {
 		return err
 	}
 	return a.showVolume(a.client.GetVolume(a.ctx, pos[0]))
+}
+
+func (a *app) volumeUsage(args []string) error {
+	pos, err := a.parse(a.flags("volume usage"), args, "NAME")
+	if err != nil {
+		return err
+	}
+	u, err := a.client.GetVolumeUsage(a.ctx, pos[0])
+	if err != nil {
+		return err
+	}
+	return a.emit(u, func(w io.Writer) {
+		row(w, "SIZE", "USED", "PERCENT")
+		row(w, humanSize(u.SizeBytes), humanSize(u.UsedBytes), fmt.Sprintf("%.1f%%", 100*float64(u.UsedBytes)/float64(max(u.SizeBytes, 1))))
+	})
 }
 
 func (a *app) volumeCreate(args []string) error {

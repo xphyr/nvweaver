@@ -141,6 +141,7 @@ cleanup() {
 	$ENGINE stop -t 20 "$TGT" >/dev/null 2>&1
 	$ENGINE rm -f "$TGT" >/dev/null 2>&1
 	[ -n "${TLS_DIR:-}" ] && rm -rf "$TLS_DIR"
+	[ -n "${USERS_DIR:-}" ] && rm -rf "$USERS_DIR"
 	[ -n "$LOOP" ] && ini "losetup -d $LOOP"
 	if [ "${MODULES_WERE_LOADED:-1}" = 0 ]; then
 		ini "modprobe -r nvmet-tcp nvmet" || echo "  note: nvmet modules left loaded"
@@ -558,6 +559,12 @@ evil 404 "which didn't take effect either" "$API/v1/hosts/$ATTACK"
 evil 200 "curl still works" "$API/v1/system"
 evil 200 "by name too" "http://localhost:18420/v1/system"
 
+section "Web interface"
+expect_eq "the real image serves it" 200 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:18420/ui/")"
+expect_eq "with its script" 200 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:18420/ui/app.js")"
+expect_has "and its security policy" "default-src 'none'" "$(ini "curl -s -m 10 -D - -o /dev/null http://127.0.0.1:18420/ui/")"
+expect_eq "the address on its own leads there" /ui/ "$(ini "curl -s -m 10 -o /dev/null -D - http://127.0.0.1:18420/ | tr -d '\r' | sed -n 's/^[Ll]ocation: //p'")"
+
 section "Command line"
 CLIP=/var/lib/nvweaver/cli-pool
 $ENGINE exec "$TGT" mkdir -p "$CLIP"
@@ -673,6 +680,62 @@ start_target false || bad "restart without TLS"
 expect_eq "without TLS again, plain HTTP works" 200 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' $API/v1/system")"
 rm -rf "$TLS_DIR"
 TLS_DIR=
+
+section "Signing in with a password"
+USERS_DIR=$(mktemp -d)
+PW_PASS='a test password'
+LINE=$(echo "$PW_PASS" | $ENGINE exec -i "$TGT" nvweaver passwd admin)
+expect_has "nvweaver passwd makes a line for the file" 'admin:$2' "$LINE"
+expect_lacks "without the password in it" "$PW_PASS" "$LINE"
+printf '%s\n' "$LINE" >"$USERS_DIR/users"
+chmod 644 "$USERS_DIR/users"
+out=$($ENGINE run --rm --network none -v "$USERS_DIR:/u:ro,Z" -e NVWEAVER_USERS_FILE=/u/users "$IMAGE" 2>&1)
+rc=$?
+[ "$rc" != 0 ] && ok "a users file that others can read stops it starting" || bad "a users file that others can read stops it starting"
+expect_has "saying what to do" "chmod 600" "$out"
+chmod 600 "$USERS_DIR/users"
+ADDR=$(ini "ip -4 -o addr show scope global | awk 'NR==1{print \$4}' | cut -d/ -f1")
+[ -n "$ADDR" ] && ok "this machine has an address that isn't loopback" || bad "this machine has an address that isn't loopback"
+pw_target() { # [run args]
+	$ENGINE stop -t 20 "$TGT" >/dev/null 2>&1
+	$ENGINE rm -f "$TGT" >/dev/null 2>&1
+	$ENGINE run -d --name "$TGT" --privileged --network host \
+		-v /lib/modules:/lib/modules:ro -v /dev:/dev -v "$VOL:/var/lib/nvweaver" -v "$USERS_DIR:/u:ro,Z" \
+		-e NVWEAVER_LISTEN=0.0.0.0:18420 -e NVWEAVER_BACKEND="$BACKEND" -e NVWEAVER_USERS_FILE=/u/users "$@" "$IMAGE" >/dev/null || bad "start with users"
+	for _ in $(seq 1 $((40 * SCALE))); do
+		[ "$(ini "curl -s -m 2 -o /dev/null -w '%{http_code}' $API/healthz")" = 200 ] && return 0
+		sleep 0.25
+	done
+	bad "start with users" "$($ENGINE logs "$TGT" 2>&1 | tail -5)"
+}
+login() { # BASE [curl args]: signs in, keeping the cookie in /tmp/pw.jar, and prints the status
+	local base=$1
+	shift
+	ini "rm -f /tmp/pw.jar; curl -s -m 20 -o /tmp/body -w '%{http_code}' -c /tmp/pw.jar -X POST -H 'Content-Type: application/json' -d '{\"username\":\"admin\",\"password\":\"$PW_PASS\"}' $* $base/v1/session"
+}
+pw_target
+expect_eq "with only a users file, it serves on the network" 200 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' http://$ADDR:18420/ui/")"
+expect_eq "but the API needs signing in" 401 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' http://$ADDR:18420/v1/system")"
+expect_eq "a password over plain HTTP on the network is refused" 403 "$(login "http://$ADDR:18420")"
+expect_has "saying what to do" "NVWEAVER_ALLOW_INSECURE_LOGIN" "$(ini 'cat /tmp/body')"
+expect_lacks "and starting a session for nobody" nvweaver_session "$(ini 'cat /tmp/pw.jar 2>/dev/null')"
+expect_has "the log says that this will happen" "refused off this machine" "$($ENGINE logs "$TGT" 2>&1)"
+expect_eq "on loopback, it's fine" 200 "$(login "$API")"
+expect_eq "and the session reaches the API" 200 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' -b /tmp/pw.jar $API/v1/system")"
+expect_has "the cookie can't be read by scripts" "#HttpOnly_" "$(ini 'cat /tmp/pw.jar')"
+expect_eq "signing out works" 204 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' -b /tmp/pw.jar -X DELETE $API/v1/session")"
+expect_eq "and ends the session" 401 "$(ini "curl -s -m 10 -o /dev/null -w '%{http_code}' -b /tmp/pw.jar $API/v1/system")"
+expect_eq "a wrong password is refused" 401 "$(ini "curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST -d '{\"username\":\"admin\",\"password\":\"no\"}' $API/v1/session")"
+expect_has "and logged, without the password" "failed sign-in" "$($ENGINE logs "$TGT" 2>&1)"
+expect_lacks "or the one that worked" "$PW_PASS" "$($ENGINE logs "$TGT" 2>&1)"
+pw_target -e NVWEAVER_ALLOW_INSECURE_LOGIN=true
+expect_eq "with the override, it's allowed on the network" 200 "$(login "http://$ADDR:18420")"
+expect_has "and the log says so" "passwords cross the network in clear text" "$($ENGINE logs "$TGT" 2>&1)"
+
+$ENGINE stop -t 20 "$TGT" >/dev/null 2>&1
+start_target false || bad "restart without users"
+rm -rf "$USERS_DIR"
+USERS_DIR=
 
 section "A crash while a pool is changing"
 KPOOL=/var/lib/nvweaver/kill-pool

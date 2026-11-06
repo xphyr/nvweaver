@@ -1,5 +1,6 @@
 /nvweaverd
 /nvweaver
+/.webui-demo-*/
 /nvweaver.service
 /build/
 CLAUDE.local.md

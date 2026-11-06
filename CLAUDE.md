@@ -24,14 +24,17 @@ BACKEND=spdk ./test/e2e.sh        # SPDK target, end to end
 ./test/systemd-e2e.sh             # make install, the unit and the Quadlet, under systemd
 ./test/vm/vm-e2e.sh               # separate initiator, emulated disks, passthrough, real reboot
 ./test/bench.sh                   # NVMe/TCP overhead against null_blk; also BACKEND=spdk
+./test/webui-e2e.sh [DIR]         # the web interface in a real browser, with no root. DIR keeps its screenshots. Look at them
 ```
 
 `test/vm/lab.sh` manages disposable VMs with their own kernels, which need no root on the machine
 running them. Prefer them over loading modules on a shared machine. `SKIP_BUILD=1` reuses existing images. The SPDK image takes several minutes to build
-from scratch. The Go code uses the standard library only.
+from scratch. The Go code uses the standard library, with one exception, vendored: `golang.org/x/crypto/bcrypt`, for passwords. Don't add others without asking: see decision 40.
 
 **Podman is the container engine. Docker is only a fallback**, with `ENGINE=docker`. Suites
 default to `ENGINE="sudo podman"`, because the kernel target and the initiator need real root.
+
+Run what a change can affect, using the table in decision 39 of `docs/decisions.md`. If a full run later finds a bug that should have been caught, add it to "Escaped a scoped run" in `docs/testing.md`.
 
 End-to-end suites need privileged containers. They temporarily load kernel modules and
 create NVMe devices on the machine running them, then clean up. Check that they did:

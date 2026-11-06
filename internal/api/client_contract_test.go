@@ -23,15 +23,15 @@ func TestClientTypesMatchTheSpec(t *testing.T) {
 		"Namespace": client.Namespace{}, "NamespaceCreate": client.NamespaceCreate{}, "NamespaceUpdate": client.NamespaceUpdate{},
 		"PoolCapacity": client.PoolCapacity{}, "Pool": client.Pool{}, "PoolCreate": client.PoolCreate{}, "PoolUpdate": client.PoolUpdate{},
 		"VolumeSource": client.VolumeSource{}, "VolumeMapping": client.VolumeMapping{}, "Volume": client.Volume{},
-		"VolumePage": client.VolumePage{}, "VolumeCreate": client.VolumeCreate{}, "VolumeUpdate": client.VolumeUpdate{},
+		"VolumeUsage": client.VolumeUsage{}, "VolumePage": client.VolumePage{}, "VolumeCreate": client.VolumeCreate{}, "VolumeUpdate": client.VolumeUpdate{},
 		"Snapshot": client.Snapshot{}, "SnapshotPage": client.SnapshotPage{}, "SnapshotCreate": client.SnapshotCreate{},
 	}
 	for schema, props := range s.schemas {
 		if len(props) == 0 {
 			continue // Such as NQN, which is only a string.
 		}
-		if schema == "Error" {
-			continue // Handled by client.Error.
+		if schema == "Error" || schema == "Session" || schema == "SignIn" {
+			continue // Handled by client.Error, or only for browsers.
 		}
 		v, ok := types[schema]
 		if !ok {
@@ -200,6 +200,14 @@ func TestClientReachesEveryOperation(t *testing.T) {
 	if grownVol.SizeBytes != bigger {
 		t.Errorf("volume came back as %+v", grownVol)
 	}
+	usage, err := c.GetVolumeUsage(ctx, "v")
+	must("volume usage", err)
+	if usage.SizeBytes != bigger || usage.UsedBytes != bigger/2 {
+		t.Errorf("usage came back as %+v", usage)
+	}
+	if _, err := c.GetVolumeUsage(ctx, "gone"); !client.IsNotFound(err) {
+		t.Errorf("usage of a missing volume: got %v", err)
+	}
 	mapped, err := c.CreateNamespace(ctx, nqn, client.NamespaceCreate{Volume: "v"})
 	must("map volume", err)
 	vol, err = c.GetVolume(ctx, "v")
@@ -248,14 +256,16 @@ func TestClientReachesEveryOperation(t *testing.T) {
 	if _, err := c.GetVolume(ctx, "gone"); !client.IsNotFound(err) {
 		t.Errorf("a missing volume: got %v", err)
 	}
+	// Signing in is for browsers: programs use the token.
+	browsersOnly := map[string]bool{"GET /v1/session": true, "POST /v1/session": true, "DELETE /v1/session": true}
 	for op := range s.operations {
-		if !reached[op] {
+		if !reached[op] && !browsersOnly[op] {
 			t.Errorf("the client never reached %s", op)
 		}
 	}
 	delete(reached, "")
-	if len(reached) != len(s.operations) {
-		t.Errorf("reached %d operations, of %d", len(reached), len(s.operations))
+	if len(reached) != len(s.operations)-len(browsersOnly) {
+		t.Errorf("reached %d operations, of %d", len(reached), len(s.operations)-len(browsersOnly))
 	}
 }
 
