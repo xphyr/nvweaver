@@ -20,7 +20,7 @@ Work through these in order: each phase depends on the ones before it.
 - [x] Make the first release: `v0.1.0`, on x86-64
 - [x] Install from a release tarball on a clean machine, using `v0.1.0` on fresh VMs
 - [x] Prove the Quadlet in the release tarball against a published image, using `v0.2.0-rc2` on x86-64 and a real CM4
-- [ ] Publish cross-platform releases for x86-64 and arm64, starting with v0.2.0. See decision 27
+- [x] Publish cross-platform releases for x86-64 and arm64, starting with v0.2.0. See decision 27
   - [x] Probe it: `e2e.sh` passes on both targets on a real Arm kernel. See `docs/testing.md`
   - [x] Choose the SPDK baseline by architecture: `Containerfile.spdk` already does
   - [x] Add an Arm job to CI that runs the unit tests and `e2e.sh` on both targets

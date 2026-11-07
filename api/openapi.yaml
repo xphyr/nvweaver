@@ -9,7 +9,7 @@ info:
     A request either happens completely or not at all: if the target refuses part of a
     change, what was already applied is rolled back. Until version 1.0.0, this API may
     still change.
-  version: 0.3.0-dev
+  version: 0.3.0
   license:
     name: MIT
     identifier: MIT
