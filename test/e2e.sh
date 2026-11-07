@@ -391,6 +391,8 @@ else
 	api "snapshotting it again succeeds" 200 POST /v1/snapshots '{"name":"s1","volume":"v1"}'
 	expect_eq "the same file" "$SNAP_FILE" "$(ini "jq -r .device_path /tmp/body")"
 	api "the snapshot's file can't be exported directly" 409 POST "/v1/subsystems/$N1/namespaces" "{\"device_path\":\"$SNAP_FILE\"}"
+	# The unit test that checks this skips itself without reflink, so this is the check that counts.
+	expect_eq "the snapshot's file is read-only" 400 "$($ENGINE exec "$TGT" stat -c %a "$SNAP_FILE")"
 	ini "dd if=/dev/urandom of=$DV bs=1M count=1 oflag=direct status=none"
 	V_SUM=$(ini "dd if=$DV bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")
 	if [ "$V_SUM" != "$SUM" ]; then ok "the host changes the volume after the snapshot"; else bad "the host changes the volume after the snapshot"; fi
@@ -530,7 +532,8 @@ CNTLID=$(ini "cat /sys/class/nvme/$CTRL/cntlid")
 ini "rm -f /tmp/io.stop /tmp/io.err; echo 0 > /tmp/io.n"
 ini "(n=0; while [ ! -f /tmp/io.stop ]; do
 	dd if=/dev/urandom of=$DA bs=64k count=64 seek=256 oflag=direct status=none || { echo \$n > /tmp/io.err; break; }
-	n=\$((n+1)); echo \$n > /tmp/io.n
+	# Renamed into place, as a read during a plain > could find the file empty.
+	n=\$((n+1)); echo \$n > /tmp/io.n.new; mv /tmp/io.n.new /tmp/io.n
 done) >/dev/null 2>&1 &"
 sleep 2
 N1=$(ini "cat /tmp/io.n")
@@ -769,7 +772,11 @@ else
 	expect_eq "adopt a pool" 201 "${out%%$'\n'*}"
 	ini "rm -f /tmp/kill.*"
 	IN_PROGRESS=0
-	for round in 1 2 3; do
+	ROUNDS=0
+	# Three rounds, and more until a crash catches a change in progress.
+	while [ $ROUNDS -lt 3 ] || { [ $IN_PROGRESS = 0 ] && [ $ROUNDS -lt 12 ]; }; do
+		ROUNDS=$((ROUNDS + 1))
+		round=$ROUNDS
 		# Each line is something the service said it did, so it must still be true afterwards.
 		ini "(n=0; while :; do n=\$((n+1)); v=k$round-\$n
 			[ \"\$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST $API/v1/volumes -d '{\"name\":\"'\$v'\",\"size_bytes\":4096}')\" = 201 ] || break
@@ -789,7 +796,9 @@ else
 		IN_PROGRESS=$((IN_PROGRESS + n))
 		start_target false || bad "restart after a crash"
 	done
-	echo "  (changes in progress at the moment of the crash: $IN_PROGRESS)"
+	# With none, recovery wasn't exercised and the checks below prove nothing about it. With three rounds, one run in
+	# five saw none, so it takes more until one does: twelve all missing should be about one in five hundred.
+	if [ "$IN_PROGRESS" -gt 0 ]; then ok "a crash caught changes in progress ($IN_PROGRESS)"; else bad "a crash caught changes in progress" "none in $ROUNDS rounds"; fi
 	DONE=$(ini "cat /tmp/kill.snapshots /tmp/kill.volumes 2>/dev/null | wc -l")
 	if [ "$DONE" -gt 0 ]; then ok "the service was really doing work when killed ($DONE changes confirmed)"; else bad "the service was really doing work when killed"; fi
 	expect_eq "no intents are left" 0 "$($ENGINE exec "$TGT" sh -c 'ls /var/lib/nvweaver/intents | wc -l')"
@@ -799,8 +808,8 @@ else
 	api "pool status" 200 GET /v1/pools/kp
 	expect_eq "no file is left that nothing refers to" 0 "$(ini "jq '[.warnings[] | select(contains(\"no volume refers\"))] | length' /tmp/body")"
 	expect_eq "the pool holds one file for each" "$(ini "jq '.volumes + .snapshots' /tmp/body")" "$($ENGINE exec "$TGT" sh -c "ls $KPOOL | grep -c img")"
-	for v in $(ini "curl -s '$API/v1/volumes?limit=1000' | jq -r '.items[].name'"); do call DELETE "/v1/volumes/$v" >/dev/null; done
-	for v in $(ini "curl -s '$API/v1/snapshots?limit=1000' | jq -r '.items[].name'"); do call DELETE "/v1/snapshots/$v" >/dev/null; done
+	# One exec for hundreds of deletes, rather than one each, which took 40 seconds.
+	ini "for k in volumes snapshots; do for v in \$(curl -s '$API/v1/'\$k'?limit=1000' | jq -r '.items[].name'); do curl -s -o /dev/null -X DELETE '$API/v1/'\$k/\$v; done; done"
 	expect_eq "it all deletes" 0 "$($ENGINE exec "$TGT" sh -c "ls $KPOOL | grep -c img")"
 	api "forget the pool" 204 DELETE /v1/pools/kp
 fi

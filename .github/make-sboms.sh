@@ -84,8 +84,11 @@ for arch in "$@"; do
 	scan oci-archive:/w/image.tar
 	finish "$OUT/nvweaver-$VERSION-spdk-image-$arch.spdx.json"
 	container=$(podman create --pull=never "localhost/nvweaver:spdk$suffix" 2>/dev/null)
-	podman cp "$container:/usr/share/licenses/nvweaver/spdk-components.tsv" "$WORK/components"
+	# Removed even when the copy fails, as set -e would otherwise leave it behind.
+	copied=0
+	podman cp "$container:/usr/share/licenses/nvweaver/spdk-components.tsv" "$WORK/components" || copied=$?
 	podman rm -f "$container" >/dev/null
+	[ "$copied" = 0 ] || exit "$copied"
 	add_components "$OUT/nvweaver-$VERSION-spdk-image-$arch.spdx.json" "$WORK/components"
 	check "$OUT/nvweaver-$VERSION-spdk-image-$arch.spdx.json" spdk
 
