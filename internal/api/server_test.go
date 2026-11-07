@@ -552,3 +552,9 @@ func fixtureServer(m *Manager) *Server {
 	s.anyHost = true
 	return s
 }
+
+func TestConnections(t *testing.T) {
+	e := newEnv(t)
+	e.do(http.MethodGet, "/v1/connections", nil, http.StatusOK)
+	e.do(http.MethodGet, "/v1/connections?subsystem=nqn.2026-11.net.example:none", nil, http.StatusNotFound)
+}

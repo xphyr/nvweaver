@@ -34,12 +34,11 @@ Work through these in order: each phase depends on the ones before it.
   - [ ] `test/systemd-e2e.sh` has a fixed `-l 30`, which doesn't scale with `TEST_TIMEOUT_SCALE`
   - [ ] In `e2e.sh`, stop waiting for a reconnect once the host has removed its controller
   - [ ] Arm runners have no KVM, so CI runs `e2e.sh` directly. Decide whether Arm needs the VM suites
-- [ ] For v0.3.0: publish an SBOM with each release, so that consumers know what's in it. Generate SPDX JSON in the release workflow with a pinned tool such as Syft, from the
+- [x] For v0.3.0: publish an SBOM with each release, so that consumers know what's in it. Generate SPDX JSON in the release workflow with a pinned tool such as Syft, from the
       tested images and tarballs, for both architectures. Attach them to the GitHub release, and attest them, as with provenance
-  - [ ] Check whether a scanner sees SPDK, DPDK and ISA-L inside `nvmf_tgt`. They're compiled from source into one binary, so it probably doesn't, which would look clean while leaving out
-        the most security-relevant code. If so, record their exact versions at build time and add them
-  - [ ] Have CI fail if the SBOM doesn't list what's in `THIRD_PARTY_NOTICES.md`, so that this can't quietly go stale
-- [ ] For v0.3.0: publish the `nvweaver` command line utility as its own artifact, as `nvweaver-cli-<version>-linux-<arch>`, for people who only want the client. Linux on amd64 and arm64,
+  - [x] Check whether a scanner sees SPDK, DPDK and ISA-L inside `nvmf_tgt`. Syft 1.57 doesn't, so their exact versions are recorded at build time and added
+  - [x] Have CI fail if the SBOM doesn't list what's in `THIRD_PARTY_NOTICES.md`, so that this can't quietly go stale
+- [x] For v0.3.0: publish the `nvweaver` command line utility as its own artifact, as `nvweaver-cli-<version>-linux-<arch>`, for people who only want the client. Linux on amd64 and arm64,
       built natively, as the suites and the Arm runner already test it. Include them in the checksums, attestations and SBOM, and say in the README how to get them
 - [ ] Pin base images in the Containerfiles by digest, with automated updates
 - [x] Add a `LICENSE` (MIT)
@@ -105,8 +104,9 @@ and CLI once, against the result.
 - [ ] By 1.0: make serving the API in clear text off loopback an explicit choice by the admin deploying it, rather than a warning. See decision 31. `NVWEAVER_ALLOW_INSECURE_LOGIN` already works this way for passwords, so it may become one setting
 - [x] Check at startup that the tools in "Tools" in the README are there. See decision 34
 - [x] Create a shared Go API client, for the CLI and CSI driver to use. See decision 35
-- [ ] Add an endpoint showing connected hosts, including each connection's transport
-- [ ] Check `info.version` in the API spec in the release workflow: `v0.2.0` shipped saying `0.1.0`
+- [x] Add an endpoint showing connected hosts, including each connection's transport. See decision 41
+- [ ] Say which host is connected on kernels built with `CONFIG_NVME_TARGET_DEBUGFS`, from `/sys/kernel/debug/nvmet`. Fedora's isn't, so it can't be tried in the VMs without building a kernel
+- [x] Check `info.version` in the API spec in the release workflow: `v0.2.0` shipped saying `0.1.0`
 - [ ] Add an endpoint listing available block devices. Pools are adopted for now, so nothing needs it yet
 
 ## 4. Command line utility
@@ -130,14 +130,14 @@ Production-like scale is a requirement, so measure this before building on it.
 
 - [x] Read-only screens, embedded in the binary, tested in a real browser. See decision 37
 - [x] Sign in with a username and password, from a users file in bcrypt. See decision 40
-- [ ] Try signing in over real TLS, in a browser
+- [x] Try signing in over real TLS, in a browser. It has a real certificate that the browser is told to accept, as trusting a CA isn't what's being tested
 - [x] Create, grow, clone and delete volumes, take, clone and delete snapshots, and export and un-export volumes from their own pages and from subsystems
 - [x] Show tables a page at a time, 10 rows by default
-- [ ] Create and delete subsystems, hosts and ports, including who's allowed and which ports, and namespaces on raw devices and files
-- [ ] Adopt and forget pools
-- [ ] Set DH-HMAC-CHAP keys on hosts
-- [ ] Show which hosts are connected before un-exporting, once the phase 3 endpoint for that exists
-- [ ] Run one browser test against a real target in a VM: create, export, a real host writing data, un-export and delete. So far, browsers have only driven the fake target
+- [x] Create and delete subsystems, hosts and ports, including who's allowed and which ports, and namespaces on raw devices and files
+- [x] Adopt and forget pools
+- [x] Set DH-HMAC-CHAP keys on hosts. It doesn't set their hash or DH group, or labels, a namespace's UUID, or enabling and disabling a namespace, which are in the CLI
+- [x] Show which hosts are connected on a subsystem's page, and before un-exporting or deleting it
+- [x] Run a browser against both real targets in VMs: `test/webui-real-e2e.sh`
 
 ## 7. Kubernetes CSI driver
 
@@ -169,14 +169,10 @@ Production-like scale is a requirement, so measure this before building on it.
   - [ ] Check what differs there: file paths for `--token-file` and `--ca`, the system's certificates, and signals on Windows
 - [ ] iSCSI as a second protocol, once the CLI and CSI driver have settled the API. It would be new resources, such as `/v1/iscsi/targets`, not a
       `transport` on ports. Pools, volumes and snapshots should carry over: see decision 33
-  - [ ] First, probe whether it's really feasible, before any design, as with Arm: drive LIO and SPDK's iSCSI target by hand on a throwaway VM, with
-        a separate initiator and real data. Nothing here has been tested yet. Answer these, and record them in `docs/testing.md`:
-    - Can both export a pool's volume, and a clone of it, with the data intact?
-    - Can a volume keep its identity (serial and WWN in VPD pages) across a move and a restart, and can it come from `nguid`?
-    - What does removing an initiator do to a live session on each: is it cut off, and are others affected?
-    - Does each survive a restart and a power cut with its data, as NVMe/TCP does? SPDK ignoring FUA may apply here too
-    - Does Raspberry Pi OS's kernel have LIO, and what would SPDK's image need: is `spdk_tgt` or `iscsi_tgt` required?
-    - What would `mapped_to` need, and does decision 33's estimate of how little changes in the API hold up?
+  - [x] Probe whether it's really feasible, driving LIO and SPDK by hand in VMs: it is, on both. See "iSCSI: is it feasible?" in `docs/testing.md`
+  - [ ] Decide how to handle a volume's identity differing between LIO and SPDK, which can't be made to match
+  - [ ] Have `mapped_to` cover both protocols, so that a volume is only ever exported once: nothing below stops two
+  - [ ] Try what the probe didn't: CHAP, multipath, growing on SPDK, a direct login by a stranger on SPDK, `spdk_tgt` in place of `iscsi_tgt`, Arm, and more power-cut rounds
   - [ ] Weigh the cost of four combinations of target and protocol in the test suite
 - [ ] Test the suites against Docker. Podman is the supported engine and Docker a fallback,
       and nothing has been run against Docker since Podman became the default

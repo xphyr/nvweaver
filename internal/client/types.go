@@ -9,13 +9,14 @@ type Health struct {
 
 // Capabilities says what the running backend can do.
 type Capabilities struct {
-	Passthrough         bool     `json:"passthrough"`
-	SurvivesServiceExit bool     `json:"survives_service_exit"`
-	PerPortInlineData   bool     `json:"per_port_inline_data"`
-	BufferedIO          bool     `json:"buffered_io"`
-	PerHostDHCHAPParams bool     `json:"per_host_dhchap_params"`
-	WildcardListen      bool     `json:"wildcard_listen"`
-	Transports          []string `json:"transports"`
+	Passthrough              bool     `json:"passthrough"`
+	SurvivesServiceExit      bool     `json:"survives_service_exit"`
+	PerPortInlineData        bool     `json:"per_port_inline_data"`
+	BufferedIO               bool     `json:"buffered_io"`
+	PerHostDHCHAPParams      bool     `json:"per_host_dhchap_params"`
+	WildcardListen           bool     `json:"wildcard_listen"`
+	IdentifiesConnectedHosts bool     `json:"identifies_connected_hosts"`
+	Transports               []string `json:"transports"`
 }
 
 // System describes the service and its target.
@@ -37,6 +38,17 @@ type System struct {
 }
 
 // Port is a listener.
+// Connection is one host's connection to a port, or to a subsystem where the target can tell.
+type Connection struct {
+	Port        int    `json:"port"`
+	Transport   string `json:"transport"`
+	HostAddress string `json:"host_address"`
+	Queues      int    `json:"queues"`
+	// Subsystem and HostNQN are empty if the target can't tell.
+	Subsystem string `json:"subsystem,omitempty"`
+	HostNQN   string `json:"host_nqn,omitempty"`
+}
+
 type Port struct {
 	ID             int    `json:"id"`
 	Transport      string `json:"transport"`

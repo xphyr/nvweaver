@@ -38,6 +38,14 @@ RUN arch="$SPDK_ARCH"; \
       --without-idxd --without-rbd --without-iscsi-initiator --without-sma --without-avahi \
     && make -j"$(nproc)" \
     && strip build/bin/nvmf_tgt
+# What's compiled into nvmf_tgt, for the SBOM, as a scanner can't see inside it.
+RUN set -e; \
+    row() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$(git -C "$3" rev-parse HEAD)" "$(git -C "$3" remote get-url origin)"; }; \
+    { row SPDK "${SPDK_VERSION#v}" .; \
+      row DPDK "$(cat dpdk/VERSION)" dpdk; \
+      row ISA-L "$(grep -m1 -oE '\[[0-9]+\.[0-9]+\.[0-9]+\]' isa-l/configure.ac | tr -d '[]')" isa-l; } >spdk-components.tsv; \
+    cat spdk-components.tsv; \
+    ! cut -f2 spdk-components.tsv | grep -qx ''
 
 FROM docker.io/library/debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -50,6 +58,7 @@ COPY --from=build /usr/local/go/LICENSE /usr/local/go/PATENTS /usr/share/license
 COPY --from=spdk /spdk/LICENSE /spdk/licenses/ /usr/share/licenses/nvweaver/spdk/
 COPY --from=spdk /spdk/dpdk/license/ /usr/share/licenses/nvweaver/dpdk/
 COPY --from=spdk /spdk/isa-l/LICENSE /usr/share/licenses/nvweaver/isa-l/
+COPY --from=spdk /spdk/spdk-components.tsv /usr/share/licenses/nvweaver/
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="nvweaver" \
       org.opencontainers.image.description="NVMe over TCP target with a REST API" \

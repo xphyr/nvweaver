@@ -65,6 +65,13 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: make package VERSION="${INPUT_VERSION:-$(git describe --tags --always --dirty)}"
+      # A pull request finds out here if a release's SBOM would be missing something, rather than a release.
+      - name: Check the SBOMs can be made
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          ./.github/make-sboms.sh "${INPUT_VERSION:-$(git describe --tags --always --dirty)}" amd64
+          rm -f build/*.spdx.json
       - name: Save images
         run: podman save -m -o images.tar localhost/nvweaver:dev localhost/nvweaver:spdk localhost/nvweaver:systemd-test
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

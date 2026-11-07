@@ -55,7 +55,7 @@ func (b *Backend) Name() string { return "spdk" }
 
 // Capabilities implements target.Backend.
 func (b *Backend) Capabilities() target.Capabilities {
-	return target.Capabilities{Transports: []string{target.TransportTCP}}
+	return target.Capabilities{IdentifiesConnectedHosts: true, Transports: []string{target.TransportTCP}}
 }
 
 // aioPerNamespace is how much of fs.aio-max-nr each namespace uses, on each core.

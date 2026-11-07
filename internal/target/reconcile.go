@@ -66,6 +66,8 @@ func (OSConfigFS) List(p string) ([]string, error) {
 type Target struct {
 	FS   ConfigFS
 	Root string // for example /sys/kernel/config/nvmet
+	// ProcNet is where to read sockets, if not /proc/net.
+	ProcNet string
 }
 
 // KernelError is a failure reported by the kernel while applying configuration.

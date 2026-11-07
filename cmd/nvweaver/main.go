@@ -45,6 +45,7 @@ Commands:
   version                                     Show this program's version
   passwd NAME                                 Make a line for the users file, asking for the password
 
+  connection list [--subsystem NQN]
   port      list | get ID | create | update ID | delete ID
   host      list | get NQN | create NQN | update NQN | delete NQN
   subsystem list | get NQN | create NQN | update NQN | delete NQN
@@ -348,8 +349,9 @@ func (a *app) dispatch(args []string) error {
 		return a.health(rest)
 	}
 	actions, ok := map[string]map[string]func([]string) error{
-		"port": {"list": a.portList, "get": a.portGet, "create": a.portCreate, "update": a.portUpdate, "delete": a.portDelete},
-		"host": {"list": a.hostList, "get": a.hostGet, "create": a.hostCreate, "update": a.hostUpdate, "delete": a.hostDelete},
+		"connection": {"list": a.connectionList},
+		"port":       {"list": a.portList, "get": a.portGet, "create": a.portCreate, "update": a.portUpdate, "delete": a.portDelete},
+		"host":       {"list": a.hostList, "get": a.hostGet, "create": a.hostCreate, "update": a.hostUpdate, "delete": a.hostDelete},
 		"subsystem": {"list": a.subsystemList, "get": a.subsystemGet, "create": a.subsystemCreate, "update": a.subsystemUpdate,
 			"delete": a.subsystemDelete, "allow": a.subsystemAllow, "deny": a.subsystemDeny, "attach": a.subsystemAttach, "detach": a.subsystemDetach},
 		"namespace": {"list": a.namespaceList, "get": a.namespaceGet, "create": a.namespaceCreate, "update": a.namespaceUpdate, "delete": a.namespaceDelete},
@@ -566,6 +568,24 @@ func portRows(w io.Writer, ports []client.Port) {
 	for _, p := range ports {
 		row(w, p.ID, p.Transport, p.Address, p.Service)
 	}
+}
+
+func (a *app) connectionList(args []string) error {
+	fs := a.flags("connection list")
+	subsystem := fs.String("subsystem", "", "only what could be using this subsystem")
+	if _, err := a.parse(fs, args); err != nil {
+		return err
+	}
+	list, err := a.client.ListConnections(a.ctx, *subsystem)
+	if err != nil {
+		return err
+	}
+	return a.emit(list, func(w io.Writer) {
+		row(w, "PORT", "TRANSPORT", "HOST ADDRESS", "QUEUES", "SUBSYSTEM", "HOST NQN")
+		for _, c := range list {
+			row(w, c.Port, c.Transport, c.HostAddress, c.Queues, dash(c.Subsystem), dash(c.HostNQN))
+		}
+	})
 }
 
 func (a *app) portList(args []string) error {

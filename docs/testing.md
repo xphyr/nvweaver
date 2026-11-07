@@ -323,6 +323,36 @@ Each did 64 MiB through a separate initiator, read back after reconnecting, and 
 Checksums and attestations for both tarballs and both multi-arch tags verified, and the published `-spdk` and kernel arm64 images
 report the right version on the CM4. CI on the same code gave the full counts on a real Arm runner: 209 and 223, with none skipped.
 
+### iSCSI: is it feasible?
+
+A probe, with throwaway scripts that aren't in the repository, before any design. Fedora VMs, kernel 7.2.15, driving LIO through configfs and SPDK v26.09's `iscsi_tgt` through RPC, with `open-iscsi` on a separate initiator. x86-64 and emulated disks only. **The answer is yes, on both targets, with differences that would have to be designed around.**
+
+| Question | LIO | SPDK `iscsi_tgt` |
+|---|---|---|
+| Thin LV and reflink file export, 16 MiB round trip after reconnecting | Pass | Pass |
+| A clone, with its source's data and a new identity | Pass, for an LV and a reflink file | Not tried |
+| A host not on the list | Refused | Discovery shows it nothing. A direct login wasn't tried |
+| Keeps its identity when recreated under another target | Yes | Yes, if the bdev's name stays the same |
+| Where identity comes from | A serial you set. NAA `6001405` + the first 25 hex digits, so it can come from `nguid` | Only the bdev's name: a chosen `--uuid` was ignored. An 8-byte hash of the name as NAA, and the name as serial, cut to 31 characters. Vendor is always `INTEL AIO disk` |
+| Removing a host from live sessions: its marker write | Fails, and doesn't reach the disk | The same, but only after `iscsi_target_node_request_logout`. Removing it from the list alone leaves the session writing |
+| Can it log back in | No | No |
+| Longest stall for a host sharing the target | 0.07 s, so none | 2.05 s, with no errors |
+| A host on another target | Unaffected | Unaffected |
+| Growing, with a host connected | Only seen after the host rescans: NVMe tells hosts by itself | Not tried |
+| Power cut, thin LV, one round | 22 files, none lost, `xfs_repair` clean | 22 files, none lost, clean |
+| Power cut, file, one round | 20 files, none lost, clean. The same with `fd_buffered_io`, though its identical flush counts suggest looking again at whether that applied | **Corrupted in one round of two:** the filesystem wouldn't mount, and all 55 journaled files were lost. It's the same as NVMe without `chattr +S` |
+| Power cut, file with `chattr +S`, one round | | 36 files, none lost, clean. It needs more rounds to mean much, as the failure above is intermittent |
+
+Other findings:
+
+- **Fencing is better than on NVMe's kernel target,** whose other hosts stall for about 10 s.
+- **A volume would have different identities on the two iSCSI targets,** which NVMe doesn't have, so moving between them couldn't be promised. LIO's and SPDK's can't be made to match, as SPDK's comes from a hash and a fixed vendor string.
+- **Nothing stops two protocols exporting one device:** with LIO holding a device, `nvmet` enabled it too. A volume being mapped once, as now, would have to cover both.
+- **The SPDK image would need another binary,** as `iscsi_tgt` is separate from `nvmf_tgt`. The build makes it already, and `spdk_tgt` too, which wasn't tried and may do both.
+- **Raspberry Pi OS has no LIO** (`CONFIG_TARGET_CORE` is off), as with `nvmet`, but has the `iscsi_tcp` initiator. SPDK's target wasn't tried on Arm.
+
+Not tried: CHAP, multipath, snapshots under load, performance, Arm, real hardware, and `iscsi_tgt` at scale.
+
 ### A client's LVM on the target
 
 `vm-e2e.sh` runs this on both targets, as `client_lvm_tests`: it detects the exposure, sees the pool go down after a real reboot, and recovers with the documented fix. Before that, throwaway
@@ -342,14 +372,30 @@ The defaults for Debian 13 and Ubuntu 22.04 and 24.04 were read from their packa
 ### The web interface
 
 `test/webui-e2e.sh` runs the real API and interface on a fake target, in Chromium, through Playwright in a container: every screen, real data, filtering, markup staying text, the security policy really applying, signing in with a token, warnings, a phone-sized screen, and
-losing the service. There's no real target or real browser against one in this. `e2e.sh` only checks that the real images serve the files.
+losing the service. There's no real target in this: see the next section. `e2e.sh` only checks that the real images serve the files.
 
 **A real web page from another origin attacked the API here.** With `guardBrowsers` switched off, in a throwaway copy, its request created a host, and that check failed. With it on, the request had no effect. Chromium reported "sent" both times, so what the browser says proves nothing: check what happened.
+
+### The web interface on real targets
+
+`test/webui-real-e2e.sh` drives both real targets from Chromium, in VMs, through a tunnel, with what the fake target can't show: a real LVM thin pool adopted on the Pools page, a port and host added there, a volume created and exported, and over real HTTPS, with a real password from `nvweaver passwd`. The initiator VM runs the `nvme connect` command that the page displayed, and writes 16 MiB, which reads back and is checked in the LV on the target. Then a snapshot and clone, the clone reaching the host in the same subsystem with the snapshot's data, removing the host on the page really stopping its I/O, and everything taken apart from the interface, leaving no LVs. It checks that LVM has 3 volumes first, so that finding none afterwards means something.
+
+93 checks passed, on x86-64. Its first run failed twice, both in the test: un-exporting a subsystem's last volume removes the subsystem by default, so there was nothing left to delete, and it expected `used_bytes` to be at least what was written. LVM reports a percentage to two places, so 16 MiB came back as 16,750,372 bytes, which the API now documents.
+
+The browser is told to accept the test's own certificate, so trusting a CA isn't covered. It's the interface's happy path: errors and every field are in `webui-e2e.sh`.
+
+### SBOMs
+
+`make-sboms.sh` ran on real amd64 images and packages. Syft 1.57 listed the Go standard library, `x/crypto` and the distribution's packages, but not SPDK, DPDK or ISA-L, and `nvweaver` had no version, which the script adds. It failed as it should for a row in the notices that it doesn't know, a component that the notices list and an SBOM lacks, and an SPDK image with nothing recorded. Not tried until a release: arm64's images, from the publish job, or whether a vulnerability scanner uses the added packages.
+
+### Who's connected
+
+Two probes in VMs came first. Fedora's 7.2 kernel has no `/sys/kernel/debug/nvmet`, though a connected host showed as 5 established sockets, one for each queue, in `/proc/net/tcp` as seen from the service's container. SPDK's `nvmf_subsystem_get_qpairs` gave the host, controller and both addresses, and an unknown subsystem is refused with "not found". The unit tests use those formats. `e2e.sh` and `webui-real-e2e.sh` connect real hosts to both targets. Not tested: a kernel with debugfs, which isn't used, IPv6, or listing everyone with thousands of subsystems.
 
 ### Signing in
 
 `internal/auth` is tested with a real `htpasswd -B` hash. `e2e.sh` runs on both real targets, with `nvweaver passwd` from the image, against a service on `0.0.0.0`, reached by a real non-loopback address: a password over plain HTTP is refused, on loopback it's fine, and with the override it's allowed. The browser test signs in and out, and has a hostile page
-in the same browser, with the session in its cookies, try to read and change things through it, which had no effect. Not tested: signing in over real TLS in a browser, or under the Quadlet, with SELinux. `e2e.sh` checks that the service refuses plain HTTP, and a unit test that TLS is accepted and marks the cookie `Secure`.
+in the same browser, with the session in its cookies, try to read and change things through it, which had no effect. Signing in over real TLS in a browser is in the next section. Not tested: signing in under the Quadlet, with SELinux. `e2e.sh` checks that the service refuses plain HTTP, and a unit test that TLS is accepted and marks the cookie `Secure`.
 
 ### Web pages using the API
 
@@ -554,6 +600,7 @@ Checks that passed while proving nothing. Watch for these patterns:
 - **Moving between screens only changes the hash,** so a check right after that can read the old screen. Wait for something on the new one.
 - **A unit test can depend on the machine by accident:** one looked up `/dev/sdb` for real, and passed where that exists.
 - **`use_devicesfile=0` deletes the devices file,** at the next LVM command of any kind, keeping a backup. So a test that turns it off and on again has to make a new one. It looks as if the setting did nothing.
+- **In a shell, `$?` straight after `$(...)` is that command's status.** `echo "$(date) $?"` logged `date`'s, so a writer reported no errors for what had failed. Save `rc=$?` first. It's the iSCSI probe's, but could be anyone's.
 - **`pvs -a` doesn't list everything LVM can read:** it leaves out a disk with no PV on it, whatever else is on it, though the first experiment suggested otherwise. Use `lvmdiskscan`.
 - **`ausearch` reads stdin when it isn't a terminal,** so in a script piped to `bash -s`, it swallows the rest of the script. Use `</dev/null`.
 - **One machine:** an initiator can't see the same namespace twice. Two host NQNs on one

@@ -262,14 +262,14 @@ function plainField(field) {
   const attrs = { id: "field-" + field.name, required: field.required, placeholder: field.placeholder, autocomplete: "off", spellcheck: "false" };
   const input = field.options
     ? el("select", attrs, field.options.map((o) => el("option", { value: o.value, selected: o.value === field.value }, o.label)))
-    : el("input", { ...attrs, type: "text", value: field.value, list: field.suggestions ? `suggest-${field.name}` : undefined });
+    : el("input", { ...attrs, type: field.secret ? "password" : "text", value: field.value, autocomplete: field.secret ? "new-password" : "off", list: field.suggestions ? `suggest-${field.name}` : undefined });
   // Suggestions, rather than a dropdown, as there can be thousands to search.
   const list = field.suggestions && el("datalist", { id: `suggest-${field.name}` }, field.suggestions.map((value) => el("option", { value })));
   return { node: list ? el("div", {}, input, list) : input, focus: input, value: () => input.value.trim() };
 }
 
 // openDialog asks for something, and stays open showing the API's answer if it's refused, with what was typed still there.
-function openDialog({ title, intro, fields = [], submit, danger, confirmText, action, done }) {
+function openDialog({ title, intro, warning, fields = [], submit, danger, confirmText, action, done }) {
   const makers = { checks: checksField, tick: tickField, radio: radioField };
   const built = fields.map((field) => ({ field, ...(field.size ? sizeField(field) : (makers[field.kind] || plainField)(field)) }));
   const notice = el("div", {});
@@ -303,6 +303,7 @@ function openDialog({ title, intro, fields = [], submit, danger, confirmText, ac
   } },
     el("h2", {}, title),
     intro && el("p", {}, intro),
+    warning,
     notice,
     built.map((b) => {
       b.wrap = el("div", { class: "field" },
@@ -391,6 +392,52 @@ function cloneDialog(source, what) {
 // What's asked for by a new subsystem's name. It's only a suggestion, as the domain should be the admin's.
 const suggestedNQN = (name) => `nqn.${new Date().toISOString().slice(0, 7)}.local.nvweaver:${name}`;
 
+// What a new subsystem asks for, shared by creating one and exporting a volume to one.
+function newSubsystemFields(hosts, ports, name, when = () => true) {
+  return [
+    { name: "nqn", label: "Subsystem name (NQN)", required: true, when, value: suggestedNQN(name) },
+    { name: "anyHost", kind: "tick", when, text: "Let any host connect, with no list of who may" },
+    { name: "hosts", kind: "checks", label: "Hosts that may connect", when: (v) => when(v) && !v.anyHost, options: hosts.map((h) => ({ value: h.nqn, label: h.nqn })), empty: "No hosts yet, so add one below." },
+    { name: "newHost", label: "Add a host", placeholder: "nqn.2014-08.org.nvmexpress:uuid:...", when: (v) => when(v) && !v.anyHost, hint: "From /etc/nvme/hostnqn on the host." },
+    ...(ports.length
+      ? [{ name: "ports", kind: "checks", label: "Ports to offer it on", when, value: ports.length === 1 ? [String(ports[0].id)] : [], options: ports.map((p) => ({ value: String(p.id), label: `${p.address}:${p.service} (port ${p.id})` })) }]
+      : [{ name: "address", label: "Address to listen on", required: true, when, placeholder: "192.0.2.10", hint: "There are no ports yet, so this makes one, on the usual TCP port, 4420." }]),
+  ];
+}
+
+// Adds what was asked for, and returns the new subsystem's path. A host that's already known is fine: it's only being added to the list.
+async function createSubsystem(v, hosts) {
+  const allowed = [...(v.hosts || [])];
+  if (v.newHost && !v.anyHost) {
+    await send("POST", "/v1/hosts", { nqn: v.newHost }).catch((err) => {
+      if (!hosts.some((h) => h.nqn === v.newHost)) throw err;
+    });
+    if (!allowed.includes(v.newHost)) allowed.push(v.newHost);
+  }
+  let portIds = v.ports || [];
+  if (v.address) {
+    const made = await send("POST", "/v1/ports", { address: v.address });
+    portIds = [made.id];
+  }
+  await send("POST", "/v1/subsystems", { nqn: v.nqn, allow_any_host: Boolean(v.anyHost), allowed_hosts: v.anyHost ? [] : allowed, ports: portIds });
+  return subsystemPath(v.nqn);
+}
+
+const subsystemPath = (nqn) => "/v1/subsystems/" + encodeURIComponent(nqn);
+
+async function createSubsystemDialog() {
+  const [hosts, ports] = await Promise.all([api("/v1/hosts"), api("/v1/ports")]);
+  let made = "";
+  openDialog({
+    title: "Create a subsystem",
+    intro: "This is what hosts connect to. Export volumes into it afterwards.",
+    submit: "Create",
+    fields: newSubsystemFields(hosts, ports, "my-subsystem"),
+    action: async (v) => { made = v.nqn; await createSubsystem(v, hosts); },
+    done: () => { notify(`Created ${made}.`); location.hash = hash("subsystems", made); },
+  });
+}
+
 async function exportDialog(vol) {
   const [hosts, ports, subsystems] = await Promise.all([api("/v1/hosts"), api("/v1/ports"), api("/v1/subsystems")]);
   const usable = subsystems.filter((s) => !s.passthru_device);
@@ -405,34 +452,14 @@ async function exportDialog(vol) {
         { value: "existing", label: "An existing subsystem" },
       ] }] : []),
       ...(usable.length ? [{ name: "existing", label: "Subsystem", when: (v) => v.mode === "existing", value: usable[0].nqn, options: usable.map((s) => ({ value: s.nqn, label: `${s.nqn} (${(s.namespaces || []).length})` })) }] : []),
-      { name: "nqn", label: "Subsystem name (NQN)", required: true, when: isNew, value: suggestedNQN(vol.name) },
-      { name: "anyHost", kind: "tick", when: isNew, text: "Let any host connect, with no list of who may" },
-      { name: "hosts", kind: "checks", label: "Hosts that may connect", when: (v) => isNew(v) && !v.anyHost, options: hosts.map((h) => ({ value: h.nqn, label: h.nqn })), empty: "No hosts yet, so add one below." },
-      { name: "newHost", label: "Add a host", placeholder: "nqn.2014-08.org.nvmexpress:uuid:...", when: (v) => isNew(v) && !v.anyHost, hint: "From /etc/nvme/hostnqn on the host." },
-      ...(ports.length
-        ? [{ name: "ports", kind: "checks", label: "Ports to offer it on", when: isNew, value: ports.length === 1 ? [String(ports[0].id)] : [], options: ports.map((p) => ({ value: String(p.id), label: `${p.address}:${p.service} (port ${p.id})` })) }]
-        : [{ name: "address", label: "Address to listen on", required: true, when: isNew, placeholder: "192.0.2.10", hint: "There are no ports yet, so this makes one, on the usual TCP port, 4420." }]),
+      ...newSubsystemFields(hosts, ports, vol.name, isNew),
     ],
     action: async (v) => {
       if (!isNew(v)) {
-        await send("POST", `/v1/subsystems/${encodeURIComponent(v.existing)}/namespaces`, { volume: vol.name });
+        await send("POST", `${subsystemPath(v.existing)}/namespaces`, { volume: vol.name });
         return;
       }
-      const allowed = [...(v.hosts || [])];
-      if (v.newHost && !v.anyHost) {
-        await send("POST", "/v1/hosts", { nqn: v.newHost }).catch((err) => {
-          // Already known is fine: it's only being added to the list.
-          if (!hosts.some((h) => h.nqn === v.newHost)) throw err;
-        });
-        if (!allowed.includes(v.newHost)) allowed.push(v.newHost);
-      }
-      let portIds = v.ports || [];
-      if (v.address) {
-        const made = await send("POST", "/v1/ports", { address: v.address });
-        portIds = [made.id];
-      }
-      const path = "/v1/subsystems/" + encodeURIComponent(v.nqn);
-      await send("POST", "/v1/subsystems", { nqn: v.nqn, allow_any_host: Boolean(v.anyHost), allowed_hosts: v.anyHost ? [] : allowed, ports: portIds });
+      const path = await createSubsystem(v, hosts);
       try {
         await send("POST", path + "/namespaces", { volume: vol.name });
       } catch (err) {
@@ -442,6 +469,252 @@ async function exportDialog(vol) {
       }
     },
     done: () => { notify(`Exported ${vol.name}.`); rerender(); },
+  });
+}
+
+// Who's connected, or null if it can't be found out, which shouldn't get in the way of what someone came to do.
+async function connectionsTo(nqn) {
+  try {
+    return await api("/v1/connections?subsystem=" + encodeURIComponent(nqn));
+  } catch (err) {
+    if (err instanceof Unauthorized) throw err;
+    return null;
+  }
+}
+
+// The kernel's target usually only knows who's connected to a port, so what's said about them has to be that careful.
+function connectionsNotice(list) {
+  if (list === null) return el("div", { class: "panel-notice warn", id: "who-is-connected" }, "Couldn't check who's connected.");
+  if (list.length === 0) return el("div", { class: "panel-notice", id: "who-is-connected" }, "Nothing is connected right now.");
+  const names = [...new Set(list.map((c) => c.host_nqn || c.host_address))].join(", ");
+  return el("div", { class: "panel-notice warn", id: "who-is-connected" }, list.every((c) => c.host_nqn)
+    ? `Connected right now: ${names}.`
+    : `Connected to its ports right now: ${names}. This target can't say which subsystem they're using, so they may not be using this one.`);
+}
+
+async function deleteSubsystemDialog(sub) {
+  const exported = (sub.namespaces || []).length;
+  const warning = connectionsNotice(await connectionsTo(sub.nqn));
+  openDialog({
+    title: "Delete this subsystem",
+    warning,
+    intro: `Connected hosts lose access at once.${exported ? ` ${exported === 1 ? "The volume or file in it is" : `The ${exported} volumes or files in it are`} kept, but no longer exported.` : ""}`,
+    submit: "Delete subsystem",
+    danger: true,
+    confirmText: sub.nqn,
+    action: () => send("DELETE", subsystemPath(sub.nqn)),
+    done: () => { notify(`Deleted ${sub.nqn}.`); location.hash = "#/subsystems"; },
+  });
+}
+
+async function allowHostDialog(sub) {
+  const hosts = await api("/v1/hosts");
+  const others = hosts.filter((h) => !(sub.allowed_hosts || []).includes(h.nqn)).map((h) => h.nqn);
+  openDialog({
+    title: "Allow a host",
+    intro: "It can then connect to this subsystem.",
+    submit: "Allow",
+    fields: [{ name: "host", label: "Host", required: true, suggestions: others, placeholder: "Type to search, or enter a new NQN", hint: "A new one is added to the hosts." }],
+    action: async (v) => {
+      if (!hosts.some((h) => h.nqn === v.host)) await send("POST", "/v1/hosts", { nqn: v.host });
+      await send("PUT", `${subsystemPath(sub.nqn)}/hosts/${encodeURIComponent(v.host)}`);
+      return v.host;
+    },
+    done: (host) => { notify(`${host} may connect.`); rerender(); },
+  });
+}
+
+function denyHostDialog(sub, host) {
+  openDialog({
+    title: `Remove ${host}`,
+    intro: "It's cut off at once, and anything using it will see I/O errors. Its writes stop reaching the disk. On the kernel target, other hosts on this subsystem also pause for about 10 s while they reconnect, with no errors.",
+    submit: "Remove host",
+    danger: true,
+    action: () => send("DELETE", `${subsystemPath(sub.nqn)}/hosts/${encodeURIComponent(host)}`),
+    done: () => { notify(`${host} can no longer connect.`); rerender(); },
+  });
+}
+
+function setAnyHostDialog(sub, allow) {
+  openDialog({
+    title: allow ? "Let any host connect" : "Require a list of hosts",
+    intro: allow ? "Any host that can reach its ports can then use what's in this subsystem, with no list of who may." : "Nobody is on the list yet, so connected hosts are cut off at once until you add them.",
+    submit: allow ? "Let any host connect" : "Require a list",
+    danger: true,
+    action: () => send("PATCH", subsystemPath(sub.nqn), { allow_any_host: allow }),
+    done: () => { notify(allow ? "Any host can now connect." : "Only hosts on the list can now connect."); rerender(); },
+  });
+}
+
+async function attachPortDialog(sub, ports) {
+  const free = ports.filter((p) => !(sub.ports || []).includes(p.id));
+  openDialog({
+    title: "Offer it on a port",
+    submit: "Offer",
+    fields: [{ name: "port", label: "Port", value: String(free[0].id), options: free.map((p) => ({ value: String(p.id), label: `${p.address}:${p.service} (port ${p.id})` })) }],
+    action: async (v) => {
+      await send("PUT", `${subsystemPath(sub.nqn)}/ports/${v.port}`);
+      return v.port;
+    },
+    done: (port) => { notify(`Offered on port ${port}.`); rerender(); },
+  });
+}
+
+function detachPortDialog(sub, port) {
+  openDialog({
+    title: `Stop offering it on port ${port.id}`,
+    intro: `Hosts connected through ${port.address}:${port.service} lose access to this subsystem at once.`,
+    submit: "Stop offering",
+    danger: true,
+    action: () => send("DELETE", `${subsystemPath(sub.nqn)}/ports/${port.id}`),
+    done: () => { notify(`No longer offered on port ${port.id}.`); rerender(); },
+  });
+}
+
+function addBackingDialog(sub) {
+  const isFile = (v) => v.kind === "file";
+  openDialog({
+    title: "Add a device or file",
+    intro: "To export a volume, use Add volume, as its identity then stays with it.",
+    submit: "Add",
+    fields: [
+      { name: "kind", kind: "radio", label: "What", value: "device", options: [
+        { value: "device", label: "A block device or file that's already there" },
+        { value: "file", label: "A new file, made by this service" },
+      ] },
+      { name: "path", label: "Path", required: true, when: (v) => !isFile(v), placeholder: "/dev/disk/by-id/...", hint: "As the service sees it. A disk in use, such as one that's mounted, is refused." },
+      { name: "file", label: "File name", required: true, when: isFile, placeholder: "data.img" },
+      { name: "size", label: "Size", size: true, required: true, when: isFile, value: 10 * 2 ** 30 },
+    ],
+    action: (v) => send("POST", `${subsystemPath(sub.nqn)}/namespaces`, isFile(v) ? { file: { name: v.file, size_bytes: v.size } } : { device_path: v.path }),
+    done: () => { notify("Added."); rerender(); },
+  });
+}
+
+function removeBackingDialog(sub, ns) {
+  openDialog({
+    title: `Remove namespace ${ns.nsid}`,
+    intro: "Connected hosts lose access to it at once.",
+    submit: "Remove",
+    danger: true,
+    fields: ns.managed_file ? [{ name: "deleteFile", kind: "tick", text: "Also delete its file, which this service made, and its data" }] : [],
+    action: (v) => send("DELETE", `${subsystemPath(sub.nqn)}/namespaces/${ns.nsid}${v.deleteFile ? "?delete_file=true" : ""}`),
+    done: () => { notify(`Removed namespace ${ns.nsid}.`); rerender(); },
+  });
+}
+
+function addPortDialog() {
+  openDialog({
+    title: "Add a port",
+    intro: "This is an address that hosts connect to.",
+    submit: "Add",
+    fields: [
+      { name: "address", label: "Address", required: true, placeholder: "192.0.2.10", hint: "An address on this machine." },
+      { name: "service", label: "TCP port", required: true, value: "4420" },
+    ],
+    action: (v) => send("POST", "/v1/ports", { address: v.address, service: Number(v.service) }),
+    done: (p) => { notify(`Added port ${p.id}.`); rerender(); },
+  });
+}
+
+function editPortDialog(port) {
+  openDialog({
+    title: `Change port ${port.id}`,
+    intro: "Hosts connected through it lose their connection, and have to reconnect to the new address.",
+    submit: "Change",
+    fields: [
+      { name: "address", label: "Address", required: true, value: port.address },
+      { name: "service", label: "TCP port", required: true, value: String(port.service) },
+    ],
+    action: (v) => send("PATCH", `/v1/ports/${port.id}`, { address: v.address, service: Number(v.service) }),
+    done: () => { notify(`Changed port ${port.id}.`); rerender(); },
+  });
+}
+
+function deletePortDialog(port) {
+  openDialog({
+    title: `Delete port ${port.id}`,
+    intro: `This stops listening on ${port.address}:${port.service}. A port that subsystems are offered on is refused.`,
+    submit: "Delete port",
+    danger: true,
+    action: () => send("DELETE", `/v1/ports/${port.id}`),
+    done: () => { notify(`Deleted port ${port.id}.`); rerender(); },
+  });
+}
+
+const keyFields = [
+  { name: "key", label: "DH-HMAC-CHAP key", secret: true, placeholder: "DHHC-1:00:...", hint: "It can't be shown again. Make one with: nvme gen-dhchap-key" },
+  { name: "ctrlKey", label: "Controller key", secret: true, placeholder: "Optional", hint: "With this, the host checks the target too." },
+];
+
+function addHostDialog() {
+  openDialog({
+    title: "Add a host",
+    submit: "Add",
+    fields: [{ name: "nqn", label: "Host name (NQN)", required: true, placeholder: "nqn.2014-08.org.nvmexpress:uuid:...", hint: "From /etc/nvme/hostnqn on the host." }, ...keyFields],
+    action: (v) => send("POST", "/v1/hosts", { nqn: v.nqn, dhchap_key: v.key || undefined, dhchap_ctrl_key: v.ctrlKey || undefined }),
+    done: (h) => { notify(`Added ${h.nqn}.`); rerender(); },
+  });
+}
+
+function hostKeysDialog(host) {
+  openDialog({
+    title: "Set authentication keys",
+    intro: `For ${host.nqn}. Keys can be replaced, but to remove them, delete the host and add it again. The host needs the same key.`,
+    submit: "Save",
+    fields: keyFields,
+    action: (v) => {
+      const body = {};
+      if (v.key) body.dhchap_key = v.key;
+      if (v.ctrlKey) body.dhchap_ctrl_key = v.ctrlKey;
+      if (!Object.keys(body).length) throw new Error("Enter a key to set.");
+      return send("PATCH", `/v1/hosts/${encodeURIComponent(host.nqn)}`, body);
+    },
+    done: () => { notify("Keys saved."); rerender(); },
+  });
+}
+
+function deleteHostDialog(host) {
+  openDialog({
+    title: "Delete this host",
+    intro: `${host.nqn}, and any keys it has. A host that's allowed on a subsystem is refused.`,
+    submit: "Delete host",
+    danger: true,
+    action: () => send("DELETE", `/v1/hosts/${encodeURIComponent(host.nqn)}`),
+    done: () => { notify("Deleted the host."); rerender(); },
+  });
+}
+
+async function adoptPoolDialog() {
+  const sys = await api("/v1/system");
+  const types = sys.pool_types || [];
+  const isLVM = (v) => v.type === "lvm-thin";
+  openDialog({
+    title: "Adopt a pool",
+    intro: "This uses storage that's already set up. It never initializes a disk.",
+    submit: "Adopt",
+    fields: [
+      { name: "name", label: "Name", required: true },
+      { name: "type", label: "Type", value: types.includes("reflink") ? "reflink" : types[0], options: types.map((t) => ({ value: t, label: t === "lvm-thin" ? "LVM thin pool" : t === "reflink" ? "Reflink files, on XFS or btrfs" : t })) },
+      { name: "path", label: "Directory", required: true, when: (v) => !isLVM(v), placeholder: "/srv/nvweaver" },
+      { name: "vg", label: "Volume group", required: true, when: isLVM },
+      { name: "thin", label: "Thin pool", required: true, when: isLVM, value: "pool0" },
+    ],
+    action: (v) => send("POST", "/v1/pools", isLVM(v)
+      ? { name: v.name, type: v.type, volume_group: v.vg, thin_pool: v.thin }
+      : { name: v.name, type: v.type, path: v.path }),
+    done: (p) => { notify(`Adopted ${p.name}.`); rerender(); },
+  });
+}
+
+function forgetPoolDialog(pool) {
+  openDialog({
+    title: `Forget ${pool.name}`,
+    intro: "This only stops using it: its storage is left alone. A pool with volumes or snapshots is refused.",
+    submit: "Forget pool",
+    danger: true,
+    action: () => send("DELETE", "/v1/pools/" + encodeURIComponent(pool.name)),
+    done: () => { notify(`Forgot ${pool.name}.`); rerender(); },
   });
 }
 
@@ -468,18 +741,20 @@ async function addVolumeDialog(subsystem) {
     fields: [{ name: "volume", label: "Volume", required: true, suggestions: names, placeholder: names.length ? "Type to search" : "There are none that aren't exported",
       hint: names.length ? `${names.length} aren't exported.` : undefined }],
     action: async (v) => {
-      await send("POST", `/v1/subsystems/${encodeURIComponent(subsystem.nqn)}/namespaces`, { volume: v.volume });
+      await send("POST", `${subsystemPath(subsystem.nqn)}/namespaces`, { volume: v.volume });
       return v.volume;
     },
     done: (name) => { notify(`Exported ${name}.`); rerender(); },
   });
 }
 
-function unexportDialog(vol, subsystem, keepSubsystem) {
+async function unexportDialog(vol, subsystem, keepSubsystem) {
   const nsid = vol.mapped_to.nsid;
   const alone = (subsystem.namespaces || []).length <= 1;
+  const warning = connectionsNotice(await connectionsTo(subsystem.nqn));
   openDialog({
     title: `Un-export ${vol.name}`,
+    warning,
     intro: "The volume and its data are kept, but connected hosts lose access to it at once, so anything using it will see I/O errors.",
     submit: "Un-export",
     danger: true,
@@ -566,13 +841,19 @@ function poolTable(pools, options = {}) {
     { title: "Volumes", num: true, cell: (p) => link(p.volumes, "volumes", p.name) },
     { title: "Snapshots", num: true, cell: (p) => p.snapshots },
     { title: "Labels", cell: (p) => labelsText(p.labels) || "-", text: (p) => labelsText(p.labels) },
-  ], pools, { empty: "No pools yet. Adopt one with: nvweaver pool create", ...options, filter: options.filter ?? pools.length > 5, state: stateOf("pools") });
+    ...(options.manage ? [{ title: "", cell: (p) => el("div", { class: "row-actions" }, el("button", { class: "danger-quiet", onclick: () => forgetPoolDialog(p) }, "Forget")) }] : []),
+  ], pools, { empty: "No pools yet.", ...options, filter: options.filter ?? pools.length > 5, state: stateOf("pools") });
 }
 
 async function pools() {
   const list = await api("/v1/pools");
   const troubled = list.flatMap((p) => (p.warnings || []).map((w) => `${p.name}: ${w}`));
-  return [el("h1", {}, "Pools"), troubled.map((w) => el("div", { class: "panel-notice warn" }, w)), poolTable(list)];
+  return [
+    el("h1", {}, "Pools"),
+    el("div", { class: "toolbar" }, el("button", { class: "primary", id: "adopt-pool", onclick: adoptPoolDialog }, "Adopt pool")),
+    troubled.map((w) => el("div", { class: "panel-notice warn" }, w)),
+    poolTable(list, { manage: true }),
+  ];
 }
 
 // A paged list from the API, keeping what's loaded so far across refreshes.
@@ -612,7 +893,7 @@ async function volumes(pool) {
     el("div", { class: "toolbar" }, poolPicker(allPools, pool),
       allPools.length
         ? el("button", { class: "primary", id: "create-volume", onclick: () => createVolumeDialog(pool) }, "Create volume")
-        : el("span", { class: "muted" }, "Adopt a pool to create volumes, with: nvweaver pool create")),
+        : el("span", { class: "muted" }, ["Adopt a pool to create volumes: see ", el("a", { href: "#/pools" }, "Pools")])),
     table([
       { title: "Name", cell: (v) => [el("strong", {}, link(v.name, "volume", v.name)), v.source && el("span", { class: "sub" }, `clone of ${v.source.snapshot || v.source.volume}`)], text: (v) => v.name },
       { title: "Pool", cell: (v) => link(v.pool, "volumes", v.pool), text: (v) => v.pool },
@@ -690,39 +971,79 @@ async function subsystems() {
   const list = await api("/v1/subsystems");
   return [
     el("h1", {}, "Subsystems"),
+    el("div", { class: "toolbar" }, el("button", { class: "primary", id: "create-subsystem", onclick: createSubsystemDialog }, "Create subsystem")),
     table([
       { title: "NQN", cell: (s) => link(s.nqn, "subsystems", s.nqn), text: (s) => s.nqn },
       { title: "Who can connect", cell: (s) => (s.allow_any_host ? pill("Any host", "warn") : `${(s.allowed_hosts || []).length} allowed`), text: (s) => (s.allowed_hosts || []).join(" ") },
       { title: "Ports", cell: (s) => (s.ports || []).join(", ") || "-" },
       { title: "Namespaces", num: true, cell: (s) => (s.namespaces || []).length },
       { title: "Serial", cell: (s) => mono(s.serial), text: (s) => s.serial },
-    ], list, { empty: "No subsystems yet. Create one with: nvweaver subsystem create", state: stateOf("subsystems") }),
+    ], list, { empty: "No subsystems yet.", state: stateOf("subsystems") }),
   ];
 }
 
 async function subsystem(nqn) {
-  const s = await api("/v1/subsystems/" + encodeURIComponent(nqn));
+  const [s, allPorts, connections] = await Promise.all([api(subsystemPath(nqn)), api("/v1/ports"), connectionsTo(nqn)]);
   const notServed = (s.namespaces || []).filter((n) => n.enabled && !n.live_enabled);
+  const allowed = (s.allowed_hosts || []).map((h) => ({ nqn: h }));
+  const offered = allPorts.filter((p) => (s.ports || []).includes(p.id));
+  const canAttach = allPorts.length > offered.length;
   return [
     el("p", { class: "crumb" }, el("a", { href: "#/subsystems" }, "Subsystems")),
     el("h1", {}, mono(s.nqn)),
+    el("div", { class: "toolbar" }, el("button", { class: "danger-quiet", id: "delete-subsystem", onclick: () => deleteSubsystemDialog(s) }, "Delete")),
     notServed.length > 0 && el("div", { class: "panel-notice bad" }, `Namespace ${notServed.map((n) => n.nsid).join(", ")} should be served, but isn't.`),
     el("dl", { class: "facts" },
       fact("Serial", mono(s.serial)), fact("Model", s.model),
-      s.passthru_device && fact("Passes through", mono(s.passthru_device)),
-      fact("Who can connect", s.allow_any_host ? pill("Any host", "warn") : (s.allowed_hosts || []).length ? (s.allowed_hosts).map((h) => el("div", {}, mono(h))) : "Nobody yet"),
-      fact("Ports", (s.ports || []).length ? (s.ports).map((id) => el("div", {}, link(`Port ${id}`, "ports"))) : "None, so hosts can't reach it")),
+      s.passthru_device && fact("Passes through", mono(s.passthru_device))),
+    el("div", { class: "section-head" },
+      el("h2", {}, "Who can connect"),
+      el("div", { class: "row-actions" },
+        s.allow_any_host
+          ? el("button", { id: "require-list", onclick: () => setAnyHostDialog(s, false) }, "Require a list")
+          : [el("button", { id: "any-host", disabled: allowed.length > 0, title: allowed.length ? "Remove the hosts on the list first" : undefined, onclick: () => setAnyHostDialog(s, true) }, "Let any host connect"),
+            el("button", { class: "primary", id: "allow-host", onclick: () => allowHostDialog(s) }, "Allow a host")])),
+    s.allow_any_host
+      ? el("div", { class: "panel-notice warn", id: "any-host-notice" }, "Any host that can reach its ports can connect.")
+      : table([
+        { title: "Host", cell: (h) => mono(h.nqn), text: (h) => h.nqn },
+        { title: "", cell: (h) => el("div", { class: "row-actions" }, el("button", { class: "danger-quiet", onclick: () => denyHostDialog(s, h.nqn) }, "Remove")) },
+      ], allowed, { filter: allowed.length > 5, empty: "Nobody yet, so no host can connect.", state: stateOf("allowed") }),
+    el("div", { class: "section-head" },
+      el("h2", {}, "Ports"),
+      el("button", { class: "primary", id: "attach-port", disabled: !canAttach, title: canAttach ? undefined : "It's on every port there is", onclick: () => attachPortDialog(s, allPorts) }, "Offer on a port")),
+    table([
+      { title: "ID", cell: (p) => p.id },
+      { title: "Address", cell: (p) => mono(`${p.address}:${p.service}`) },
+      { title: "To connect", cell: (p) => el("code", { class: "command" }, `nvme connect -t ${p.transport} -a ${p.address} -s ${p.service} -n ${s.nqn}`) },
+      { title: "", cell: (p) => el("div", { class: "row-actions" }, el("button", { class: "danger-quiet", onclick: () => detachPortDialog(s, p) }, "Stop offering")) },
+    ], offered, { filter: false, empty: "None, so hosts can't reach it.", state: stateOf("sub-ports") }),
+    el("h2", {}, "Connected now"),
+    connections === null
+      ? connectionsNotice(null)
+      : [
+        connections.some((c) => !c.host_nqn) && el("p", { class: "hint", id: "connections-hint" }, "This target only shows who's connected to these ports, who may be using another subsystem on them."),
+        table([
+          { title: "Host", cell: (c) => (c.host_nqn ? mono(c.host_nqn) : "-") },
+          { title: "From", cell: (c) => mono(c.host_address) },
+          { title: "Port", cell: (c) => c.port },
+          { title: "Queues", num: true, cell: (c) => c.queues },
+        ], connections, { filter: false, empty: "Nothing is connected right now.", state: stateOf("connections") }),
+      ],
     el("div", { class: "section-head" },
       el("h2", {}, "Namespaces"),
-      !s.passthru_device && el("button", { class: "primary", id: "add-volume", onclick: () => addVolumeDialog(s) }, "Add volume")),
+      !s.passthru_device && el("div", { class: "row-actions" },
+        el("button", { id: "add-backing", onclick: () => addBackingDialog(s) }, "Add device or file"),
+        el("button", { class: "primary", id: "add-volume", onclick: () => addVolumeDialog(s) }, "Add volume"))),
     table([
       { title: "NSID", cell: (n) => n.nsid },
       { title: "Serving", cell: (n) => (n.live_enabled ? pill("Live", "ok") : n.enabled ? pill("Not serving", "bad") : pill("Disabled", "quiet")) },
       { title: "Size", num: true, cell: (n) => humanSize(n.size_bytes) },
       { title: "Backed by", cell: (n) => [n.volume ? link(n.volume, "volume", n.volume) : null, el("span", { class: n.volume ? "sub" : "" }, mono(n.device_path))] },
       { title: "NGUID", cell: (n) => mono(n.nguid) },
-      { title: "", cell: (n) => n.volume && el("div", { class: "row-actions" },
-        el("button", { class: "danger-quiet", onclick: () => unexportDialog({ name: n.volume, mapped_to: { nsid: n.nsid } }, s, true) }, "Un-export")) },
+      { title: "", cell: (n) => el("div", { class: "row-actions" }, n.volume
+        ? el("button", { class: "danger-quiet", onclick: () => unexportDialog({ name: n.volume, mapped_to: { nsid: n.nsid } }, s, true) }, "Un-export")
+        : el("button", { class: "danger-quiet", onclick: () => removeBackingDialog(s, n) }, "Remove")) },
     ], s.namespaces || [], { filter: false, empty: "Nothing is exported here yet.", state: stateOf("namespaces") }),
   ];
 }
@@ -731,12 +1052,16 @@ async function hosts() {
   const list = await api("/v1/hosts");
   return [
     el("h1", {}, "Hosts"),
+    el("div", { class: "toolbar" }, el("button", { class: "primary", id: "add-host", onclick: addHostDialog }, "Add host")),
     table([
       { title: "NQN", cell: (h) => mono(h.nqn), text: (h) => h.nqn },
       { title: "Authentication", cell: (h) => (h.has_dhchap_key ? pill(h.has_dhchap_ctrl_key ? "DH-HMAC-CHAP, both ways" : "DH-HMAC-CHAP", "ok") : pill("None", "quiet")) },
       { title: "Hash", cell: (h) => h.dhchap_hash || "-" },
       { title: "DH group", cell: (h) => h.dhchap_dhgroup || "-" },
-    ], list, { empty: "No hosts yet. Add one with: nvweaver host create", state: stateOf("hosts") }),
+      { title: "", cell: (h) => el("div", { class: "row-actions" },
+        el("button", { onclick: () => hostKeysDialog(h) }, "Set keys"),
+        el("button", { class: "danger-quiet", onclick: () => deleteHostDialog(h) }, "Delete")) },
+    ], list, { empty: "No hosts yet.", state: stateOf("hosts") }),
   ];
 }
 
@@ -744,12 +1069,16 @@ async function ports() {
   const list = await api("/v1/ports");
   return [
     el("h1", {}, "Ports"),
+    el("div", { class: "toolbar" }, el("button", { class: "primary", id: "add-port", onclick: addPortDialog }, "Add port")),
     table([
       { title: "ID", cell: (p) => p.id },
       { title: "Transport", cell: (p) => p.transport },
       { title: "Address", cell: (p) => mono(p.address), text: (p) => p.address },
       { title: "Service", cell: (p) => p.service },
-    ], list, { filter: false, empty: "No ports yet. Add one with: nvweaver port create", state: stateOf("ports") }),
+      { title: "", cell: (p) => el("div", { class: "row-actions" },
+        el("button", { onclick: () => editPortDialog(p) }, "Change"),
+        el("button", { class: "danger-quiet", onclick: () => deletePortDialog(p) }, "Delete")) },
+    ], list, { filter: false, empty: "No ports yet.", state: stateOf("ports") }),
   ];
 }
 

@@ -52,8 +52,9 @@ func run(listen, token, users string, volumes int, dir string) error {
 	if err != nil {
 		return err
 	}
+	// spare is for adopting from the interface.
 	data, pool, archive := dir+"/data", dir+"/pool", dir+"/archive"
-	for _, d := range []string{data, pool, archive} {
+	for _, d := range []string{data, pool, archive, dir + "/spare"} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return err
 		}

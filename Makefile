@@ -35,7 +35,7 @@ REDOCLY_IMAGE = docker.io/redocly/cli:2.8.0
 lint:
 	@files=$$(gofmt -l .); if [ -n "$$files" ]; then echo "Not gofmt-formatted: $$files"; exit 1; fi
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(SHELLCHECK_IMAGE) -S warning \
-		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/vm-e2e.sh test/vm/run-all.sh test/vm/scale-bench.sh test/webui-e2e.sh .github/publish-images.sh
+		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/vm-e2e.sh test/vm/run-all.sh test/vm/scale-bench.sh test/webui-e2e.sh test/webui-real-e2e.sh .github/publish-images.sh
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(ACTIONLINT_IMAGE)
 	podman run --rm --pull=missing -v "$$PWD:/spec:ro,Z" --workdir /spec $(REDOCLY_IMAGE) \
 		lint --skip-rule operation-4xx-response api/openapi.yaml
@@ -46,8 +46,9 @@ images:
 	podman build $(BUILD_FLAGS) -t nvweaver:spdk --build-arg VERSION=$(VERSION) -f Containerfile.spdk .
 	podman build $(BUILD_FLAGS) -t nvweaver:systemd-test -f test/systemd/Containerfile .
 
-# The release tarball and its checksum, in build/, for the architecture that Go is building for.
+# The release tarball, the command line utility on its own, and their checksums, in build/, for the architecture that Go is building for.
 PACKAGE = nvweaver-$(VERSION)-linux-$(shell go env GOARCH)
+CLI_PACKAGE = nvweaver-cli-$(VERSION)-linux-$(shell go env GOARCH)
 package: nvweaverd nvweaver nvweaver.service
 	rm -rf build
 	install -d build/$(PACKAGE)
@@ -61,7 +62,8 @@ package: nvweaverd nvweaver nvweaver.service
 		dist/systemd/nvweaver-spdk.container > build/$(PACKAGE)/nvweaver-spdk.container
 	tar --sort=name --owner=0 --group=0 --numeric-owner -C build -czf build/$(PACKAGE).tar.gz $(PACKAGE)
 	rm -rf build/$(PACKAGE)
-	cd build && sha256sum $(PACKAGE).tar.gz > SHA256SUMS
+	install -m 0755 nvweaver build/$(CLI_PACKAGE)
+	cd build && sha256sum $(PACKAGE).tar.gz $(CLI_PACKAGE) > SHA256SUMS
 
 # The environment file is only created if missing: it may hold a real token.
 define install-envfile
