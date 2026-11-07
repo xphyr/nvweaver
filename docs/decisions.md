@@ -415,3 +415,12 @@ there, not as absolute numbers.
 - **Programs keep using the token,** and the client has no sign-in. Rejected: a CLI login, as it has nowhere better to keep a credential than the token's file.
 - **Rejected, for now: roles.** Everyone can do everything. Reconsider when there's more than a small team of admins.
 
+
+## 41. Say who's connected as far as the target can really tell
+
+- **The problem:** an admin un-exporting a volume wants to know who that will hurt. SPDK can say, with `nvmf_subsystem_get_qpairs`. The kernel only says in debugfs, and only when built with `CONFIG_NVME_TARGET_DEBUGFS`, which Fedora's kernel isn't.
+- **Chosen:** `GET /v1/connections` lists what's known, with `identifies_connected_hosts` under `capabilities`. On the kernel's target it reads `/proc/net/tcp` and `tcp6`, as sockets are always there: each host address on each port, with how many queues, and no NQN or subsystem. The interface says that they may be using another subsystem on the port.
+- **Nobody listed does mean nobody on either target,** so that part can be relied on before un-exporting. Discovery connections count on the kernel's target, where a socket looks the same, but not on SPDK's.
+- **Rejected: the kernel's log,** which does name hosts. It's overwritten, doesn't say when hosts leave, and reading it would mean guessing.
+- **Rejected, for now: debugfs where it exists.** It couldn't be tested here, and an untested path that only some kernels take isn't worth having yet. It's in `TODO.md`.
+- **Cost:** one RPC for each subsystem on SPDK, so the interface only ever asks about one. Listing everyone hasn't been timed at scale.

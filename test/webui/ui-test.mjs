@@ -499,6 +499,13 @@ await ed.evaluate(async () => { await fetch("/v1/hosts/" + encodeURIComponent("n
 console.log("\nExporting from a subsystem's page");
 const sharedPath = "/v1/subsystems/" + encodeURIComponent("nqn.2026-11.net.example:shared");
 const routeShared = "#/subsystems/" + encodeURIComponent("nqn.2026-11.net.example:shared");
+await openOn(routeShared, "#delete-subsystem");
+check("a subsystem's page says who's connected", (await ed.textContent("main")).includes("Connected now"));
+check("which here is nobody", (await ed.textContent("main")).includes("Nothing is connected right now"));
+await ed.click("#delete-subsystem");
+await ed.waitForSelector("dialog[open]");
+check("and deleting it says so", (await ed.textContent("#who-is-connected")).includes("Nothing is connected right now"));
+await ed.click("#dialog-cancel");
 await openOn(routeShared, "#add-volume");
 check("an empty subsystem says so", (await ed.textContent("main")).includes("Nothing is exported here yet"));
 await ed.click("#add-volume");

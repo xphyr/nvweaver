@@ -123,6 +123,7 @@ func (s *Server) Handler() http.Handler {
 
 	route("GET /v1/system", s.getSystem)
 
+	route("GET /v1/connections", s.listConnections)
 	route("GET /v1/ports", s.listPorts)
 	route("POST /v1/ports", s.createPort)
 	route("GET /v1/ports/{id}", s.getPort)
@@ -307,6 +308,23 @@ func pathPort(r *http.Request) (uint16, error) {
 		return 0, notFound("no such port %q", r.PathValue("id"))
 	}
 	return uint16(id), nil
+}
+
+func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) error {
+	nqn := r.URL.Query().Get("subsystem")
+	return s.m.view(func(st *target.State) error {
+		if nqn != "" {
+			if _, ok := st.Subsystems[nqn]; !ok {
+				return notFound("no subsystem %s", nqn)
+			}
+		}
+		out, err := s.m.backend.Connections(st, nqn)
+		if err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusOK, out)
+		return nil
+	})
 }
 
 func (s *Server) listPorts(w http.ResponseWriter, _ *http.Request) error {

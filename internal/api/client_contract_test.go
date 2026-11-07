@@ -17,7 +17,7 @@ func TestClientTypesMatchTheSpec(t *testing.T) {
 	s := loadSpec(t)
 	types := map[string]any{
 		"Health": client.Health{}, "Capabilities": client.Capabilities{}, "System": client.System{},
-		"Port": client.Port{}, "PortCreate": client.PortCreate{}, "PortUpdate": client.PortUpdate{},
+		"Connection": client.Connection{}, "Port": client.Port{}, "PortCreate": client.PortCreate{}, "PortUpdate": client.PortUpdate{},
 		"Host": client.Host{}, "HostCreate": client.HostCreate{}, "HostUpdate": client.HostUpdate{},
 		"Subsystem": client.Subsystem{}, "SubsystemCreate": client.SubsystemCreate{}, "SubsystemUpdate": client.SubsystemUpdate{},
 		"Namespace": client.Namespace{}, "NamespaceCreate": client.NamespaceCreate{}, "NamespaceUpdate": client.NamespaceUpdate{},
@@ -109,6 +109,8 @@ func TestClientReachesEveryOperation(t *testing.T) {
 	}
 	_, err = c.ListPorts(ctx)
 	must("list ports", err)
+	_, err = c.ListConnections(ctx, "")
+	must("list connections", err)
 	_, err = c.GetPort(ctx, port.ID)
 	must("get port", err)
 	service := 4421

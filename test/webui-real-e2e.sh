@@ -102,6 +102,7 @@ for backend in nvmet spdk; do
 	onDisk=$(t "sudo dd if=\$(sudo lvs --noheadings -o lv_path $VG | tr -d ' ' | grep nvw- | head -1) bs=1M count=16 status=none | md5sum | cut -d' ' -f1")
 	[ "$onDisk" = "$expect" ] && ok "and is really in the LVM volume" || bad "and is really in the LVM volume" "$onDisk, not $expect"
 	step usage
+	step connected "10.99.0.2" "$HOST"
 
 	step clone
 	cdev=$(ns_dev "$NQN" 2)
@@ -121,6 +122,7 @@ for backend in nvmet spdk; do
 		ok "removing it in the interface really cuts the host off"
 	fi
 	i "sudo nvme disconnect-all >/dev/null 2>&1; sudo pkill -9 -x dd; true"
+	step disconnected
 
 	step cleanup "$HOST"
 	left=$(lvs_now)

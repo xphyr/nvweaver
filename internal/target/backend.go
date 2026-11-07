@@ -17,6 +17,8 @@ type Capabilities struct {
 	PerHostDHCHAPParams bool `json:"per_host_dhchap_params"`
 	// WildcardListen can serve hosts on 0.0.0.0 or ::.
 	WildcardListen bool `json:"wildcard_listen"`
+	// IdentifiesConnectedHosts can say which host is connected to which subsystem.
+	IdentifiesConnectedHosts bool `json:"identifies_connected_hosts"`
 	// Transports lists the NVMe transports a port can use.
 	Transports []string `json:"transports"`
 }
@@ -42,6 +44,8 @@ type Backend interface {
 	// LiveEnabledAll is for checking many namespaces at once. It may take a snapshot, so don't
 	// keep the result beyond one request.
 	LiveEnabledAll() LiveChecker
+	// Connections lists who's connected, to one subsystem's ports or to all of them if nqn is empty. It reads the target, so it may be slow.
+	Connections(st *State, nqn string) ([]Connection, error)
 	// Available reports whether the target is usable right now.
 	Available() bool
 	// Close releases anything the backend runs. Configuration removal is

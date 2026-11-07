@@ -289,6 +289,15 @@ func (c *Client) System(ctx context.Context) (*System, error) {
 }
 
 // ListPorts returns every port.
+// ListConnections lists who's connected, to the ports of one subsystem, or to every port if nqn is empty.
+func (c *Client) ListConnections(ctx context.Context, nqn string) ([]Connection, error) {
+	path := "/v1/connections"
+	if nqn != "" {
+		path += "?subsystem=" + url.QueryEscape(nqn)
+	}
+	return list[Connection](ctx, c, path)
+}
+
 func (c *Client) ListPorts(ctx context.Context) ([]Port, error) {
 	return list[Port](ctx, c, "/v1/ports")
 }

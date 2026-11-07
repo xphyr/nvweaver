@@ -250,6 +250,28 @@ ini "dd if=/tmp/pat of=$DA bs=1M oflag=direct status=none; dd if=/tmp/pat of=$DB
 expect_eq "read back from file namespace" "$SUM" "$(ini "dd if=$DA bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
 expect_eq "read back from block namespace" "$SUM" "$(ini "dd if=$DB bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
 expect_eq "data reached the loop device" "$SUM" "$(ini "dd if=$LOOP bs=1M count=16 iflag=direct status=none | md5sum | cut -d' ' -f1")"
+
+section "Who's connected"
+api "list who's connected" 200 GET "/v1/connections?subsystem=$SA"
+expect_eq "the host's connection, from its address" 127.0.0.1 "$(ini "jq -r '.[0].host_address' /tmp/body")"
+expect_eq "on the port it used" 1 "$(ini "jq -r '.[0].port' /tmp/body")"
+QUEUES=$(ini "jq -r '.[0].queues' /tmp/body")
+[ "${QUEUES:-0}" -ge 2 ] && ok "with its admin queue and at least one other" || bad "with its admin queue and at least one other" "$QUEUES"
+api "system says what this target can tell" 200 GET /v1/system
+if [ "$BACKEND" = spdk ]; then
+	expect_eq "SPDK can name hosts" true "$(ini "jq -r .capabilities.identifies_connected_hosts /tmp/body")"
+	api "list who's connected, again" 200 GET "/v1/connections?subsystem=$SA"
+	expect_eq "SPDK names the host" "$H1" "$(ini "jq -r '.[0].host_nqn' /tmp/body")"
+	expect_eq "and the subsystem" "$SA" "$(ini "jq -r '.[0].subsystem' /tmp/body")"
+	api "list everyone" 200 GET /v1/connections
+	expect_eq "each subsystem has its own" 2 "$(ini "jq length /tmp/body")"
+else
+	expect_eq "the kernel can't name hosts" false "$(ini "jq -r .capabilities.identifies_connected_hosts /tmp/body")"
+	api "list who's connected, again" 200 GET "/v1/connections?subsystem=$SA"
+	expect_eq "so it doesn't" null "$(ini "jq -r '.[0].host_nqn' /tmp/body")"
+fi
+expect_has "and so does the command line" 127.0.0.1 "$($ENGINE exec "$TGT" nvweaver --api "$API" connection list --subsystem "$SA")"
+api "a subsystem that doesn't exist" 404 GET "/v1/connections?subsystem=$NQN:nothing"
 expect_eq "data reached the volume file" "$SUM" "$($ENGINE exec "$TGT" sh -c "dd if=/var/lib/nvweaver/volumes/a.img bs=1048576 count=16 2>/dev/null | md5sum | cut -d' ' -f1")"
 
 section "Block sizes hosts see"

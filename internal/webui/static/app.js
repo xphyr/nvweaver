@@ -269,7 +269,7 @@ function plainField(field) {
 }
 
 // openDialog asks for something, and stays open showing the API's answer if it's refused, with what was typed still there.
-function openDialog({ title, intro, fields = [], submit, danger, confirmText, action, done }) {
+function openDialog({ title, intro, warning, fields = [], submit, danger, confirmText, action, done }) {
   const makers = { checks: checksField, tick: tickField, radio: radioField };
   const built = fields.map((field) => ({ field, ...(field.size ? sizeField(field) : (makers[field.kind] || plainField)(field)) }));
   const notice = el("div", {});
@@ -303,6 +303,7 @@ function openDialog({ title, intro, fields = [], submit, danger, confirmText, ac
   } },
     el("h2", {}, title),
     intro && el("p", {}, intro),
+    warning,
     notice,
     built.map((b) => {
       b.wrap = el("div", { class: "field" },
@@ -471,10 +472,32 @@ async function exportDialog(vol) {
   });
 }
 
-function deleteSubsystemDialog(sub) {
+// Who's connected, or null if it can't be found out, which shouldn't get in the way of what someone came to do.
+async function connectionsTo(nqn) {
+  try {
+    return await api("/v1/connections?subsystem=" + encodeURIComponent(nqn));
+  } catch (err) {
+    if (err instanceof Unauthorized) throw err;
+    return null;
+  }
+}
+
+// The kernel's target usually only knows who's connected to a port, so what's said about them has to be that careful.
+function connectionsNotice(list) {
+  if (list === null) return el("div", { class: "panel-notice warn", id: "who-is-connected" }, "Couldn't check who's connected.");
+  if (list.length === 0) return el("div", { class: "panel-notice", id: "who-is-connected" }, "Nothing is connected right now.");
+  const names = [...new Set(list.map((c) => c.host_nqn || c.host_address))].join(", ");
+  return el("div", { class: "panel-notice warn", id: "who-is-connected" }, list.every((c) => c.host_nqn)
+    ? `Connected right now: ${names}.`
+    : `Connected to its ports right now: ${names}. This target can't say which subsystem they're using, so they may not be using this one.`);
+}
+
+async function deleteSubsystemDialog(sub) {
   const exported = (sub.namespaces || []).length;
+  const warning = connectionsNotice(await connectionsTo(sub.nqn));
   openDialog({
     title: "Delete this subsystem",
+    warning,
     intro: `Connected hosts lose access at once.${exported ? ` ${exported === 1 ? "The volume or file in it is" : `The ${exported} volumes or files in it are`} kept, but no longer exported.` : ""}`,
     submit: "Delete subsystem",
     danger: true,
@@ -725,11 +748,13 @@ async function addVolumeDialog(subsystem) {
   });
 }
 
-function unexportDialog(vol, subsystem, keepSubsystem) {
+async function unexportDialog(vol, subsystem, keepSubsystem) {
   const nsid = vol.mapped_to.nsid;
   const alone = (subsystem.namespaces || []).length <= 1;
+  const warning = connectionsNotice(await connectionsTo(subsystem.nqn));
   openDialog({
     title: `Un-export ${vol.name}`,
+    warning,
     intro: "The volume and its data are kept, but connected hosts lose access to it at once, so anything using it will see I/O errors.",
     submit: "Un-export",
     danger: true,
@@ -958,7 +983,7 @@ async function subsystems() {
 }
 
 async function subsystem(nqn) {
-  const [s, allPorts] = await Promise.all([api(subsystemPath(nqn)), api("/v1/ports")]);
+  const [s, allPorts, connections] = await Promise.all([api(subsystemPath(nqn)), api("/v1/ports"), connectionsTo(nqn)]);
   const notServed = (s.namespaces || []).filter((n) => n.enabled && !n.live_enabled);
   const allowed = (s.allowed_hosts || []).map((h) => ({ nqn: h }));
   const offered = allPorts.filter((p) => (s.ports || []).includes(p.id));
@@ -993,6 +1018,18 @@ async function subsystem(nqn) {
       { title: "To connect", cell: (p) => el("code", { class: "command" }, `nvme connect -t ${p.transport} -a ${p.address} -s ${p.service} -n ${s.nqn}`) },
       { title: "", cell: (p) => el("div", { class: "row-actions" }, el("button", { class: "danger-quiet", onclick: () => detachPortDialog(s, p) }, "Stop offering")) },
     ], offered, { filter: false, empty: "None, so hosts can't reach it.", state: stateOf("sub-ports") }),
+    el("h2", {}, "Connected now"),
+    connections === null
+      ? connectionsNotice(null)
+      : [
+        connections.some((c) => !c.host_nqn) && el("p", { class: "hint", id: "connections-hint" }, "This target only shows who's connected to these ports, who may be using another subsystem on them."),
+        table([
+          { title: "Host", cell: (c) => (c.host_nqn ? mono(c.host_nqn) : "-") },
+          { title: "From", cell: (c) => mono(c.host_address) },
+          { title: "Port", cell: (c) => c.port },
+          { title: "Queues", num: true, cell: (c) => c.queues },
+        ], connections, { filter: false, empty: "Nothing is connected right now.", state: stateOf("connections") }),
+      ],
     el("div", { class: "section-head" },
       el("h2", {}, "Namespaces"),
       !s.passthru_device && el("div", { class: "row-actions" },

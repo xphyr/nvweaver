@@ -96,6 +96,33 @@ const steps = {
     const written = 16 * 2 ** 20;
     check("about what the host wrote", used.used_bytes >= written - used.size_bytes / 10000 && used.used_bytes < 2 * written, JSON.stringify(used));
   },
+  async connected() {
+    await open("#/subsystems/" + encodeURIComponent(NQN), "#delete-subsystem");
+    await page.waitForSelector("text=Connected now");
+    const shown = await page.textContent("main");
+    const conns = (await api("/v1/connections?subsystem=" + encodeURIComponent(NQN))).body;
+    check("the API lists the host's connection", conns.length === 1 && conns[0].host_address === args[0] && conns[0].port === (await api("/v1/ports")).body[0].id && conns[0].queues >= 2, JSON.stringify(conns));
+    check("and the subsystem's page shows where it's from", shown.includes(args[0]));
+    const identifies = (await api("/v1/system")).body.capabilities.identifies_connected_hosts;
+    if (identifies) {
+      check("naming the host, on a target that can", conns[0].host_nqn === args[1] && conns[0].subsystem === NQN && shown.includes(args[1]), JSON.stringify(conns));
+    } else {
+      check("saying what it can't know, on a target that can't", !conns[0].host_nqn && (await page.textContent("#connections-hint")).includes("another subsystem"), JSON.stringify(conns));
+    }
+    await open("#/volume/real-vol", "#unexport-volume");
+    await dialog("#unexport-volume");
+    const warned = await page.textContent("#who-is-connected");
+    check("un-exporting says who'd be affected", warned.includes(identifies ? args[1] : args[0]), warned);
+    await page.click("#dialog-cancel");
+  },
+  async disconnected() {
+    await open("#/volume/real-vol", "#unexport-volume");
+    const conns = (await api("/v1/connections?subsystem=" + encodeURIComponent(NQN))).body;
+    check("once the host has gone, nothing is listed", conns.length === 0, JSON.stringify(conns));
+    await dialog("#unexport-volume");
+    check("and un-exporting says so", (await page.textContent("#who-is-connected")).includes("Nothing is connected"));
+    await page.click("#dialog-cancel");
+  },
   async clone() {
     await open("#/volume/real-vol", "#take-snapshot");
     await dialog("#take-snapshot");

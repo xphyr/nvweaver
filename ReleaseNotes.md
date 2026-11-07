@@ -14,6 +14,10 @@ The major differences between versions. For every change, see the commit history
 - **`nvweaver`, a command line utility,** for everything the API does, from this machine or another. It's in the images and the tarball. See [Command line](README.md#command-line).
 - **A web interface,** at `/ui/`, which shows pools, volumes, snapshots, subsystems, hosts, ports and warnings. It manages volumes, snapshots, subsystems, hosts and ports, and adopts pools. Sign in with a username and password, from a users file. See [Web interface](README.md#web-interface).
 - **`nvweaver passwd`,** to make a line for that file.
+- **`GET /v1/connections`, and `nvweaver connection list`,** for who's connected. The interface shows it on a subsystem's page, and before un-exporting or deleting. SPDK names each host. The kernel's target
+  usually can't, so it lists the addresses connected to each port. `identifies_connected_hosts` under `capabilities` says which applies.
+- **An SBOM for each release,** in SPDX JSON, for each image and package and both architectures, which includes SPDK, DPDK and ISA-L. See [docs/releasing.md](docs/releasing.md).
+- **`nvweaver` on its own, as a release artifact,** as `nvweaver-cli-<version>-linux-<arch>`, for people who only want the client.
 - **HTTPS for the API,** with `NVWEAVER_TLS_CERT` and `NVWEAVER_TLS_KEY`. Renewing a certificate needs no restart. Without them, serving off
   loopback now logs a warning that the token is in clear text.
 - **`warnings` in `GET /v1/system`,** which reports if this machine's LVM can read exported devices. A client's LVM on one can get activated here at boot, and can

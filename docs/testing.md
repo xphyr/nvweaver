@@ -380,9 +380,17 @@ losing the service. There's no real target in this: see the next section. `e2e.s
 
 `test/webui-real-e2e.sh` drives both real targets from Chromium, in VMs, through a tunnel, with what the fake target can't show: a real LVM thin pool adopted on the Pools page, a port and host added there, a volume created and exported, and over real HTTPS, with a real password from `nvweaver passwd`. The initiator VM runs the `nvme connect` command that the page displayed, and writes 16 MiB, which reads back and is checked in the LV on the target. Then a snapshot and clone, the clone reaching the host in the same subsystem with the snapshot's data, removing the host on the page really stopping its I/O, and everything taken apart from the interface, leaving no LVs. It checks that LVM has 3 volumes first, so that finding none afterwards means something.
 
-77 checks passed, on x86-64. Its first run failed twice, both in the test: un-exporting a subsystem's last volume removes the subsystem by default, so there was nothing left to delete, and it expected `used_bytes` to be at least what was written. LVM reports a percentage to two places, so 16 MiB came back as 16,750,372 bytes, which the API now documents.
+93 checks passed, on x86-64. Its first run failed twice, both in the test: un-exporting a subsystem's last volume removes the subsystem by default, so there was nothing left to delete, and it expected `used_bytes` to be at least what was written. LVM reports a percentage to two places, so 16 MiB came back as 16,750,372 bytes, which the API now documents.
 
 The browser is told to accept the test's own certificate, so trusting a CA isn't covered. It's the interface's happy path: errors and every field are in `webui-e2e.sh`.
+
+### SBOMs
+
+`make-sboms.sh` ran on real amd64 images and packages. Syft 1.57 listed the Go standard library, `x/crypto` and the distribution's packages, but not SPDK, DPDK or ISA-L, and `nvweaver` had no version, which the script adds. It failed as it should for a row in the notices that it doesn't know, a component that the notices list and an SBOM lacks, and an SPDK image with nothing recorded. Not tried until a release: arm64's images, from the publish job, or whether a vulnerability scanner uses the added packages.
+
+### Who's connected
+
+Two probes in VMs came first. Fedora's 7.2 kernel has no `/sys/kernel/debug/nvmet`, though a connected host showed as 5 established sockets, one for each queue, in `/proc/net/tcp` as seen from the service's container. SPDK's `nvmf_subsystem_get_qpairs` gave the host, controller and both addresses, and an unknown subsystem is refused with "not found". The unit tests use those formats. `e2e.sh` and `webui-real-e2e.sh` connect real hosts to both targets. Not tested: a kernel with debugfs, which isn't used, IPv6, or listing everyone with thousands of subsystems.
 
 ### Signing in
 

@@ -34,12 +34,11 @@ Work through these in order: each phase depends on the ones before it.
   - [ ] `test/systemd-e2e.sh` has a fixed `-l 30`, which doesn't scale with `TEST_TIMEOUT_SCALE`
   - [ ] In `e2e.sh`, stop waiting for a reconnect once the host has removed its controller
   - [ ] Arm runners have no KVM, so CI runs `e2e.sh` directly. Decide whether Arm needs the VM suites
-- [ ] For v0.3.0: publish an SBOM with each release, so that consumers know what's in it. Generate SPDX JSON in the release workflow with a pinned tool such as Syft, from the
+- [x] For v0.3.0: publish an SBOM with each release, so that consumers know what's in it. Generate SPDX JSON in the release workflow with a pinned tool such as Syft, from the
       tested images and tarballs, for both architectures. Attach them to the GitHub release, and attest them, as with provenance
-  - [ ] Check whether a scanner sees SPDK, DPDK and ISA-L inside `nvmf_tgt`. They're compiled from source into one binary, so it probably doesn't, which would look clean while leaving out
-        the most security-relevant code. If so, record their exact versions at build time and add them
-  - [ ] Have CI fail if the SBOM doesn't list what's in `THIRD_PARTY_NOTICES.md`, so that this can't quietly go stale
-- [ ] For v0.3.0: publish the `nvweaver` command line utility as its own artifact, as `nvweaver-cli-<version>-linux-<arch>`, for people who only want the client. Linux on amd64 and arm64,
+  - [x] Check whether a scanner sees SPDK, DPDK and ISA-L inside `nvmf_tgt`. Syft 1.57 doesn't, so their exact versions are recorded at build time and added
+  - [x] Have CI fail if the SBOM doesn't list what's in `THIRD_PARTY_NOTICES.md`, so that this can't quietly go stale
+- [x] For v0.3.0: publish the `nvweaver` command line utility as its own artifact, as `nvweaver-cli-<version>-linux-<arch>`, for people who only want the client. Linux on amd64 and arm64,
       built natively, as the suites and the Arm runner already test it. Include them in the checksums, attestations and SBOM, and say in the README how to get them
 - [ ] Pin base images in the Containerfiles by digest, with automated updates
 - [x] Add a `LICENSE` (MIT)
@@ -105,8 +104,9 @@ and CLI once, against the result.
 - [ ] By 1.0: make serving the API in clear text off loopback an explicit choice by the admin deploying it, rather than a warning. See decision 31. `NVWEAVER_ALLOW_INSECURE_LOGIN` already works this way for passwords, so it may become one setting
 - [x] Check at startup that the tools in "Tools" in the README are there. See decision 34
 - [x] Create a shared Go API client, for the CLI and CSI driver to use. See decision 35
-- [ ] Add an endpoint showing connected hosts, including each connection's transport
-- [ ] Check `info.version` in the API spec in the release workflow: `v0.2.0` shipped saying `0.1.0`
+- [x] Add an endpoint showing connected hosts, including each connection's transport. See decision 41
+- [ ] Say which host is connected on kernels built with `CONFIG_NVME_TARGET_DEBUGFS`, from `/sys/kernel/debug/nvmet`. Fedora's isn't, so it can't be tried in the VMs without building a kernel
+- [x] Check `info.version` in the API spec in the release workflow: `v0.2.0` shipped saying `0.1.0`
 - [ ] Add an endpoint listing available block devices. Pools are adopted for now, so nothing needs it yet
 
 ## 4. Command line utility
@@ -136,7 +136,7 @@ Production-like scale is a requirement, so measure this before building on it.
 - [x] Create and delete subsystems, hosts and ports, including who's allowed and which ports, and namespaces on raw devices and files
 - [x] Adopt and forget pools
 - [x] Set DH-HMAC-CHAP keys on hosts. It doesn't set their hash or DH group, or labels, a namespace's UUID, or enabling and disabling a namespace, which are in the CLI
-- [ ] Show which hosts are connected before un-exporting, once the phase 3 endpoint for that exists
+- [x] Show which hosts are connected on a subsystem's page, and before un-exporting or deleting it
 - [x] Run a browser against both real targets in VMs: `test/webui-real-e2e.sh`
 
 ## 7. Kubernetes CSI driver

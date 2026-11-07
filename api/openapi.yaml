@@ -144,6 +144,35 @@ paths:
                 $ref: '#/components/schemas/System'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /v1/connections:
+    get:
+      operationId: listConnections
+      summary: List who's connected
+      description: |
+        The connections hosts have right now. What can be known depends on the target: see
+        `identifies_connected_hosts` under `capabilities`. SPDK says which host is connected to which subsystem.
+        The kernel's target normally can't, so this lists the address of each host connected to a port,
+        which might be using any subsystem on that port, or only be looking for them with discovery.
+      tags: [subsystems]
+      parameters:
+        - name: subsystem
+          in: query
+          description: Only what could be using this subsystem. On the kernel's target, that's everyone connected to its ports.
+          schema:
+            $ref: '#/components/schemas/NQN'
+      responses:
+        '200':
+          description: The connections, by port, then subsystem, then host.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Connection'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/ports:
     get:
       operationId: listPorts
@@ -1481,6 +1510,7 @@ components:
         - buffered_io
         - per_host_dhchap_params
         - wildcard_listen
+        - identifies_connected_hosts
         - transports
       properties:
         passthrough:
@@ -1501,6 +1531,9 @@ components:
         wildcard_listen:
           type: boolean
           description: Can serve hosts on `0.0.0.0` or `::`.
+        identifies_connected_hosts:
+          type: boolean
+          description: Can say which host is connected to which subsystem, not only the addresses connected to a port.
         transports:
           type: array
           description: The NVMe transports that a port can use.
@@ -1558,6 +1591,31 @@ components:
             while to show here. See "Clients' LVM" in `docs/pools.md`.
           items:
             type: string
+    Connection:
+      type: object
+      description: One host's connection to a port, or to a subsystem where the target can tell.
+      required: [port, transport, host_address, queues]
+      properties:
+        port:
+          type: integer
+          description: The ID of the port it's connected to.
+        transport:
+          type: string
+          enum: [tcp]
+        host_address:
+          type: string
+          description: The address that the host is connecting from.
+        queues:
+          type: integer
+          description: How many queues it has open, including the admin queue. On the kernel's target, this is added up over everything that this address has open on the port.
+        subsystem:
+          allOf:
+            - $ref: '#/components/schemas/NQN'
+          description: Left out if the target can't tell.
+        host_nqn:
+          allOf:
+            - $ref: '#/components/schemas/NQN'
+          description: Left out if the target can't tell.
     Port:
       type: object
       required: [id, transport, address, service]

@@ -26,6 +26,7 @@ between targets and hosts see the same UUID, NGUID, block size and data.
 | Image | `Containerfile`, 25 MB | `Containerfile.spdk`, 134 MB (includes both targets) |
 | Host kernel | `nvmet-tcp` module (`modinfo nvmet-tcp`), which is separate from the `nvme-tcp` initiator | No NVMe modules |
 | Container | Privileged, host network | Can run with `--cap-drop=ALL` |
+| Who's connected | Addresses connected to each port, so not which host or subsystem | Which host, on which subsystem |
 | CPU | x86-64 or arm64 | x86-64-v2 or newer (about 2009 onward), or arm64 with CRC instructions, tested on Cortex-A72 (Raspberry Pi 4) |
 | Memory | About 8 MB plus kernel use | About 240 MB (`NVWEAVER_SPDK_MEM_MB`, default 1024, is its limit) |
 
@@ -51,7 +52,7 @@ It does stop at startup if the chosen target can't run. LVM has only been tested
 
 **To build:** Go 1.26 and `make` for the binary, and Podman for the images. Docker is a fallback. The SPDK image downloads and compiles SPDK.
 
-**To run the tests:** `go test` needs only Go. `make lint` needs Podman. `e2e.sh` and `systemd-e2e.sh` need rootful Podman, and the kernel modules above. The VM suites need QEMU with
+**To run the tests:** `go test` needs only Go. `make lint` needs Podman. `e2e.sh` and `systemd-e2e.sh` need rootful Podman, and the kernel modules above. The VM suites need QEMU with `.github/make-sboms.sh` needs Podman, which runs Syft in a container, and `jq`.
 KVM, including `qemu-img`, and `genisoimage`, and no root.
 
 ## Quick start
@@ -105,7 +106,7 @@ port; add one on 8009 if your initiators expect the standard discovery port.
 
 ## Command line
 
-`nvweaver` manages the service through its API, from this machine or another. It's in the images, the release tarball and `make install`, and needs nothing else.
+`nvweaver` manages the service through its API, from this machine or another. It's in the images, the release tarball and `make install`, and on its own on [each release](https://github.com/xphyr/nvweaver/releases) as `nvweaver-cli-<version>-linux-<arch>`, and needs nothing else.
 
 ```sh
 export NVWEAVER_API_URL=https://storage.example:8420
@@ -192,6 +193,7 @@ is rolled back, so it never leaves partial configuration.
 |---|---|
 | `/healthz` | `GET` (needs no token) |
 | `/v1/system` | `GET` (includes the active `backend` and its `capabilities`) |
+| `/v1/connections` | `GET`, with `?subsystem=` for one subsystem (see `identifies_connected_hosts` under `capabilities`) |
 | `/v1/ports`, `/v1/ports/{id}` | `GET` `POST`, `GET` `PATCH` `DELETE` |
 | `/v1/hosts`, `/v1/hosts/{nqn}` | `GET` `POST`, `GET` `PATCH` `DELETE` |
 | `/v1/subsystems`, `/v1/subsystems/{nqn}` | `GET` `POST`, `GET` `PATCH` `DELETE` |
@@ -243,7 +245,7 @@ with no interruption. Objects created outside this service are left alone.
 which needs nothing built. Check it, then install it:
 
 ```sh
-sha256sum -c SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
 # Use arm64 in place of amd64 on Arm.
 tar xzf nvweaver-*-linux-amd64.tar.gz
 cd nvweaver-*-linux-amd64

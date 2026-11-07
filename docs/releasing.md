@@ -3,7 +3,7 @@
 ## Making a release
 
 First, update [ReleaseNotes.md](../ReleaseNotes.md): move what shipped out of "not yet released", and give it the version. Also
-update `info.version` in `api/openapi.yaml`.
+update `info.version` in `api/openapi.yaml`, with no suffix even for a pre-release, as the release fails early if it doesn't match the tag.
 
 ```sh
 git tag -s v0.2.0 -m "nvweaver 0.2.0"
@@ -19,8 +19,10 @@ including all end-to-end suites, and publishes only if they all pass:
 | SPDK image, both architectures | `ghcr.io/xphyr/nvweaver:0.2.0-spdk`, and `:latest-spdk` |
 | One architecture's image | The same tags, ending `-amd64` or `-arm64`, as with `:0.2.0-spdk-arm64`, but not for `latest` |
 | Binaries, unit, Quadlet, notices | `nvweaver-0.2.0-linux-amd64.tar.gz` and `-linux-arm64.tar.gz` on the GitHub release |
-| Checksums | `SHA256SUMS` on the GitHub release, covering both |
-| Provenance | Signed attestations for the multi-arch tags and the tarballs |
+| Command line utility alone | `nvweaver-cli-0.2.0-linux-amd64` and `-linux-arm64` on the GitHub release |
+| SBOMs, in SPDX JSON | On the GitHub release, one for each of those: `nvweaver-0.2.0-image-amd64.spdx.json`, `-spdk-image-`, `-linux-`, and `nvweaver-cli-0.2.0-linux-amd64.spdx.json` |
+| Checksums | `SHA256SUMS` on the GitHub release, covering all of those files |
+| Provenance | Signed attestations for the multi-arch tags and all of those files |
 
 A tag with a suffix, like `v0.1.0-rc1`, makes a pre-release and leaves `latest` alone. Use one
 to try the pipeline.
@@ -37,10 +39,13 @@ Set these up in the repository's settings on GitHub:
   job waits in it, which gives you a last check before anything is published.
 - **Tags:** consider a tag protection rule for `v*`, since pushing a tag publishes.
 
+`.github/make-sboms.sh` makes the SBOMs from those same images and files, with Syft. Syft can't see SPDK, DPDK or ISA-L, compiled together into `nvmf_tgt`, so `Containerfile.spdk` records what it built from, and
+the script adds them. It fails if an SBOM is missing anything `THIRD_PARTY_NOTICES.md` lists, and a new row there must be added to the script. Every pull request runs it for amd64.
+
 ## Verifying a release
 
 ```sh
-sha256sum -c SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
 gh attestation verify nvweaver-0.2.0-linux-amd64.tar.gz --repo xphyr/nvweaver
 gh attestation verify oci://ghcr.io/xphyr/nvweaver:0.2.0 --repo xphyr/nvweaver
 ```

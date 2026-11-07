@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -24,6 +25,8 @@ type fake struct {
 	// rpcs counts every call, reads too: each takes about 8 ms on the real target, even one that changes nothing.
 	rpcs int
 	fail map[string]error
+	// qpairs is what nvmf_subsystem_get_qpairs reports, by subsystem, in SPDK's own format.
+	qpairs map[string][]map[string]any
 	// listed counts nvmf_get_subsystems calls, and listedAll those not naming a subsystem.
 	listed, listedAll int
 	listedBdevs       int
@@ -76,6 +79,12 @@ func (f *fake) Call(method string, params, result any) error {
 	}
 	sub := f.subs[p.NQN]
 	switch method {
+	case "nvmf_subsystem_get_qpairs":
+		if sub == nil {
+			return &RPCError{Code: invalidParams, Message: "Subsystem with NQN '" + p.NQN + "' not found"}
+		}
+		b, _ := json.Marshal(f.qpairs[p.NQN])
+		return json.Unmarshal(b, result)
 	case "nvmf_get_subsystems":
 		f.listed++
 		if p.NQN == "" {
@@ -699,5 +708,62 @@ func TestFsAioMaxNrIsCheckedClearly(t *testing.T) {
 	b.aioLimit = func() (int, error) { return 0, errors.New("no /proc") }
 	if err := b.Check(s); err != nil {
 		t.Errorf("if it can't be read, that's not a reason to refuse: %v", err)
+	}
+}
+
+func qpair(controller int, host, listen, service, peer string) map[string]any {
+	return map[string]any{
+		"cntlid": controller, "qid": 0, "state": "enabled", "hostnqn": host,
+		"listen_address": map[string]any{"trtype": "TCP", "adrfam": "IPv4", "traddr": listen, "trsvcid": service},
+		"peer_address":   map[string]any{"trtype": "TCP", "adrfam": "IPv4", "traddr": peer, "trsvcid": "57734"},
+	}
+}
+
+func TestConnections(t *testing.T) {
+	f := newFake()
+	const a, b, gone = "nqn.2026-11.net.example:a", "nqn.2026-11.net.example:b", "nqn.2026-11.net.example:gone"
+	f.subs[a] = &liveSubsystem{NQN: a}
+	f.subs[b] = &liveSubsystem{NQN: b}
+	f.qpairs = map[string][]map[string]any{
+		// One host through two ports, as two controllers, and another.
+		a: {
+			qpair(1, "nqn.host1", "10.0.0.1", "4420", "10.0.0.8"), qpair(1, "nqn.host1", "10.0.0.1", "4420", "10.0.0.8"), qpair(1, "nqn.host1", "10.0.0.1", "4420", "10.0.0.8"),
+			qpair(2, "nqn.host1", "10.0.0.2", "4421", "10.0.0.8"), qpair(2, "nqn.host1", "10.0.0.2", "4421", "10.0.0.8"),
+			qpair(3, "nqn.host2", "10.0.0.1", "4420", "10.0.0.9"), qpair(3, "nqn.host2", "10.0.0.1", "4420", "10.0.0.9"),
+			// A listener that was removed after the state being used.
+			qpair(4, "nqn.host3", "10.0.0.3", "4422", "10.0.0.7"),
+		},
+	}
+	st := &target.State{
+		Ports: map[uint16]*target.Port{
+			1: {ID: 1, Transport: target.TransportTCP, Address: "10.0.0.1", Service: 4420},
+			2: {ID: 2, Transport: target.TransportTCP, Address: "10.0.0.2", Service: 4421},
+		},
+		Subsystems: map[string]*target.Subsystem{a: {NQN: a}, b: {NQN: b}, gone: {NQN: gone}},
+	}
+	backend := &Backend{rpc: f}
+	got, err := backend.Connections(st, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcp := target.TransportTCP
+	want := []target.Connection{
+		{Port: 1, Transport: tcp, HostAddress: "10.0.0.8", Queues: 3, Subsystem: a, HostNQN: "nqn.host1"},
+		{Port: 1, Transport: tcp, HostAddress: "10.0.0.9", Queues: 2, Subsystem: a, HostNQN: "nqn.host2"},
+		{Port: 2, Transport: tcp, HostAddress: "10.0.0.8", Queues: 2, Subsystem: a, HostNQN: "nqn.host1"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v\nwant %+v", got, want)
+	}
+	got, err = backend.Connections(st, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Errorf("a subsystem with nobody connected got %#v, which should be an empty list", got)
+	}
+	f.fail = map[string]error{"nvmf_subsystem_get_qpairs": errors.New("SPDK has gone")}
+	if _, err := backend.Connections(st, a); err == nil {
+		t.Error("no error when SPDK can't be asked")
 	}
 }
