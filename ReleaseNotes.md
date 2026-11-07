@@ -2,7 +2,7 @@
 
 The major differences between versions. For every change, see the commit history.
 
-## Not yet released
+## v0.3.0
 
 ### Security
 
