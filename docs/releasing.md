@@ -40,7 +40,7 @@ Set these up in the repository's settings on GitHub:
 - **Tags:** consider a tag protection rule for `v*`, since pushing a tag publishes.
 
 `.github/make-sboms.sh` makes the SBOMs from those same images and files, with Syft. Syft can't see SPDK, DPDK or ISA-L, compiled together into `nvmf_tgt`, so `Containerfile.spdk` records what it built from, and
-the script adds them. It fails if an SBOM is missing anything `THIRD_PARTY_NOTICES.md` lists, and a new row there must be added to the script. Every pull request runs it for amd64.
+the script adds them. It fails if an SBOM is missing anything `THIRD_PARTY_NOTICES.md` lists, and a new row there must be added to the script, or if the images and binaries weren't all built with the same Go. Every pull request runs it for amd64.
 
 ## Verifying a release
 

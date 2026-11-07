@@ -388,6 +388,8 @@ The browser is told to accept the test's own certificate, so trusting a CA isn't
 
 `make-sboms.sh` ran on real amd64 images and packages. Syft 1.57 listed the Go standard library, `x/crypto` and the distribution's packages, but not SPDK, DPDK or ISA-L, and `nvweaver` had no version, which the script adds. It failed as it should for a row in the notices that it doesn't know, a component that the notices list and an SBOM lacks, and an SPDK image with nothing recorded. Not tried until a release: arm64's images, from the publish job, or whether a vulnerability scanner uses the added packages.
 
+**The SBOMs found a real problem in `v0.3.0-rc1`.** Its tarballs and CLI were built with Go 1.26.0, and its images with 1.26.10. Vendoring `x/crypto` had left `go 1.26.0` in `go.mod`, which `setup-go` followed. No test looked at this. CI now asks for the newest 1.26, and `make-sboms.sh` fails if everything wasn't built with one version.
+
 ### Who's connected
 
 Two probes in VMs came first. Fedora's 7.2 kernel has no `/sys/kernel/debug/nvmet`, though a connected host showed as 5 established sockets, one for each queue, in `/proc/net/tcp` as seen from the service's container. SPDK's `nvmf_subsystem_get_qpairs` gave the host, controller and both addresses, and an unknown subsystem is refused with "not found". The unit tests use those formats. `e2e.sh` and `webui-real-e2e.sh` connect real hosts to both targets. Not tested: a kernel with debugfs, which isn't used, IPv6, or listing everyone with thousands of subsystems.
