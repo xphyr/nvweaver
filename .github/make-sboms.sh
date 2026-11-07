@@ -100,3 +100,12 @@ for arch in "$@"; do
 	finish "$OUT/nvweaver-cli-$VERSION-linux-$arch.spdx.json"
 	check "$OUT/nvweaver-cli-$VERSION-linux-$arch.spdx.json" cli
 done
+
+# Everything should be built with one Go. The images use the newest 1.26, and setup-go once followed the go line in go.mod instead, which shipped binaries that were
+# ten patch releases behind, with any security fixes in those.
+go_versions=$(jq -r '.packages[] | select(.name == "stdlib") | .versionInfo' "$OUT"/*.spdx.json | sort -u)
+if [ "$(wc -l <<<"$go_versions")" != 1 ]; then
+	echo "these were built with different versions of Go:" $go_versions >&2
+	exit 1
+fi
+echo "  all built with $go_versions"
