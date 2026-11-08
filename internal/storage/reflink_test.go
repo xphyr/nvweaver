@@ -170,7 +170,8 @@ func TestCloneCopiesData(t *testing.T) {
 func TestSnapshotsAndClonesAreIndependent(t *testing.T) {
 	d, dir := driver(t)
 	if !supportsReflink(t, dir) {
-		t.Skip("this filesystem has no reflink; the end-to-end suites cover it")
+		// Skipped on tmpfs and ext4, so test/e2e.sh checks the snapshot's mode too.
+		t.Skip("this filesystem has no reflink; test/e2e.sh checks that snapshots are read-only")
 	}
 	name := func(s string) string { return target.InternalPrefix + s }
 	vol, err := d.Create(name("vol"), 8192)

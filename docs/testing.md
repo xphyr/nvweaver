@@ -424,6 +424,42 @@ That denial appears nowhere: not in the journal, `audit.log` or `dmesg`. To see 
 confined container was made to touch unlabelled host paths. All 3 denials were in the journal, matching `audit.log`, so it does catch denials
 that the policy logs, but not ones it silences.
 
+### The suites, audited with deliberate bugs
+
+To find what each suite is worth, 26 bugs were put into the code one at a time, each a single small edit, on x86-64 VMs. Each ran
+through the suites it could reach, and then the unchanged code through all of them, which passed: 297 unit tests, 235 in the browser,
+301 on the kernel target, 318 on SPDK, 76 under systemd, 906 in the VMs and 93 on real targets in a browser.
+
+| Suite | Time | Caught alone, among the end-to-end suites |
+|---|---|---|
+| Unit | 3 s | SPDK's discovery listener (see below), and 8 more that otherwise only `vm-e2e.sh` caught |
+| `e2e.sh`, kernel | 160 s | A host's DH-HMAC-CHAP key not written |
+| `e2e.sh`, SPDK | 150 s | None, but it's all that runs on Arm |
+| `systemd-e2e.sh` | 70 s | The unit's sandbox removed |
+| `vm-e2e.sh` | 17 to 18 min | The state file not synced: only a real power cut finds it. Also fencing, durable SPDK files, LVM snapshots made writable, LVM deletes leaking, no reservations, a full pool unreported, no LVM warning |
+| `webui-real-e2e.sh` | 11.5 min, now about 2 | The session cookie without `Secure` |
+| `webui-e2e.sh` | 27 s | None alone: it shares the connect command and cross-origin checks |
+
+So no suite can go. A bug in code that both backends share was caught by both backends' copies of a section in `vm-e2e.sh`, and a
+bug in one backend only by that backend's copy. Storage-only sections could therefore run on one backend, saving about 3
+minutes. That isn't done, as it's a loss of coverage for the user to decide on.
+
+What else it found, and what changed:
+
+- **Nothing caught a reflink snapshot made writable.** The one unit test that checks skips itself without reflink, as on tmpfs and
+  ext4, saying that the end-to-end suites cover it, which they didn't. `e2e.sh` now checks the snapshot's mode.
+- **`webui-real-e2e.sh` spent 614 of its 694 seconds on one check,** a write that should fail after the host is removed. On SPDK
+  it blocks uninterruptibly until the host gives up on the controller, after 600 seconds, which `timeout -s KILL` can't end. It
+  now runs in the background, as in `vm-e2e.sh`, and disconnecting ends it.
+- **The crash test found no change in progress in 11 of 54 runs,** and passed, with recovery unexercised. It now adds rounds,
+  up to 12, until a crash catches one, and fails otherwise. Its cleanup made one `podman exec` for each of about 480 deletes,
+  40 seconds per backend, and now makes one.
+- **SPDK hosts discovered every subsystem with the code that adds discovery listeners removed,** in both `e2e.sh` and
+  `vm-e2e.sh`, so SPDK 26.09 serves discovery without it. Only a unit test notices. What the code is for is in `TODO.md`.
+- **A test bug, not a product one, failed Arm CI once:** reading a counter that `echo n > file` was rewriting found it empty. The
+  counter is now renamed into place.
+- `make-sboms.sh` left a container behind when copying from it failed, as `set -e` exited before removing it.
+
 ## Not tested
 
 Deferred until hardware is available, as tracked in `TODO.md`:
@@ -532,9 +568,16 @@ Checks that passed while proving nothing. Watch for these patterns:
 - The SPDK failure test hid the output of its `kill`, so a kill that never happened looked just like a service that
   ignores its target dying. The first fix repeated this, calling a `kill` binary the image doesn't have. It now checks
   that it found the process, uses the shell's builtin, and leaves errors visible.
+- A unit test of reflink snapshots skipped itself on tmpfs and ext4, saying that the end-to-end suites covered it. They never
+  checked that a snapshot is read-only, so nothing did. `e2e.sh` now checks.
+- The crash test in `e2e.sh` passed in about one run in five without any change in progress when the service was killed, so
+  recovery was never exercised. It now requires one.
 
 ## Test pitfalls
 
+- **A write to a host's NVMe device that can't finish ignores `timeout -s KILL`.** It's uninterruptible until the host gives up on
+  the controller, 600 seconds by default. Run it in the background and check whether it finished, then disconnect.
+- **`echo n > file` empties the file before writing,** so a reader at that moment gets nothing. Write elsewhere and `mv` it.
 - **`/proc/PID/task/TID/children`** lists only that thread's children. Go can start a process from any thread, so
   reading thread 1 found no `nvmf_tgt` in 1 of 5 starts under emulation. Read `/proc/1/task/*/children`.
 - **`dd` to a device that has gone makes a file:** once a host lost its controller, `dd of=/dev/nvme0n1` created a regular file in `/dev` and appeared

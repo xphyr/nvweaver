@@ -116,7 +116,11 @@ for backend in nvmet spdk; do
 	[ "$before" = 3 ] && ok "LVM has the volume, its snapshot and its clone" || bad "LVM has the volume, its snapshot and its clone" "$before"
 
 	step deny "$HOST"
-	if i "sudo timeout -s KILL 12 dd if=/tmp/real of=$dev bs=1M count=1 seek=100 oflag=direct conv=nocreat,notrunc status=none" 2>/dev/null; then
+	# In the background, because a write that can't finish blocks uninterruptibly until the host gives up on the
+	# controller, 600 seconds by default, which a timeout can't kill. Disconnecting below ends it.
+	i "sudo rm -f /tmp/denied.done; sudo setsid sh -c 'dd if=/tmp/real of=$dev bs=1M count=1 seek=100 oflag=direct conv=nocreat,notrunc status=none && touch /tmp/denied.done' </dev/null >/dev/null 2>&1 &"
+	sleep 12
+	if [ "$(i "[ -f /tmp/denied.done ] && echo finished")" = finished ]; then
 		bad "removing it in the interface really cuts the host off" "a write still finished"
 	else
 		ok "removing it in the interface really cuts the host off"

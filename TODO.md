@@ -93,7 +93,10 @@ and CLI once, against the result.
 ## Test suite
 
 - [ ] Add path filters to pull requests, using the table in decision 39, keeping the full run on `main` and releases
-- [ ] Audit the suites, once the web interface is done. Time each section, then remove candidates only if deliberately introduced bugs are still caught. `e2e.sh` and `vm-e2e.sh` overlap, but may fail for different reasons, and `e2e.sh` is all that runs on Arm
+- [x] Audit the suites with deliberately introduced bugs, timing each section. Every suite caught something no other did, so none was removed. Results in `docs/testing.md`
+- [ ] Decide whether `vm-e2e.sh` runs its storage-only LVM sections on one backend: about 3 minutes, as bugs in shared code were caught by both copies. Host-visible checks stay on both
+- [ ] Find out what SPDK's discovery listeners are for: hosts discovered every subsystem without them on SPDK 26.09. Either test the case that needs them, perhaps a port with no subsystems or an older SPDK, or remove them
+- [ ] Find out whether CI's unit tests skip the reflink ones, which `go test` without `-v` doesn't show
 - [ ] Check "Escaped a scoped run" in `docs/testing.md` at each release, and revisit decision 39 as it says
 
 ## 3. API foundations
