@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -254,32 +256,207 @@ func checkPassthru(path string) error {
 	return nil
 }
 
+// checkPassthruFree refuses a controller that's already in use: passed through by another subsystem, with a namespace
+// exported, or with a namespace that something on this machine holds, such as a mounted filesystem.
+func checkPassthruFree(s *target.State, ctrl string) error {
+	for _, sub := range s.Subsystems {
+		if sub.Passthru != "" && resolve(sub.Passthru) == resolve(ctrl) {
+			return target.NewConflict("%s is already passed through by %s", ctrl, sub.NQN)
+		}
+	}
+	namespaces, err := controllerNamespaces(ctrl)
+	if err != nil {
+		return err
+	}
+	for _, ns := range namespaces {
+		if err := checkUnshared(s, ns, "", 0, ""); err != nil {
+			return target.NewConflict("%s can't be passed through: %v", ctrl, err)
+		}
+		if err := checkInUse(ns); err != nil {
+			return target.NewConflict("%s can't be passed through: %v", ctrl, err)
+		}
+	}
+	return nil
+}
+
+// checkInUse is checkBacking, a variable so that tests can make a namespace busy.
+var checkInUse = checkBacking
+
+// Where controllerNamespaces looks. Tests use a copy of the layouts below.
+var (
+	sysRoot = "/sys"
+	devRoot = "/dev"
+)
+
+var (
+	nsDeviceRE = regexp.MustCompile(`^nvme[0-9]+n[0-9]+$`)
+	nsPathRE   = regexp.MustCompile(`^nvme[0-9]+c[0-9]+n[0-9]+$`)
+)
+
+// controllerNamespaces finds the block devices of an NVMe controller's namespaces. Without multipath they're in the
+// controller's directory, as nvme1n1. With it, which fabrics controllers and shared namespaces have, the controller's
+// directory has hidden path devices such as nvme2c2n1, with no device node, and the namespace is nvme2n1 in the NVMe
+// subsystem's directory, beside the controller's name. Path devices with no namespace found is an error, rather than
+// nothing to check.
+func controllerNamespaces(ctrl string) ([]string, error) {
+	name := filepath.Base(ctrl)
+	entries, err := os.ReadDir(filepath.Join(sysRoot, "class/nvme", name))
+	if err != nil {
+		return nil, target.Invalid("can't list the namespaces of %s: %v (is /sys visible inside the container?)", ctrl, err)
+	}
+	found := map[string]bool{}
+	paths := 0
+	for _, e := range entries {
+		switch {
+		case nsDeviceRE.MatchString(e.Name()):
+			found[e.Name()] = true
+		case nsPathRE.MatchString(e.Name()):
+			paths++
+		}
+	}
+	if paths > 0 {
+		subsystems, _ := filepath.Glob(filepath.Join(sysRoot, "class/nvme-subsystem/*", name))
+		for _, link := range subsystems {
+			entries, err := os.ReadDir(filepath.Dir(link))
+			if err != nil {
+				return nil, target.Invalid("can't list the namespaces of %s: %v (is /sys visible inside the container?)", ctrl, err)
+			}
+			for _, e := range entries {
+				if nsDeviceRE.MatchString(e.Name()) {
+					found[e.Name()] = true
+				}
+			}
+		}
+		if len(found) == 0 {
+			return nil, target.Invalid("%s has %d namespace paths, but their namespaces weren't found in %s/class/nvme-subsystem", ctrl, paths, sysRoot)
+		}
+	}
+	out := make([]string, 0, len(found))
+	for n := range found {
+		out = append(out, filepath.Join(devRoot, n))
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
 // checkUnshared stops the same backing store being exported twice, which
-// would let two namespaces silently corrupt one another. skip names the
-// namespace being updated, if any.
-func checkUnshared(s *target.State, path, skipNQN string, skipNSID uint32) error {
-	want := resolve(path)
+// would let two namespaces silently corrupt one another. Paths are compared by
+// what they reach: a hard link, a bind mount, or a disk and one of its
+// partitions are the same store. skipNQN and skipNSID name the namespace being
+// updated, if any, and skipVolume the volume being mapped, whose own entry and
+// mappings don't count.
+func checkUnshared(s *target.State, path, skipNQN string, skipNSID uint32, skipVolume string) error {
+	want := newStore(path)
 	for _, vol := range s.Volumes {
-		if resolve(vol.DevicePath) == want {
+		if vol.Name != skipVolume && want.same(vol.DevicePath) {
 			return target.NewConflict("%s belongs to volume %s: map the volume instead", path, vol.Name)
 		}
 	}
 	for _, snap := range s.Snapshots {
-		if resolve(snap.DevicePath) == want {
+		if want.same(snap.DevicePath) {
 			return target.NewConflict("%s belongs to snapshot %s: clone it to a volume instead", path, snap.Name)
 		}
 	}
 	for _, sub := range s.Subsystems {
+		if sub.Passthru != "" {
+			// What can't be listed was checked when it was passed through, so isn't a reason to refuse here.
+			namespaces, _ := controllerNamespaces(sub.Passthru)
+			for _, ns := range namespaces {
+				if want.same(ns) {
+					return target.NewConflict("%s is a namespace of %s, which %s passes through", path, sub.Passthru, sub.NQN)
+				}
+			}
+		}
 		for _, ns := range sub.Namespaces {
-			if sub.NQN == skipNQN && ns.NSID == skipNSID {
+			if sub.NQN == skipNQN && ns.NSID == skipNSID || skipVolume != "" && ns.Volume == skipVolume {
 				continue
 			}
-			if resolve(ns.DevicePath) == want {
+			if want.same(ns.DevicePath) {
 				return target.NewConflict("%s is already exported by %s namespace %d", path, sub.NQN, ns.NSID)
 			}
 		}
 	}
 	return nil
+}
+
+// store is a backing path, and what it reaches if it can be found.
+type store struct {
+	path string
+	id   storeID
+	ok   bool
+}
+
+func newStore(path string) store {
+	id, ok := identify(path)
+	return store{path: resolve(path), id: id, ok: ok}
+}
+
+// same reports whether path reaches this store, or overlaps it.
+func (s store) same(path string) bool {
+	if resolve(path) == s.path {
+		return true
+	}
+	if !s.ok {
+		return false
+	}
+	id, ok := identify(path)
+	return ok && s.id.overlaps(id)
+}
+
+// storeID identifies a backing store, whatever path reaches it: a file by its
+// filesystem and inode, and a block device by its number, with the disk that
+// it's a partition of. Numbers are "major:minor", as sysfs writes them.
+type storeID struct {
+	block    bool
+	dev, ino uint64
+	rdev     string
+	whole    string
+}
+
+// overlaps reports whether writing to one could change the other.
+func (a storeID) overlaps(b storeID) bool {
+	if a.block != b.block {
+		return false
+	}
+	if !a.block {
+		return a.dev == b.dev && a.ino == b.ino
+	}
+	return a.rdev == b.rdev || a.whole != "" && a.whole == b.rdev || b.whole != "" && b.whole == a.rdev
+}
+
+// identify finds what a path reaches. It's a variable so that tests can give a
+// disk and its partition, which they can't create.
+var identify = func(path string) (storeID, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return storeID{}, false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return storeID{}, false
+	}
+	if info.Mode().IsRegular() {
+		return storeID{dev: uint64(st.Dev), ino: uint64(st.Ino)}, true
+	}
+	if info.Mode()&os.ModeDevice == 0 || info.Mode()&os.ModeCharDevice != 0 {
+		return storeID{}, false
+	}
+	id := storeID{block: true, rdev: majorMinor(uint64(st.Rdev))}
+	// A partition's directory in sysfs is inside its disk's, which has the disk's number.
+	sys := "/sys/dev/block/" + id.rdev
+	if _, err := os.Stat(sys + "/partition"); err == nil {
+		if b, err := os.ReadFile(sys + "/../dev"); err == nil {
+			id.whole = strings.TrimSpace(string(b))
+		}
+	}
+	return id, true
+}
+
+// majorMinor splits a Linux device number, as the kernel's new_encode_dev does.
+func majorMinor(rdev uint64) string {
+	major := (rdev>>8)&0xfff | (rdev>>32)&^0xfff
+	minor := rdev&0xff | (rdev>>12)&0xffffff00
+	return fmt.Sprintf("%d:%d", major, minor)
 }
 
 func resolve(path string) string {
@@ -313,6 +490,17 @@ func (m *Manager) createVolume(name string, size int64) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// checkNewFile refuses a managed file's name that's invalid or already taken, before anything is recorded about it.
+func (m *Manager) checkNewFile(name string) error {
+	if !volumeNameRE.MatchString(name) {
+		return target.Invalid("file name %q may only contain letters, digits, '.', '_' and '-'", name)
+	}
+	if _, err := os.Lstat(filepath.Join(m.volumeDir, name)); err == nil {
+		return target.NewConflict("volume %q already exists", name)
+	}
+	return nil
 }
 
 func backingSize(path string) (int64, bool) {

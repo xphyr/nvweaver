@@ -345,3 +345,22 @@ func TestManyChangesAtOnce(t *testing.T) {
 		t.Errorf("strays: %s", got)
 	}
 }
+
+// A request may claim what it already holds, as a grow that rounds to the saved size does.
+func TestAReservationCanClaimWhatItHolds(t *testing.T) {
+	e := newEnv(t)
+	res := e.m.reserve()
+	if err := res.exclusive("v"); err != nil {
+		t.Fatal(err)
+	}
+	if err := res.exclusive("v"); err != nil {
+		t.Errorf("claiming it again: %v", err)
+	}
+	if err := e.m.reserve().exclusive("v"); err == nil {
+		t.Error("another request claimed it too")
+	}
+	res.release()
+	if err := e.m.reserve().exclusive("v"); err != nil {
+		t.Errorf("after release: %v", err)
+	}
+}

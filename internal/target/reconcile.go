@@ -127,10 +127,17 @@ func (t *Target) unlink(p string) error {
 
 func (t *Target) write(p, v string) error {
 	if err := t.FS.Write(p, v); err != nil {
+		// The error reaches the caller, and the log, so a secret is left out.
+		if secretAttrs[filepath.Base(p)] {
+			return &KernelError{"write to", p, err}
+		}
 		return &KernelError{"write " + strconv.Quote(v) + " to", p, err}
 	}
 	return nil
 }
+
+// secretAttrs are the attributes whose values are secret.
+var secretAttrs = map[string]bool{"dhchap_key": true, "dhchap_ctrl_key": true}
 
 // differs reports whether an attribute needs writing. Skipping writes that
 // change nothing is what lets a restarted service adopt a running target
@@ -187,7 +194,7 @@ func (t *Target) Reconcile(prev, next *State) error {
 	for _, id := range sortedKeys(next.Ports) {
 		if !reflect.DeepEqual(prev.Ports[id], next.Ports[id]) {
 			portChanged[id] = true
-			if err := t.applyPort(next.Ports[id]); err != nil {
+			if err := t.applyPort(next.Ports[id], next); err != nil {
 				return err
 			}
 		}
@@ -206,15 +213,17 @@ func (t *Target) Reconcile(prev, next *State) error {
 	return t.disconnectRemovedHosts(prev, next, portChanged)
 }
 
-// disconnectRemovedHosts cuts off hosts that have just lost access. The kernel only checks allowed_hosts when a host
-// connects, so one already connected could otherwise carry on reading and writing. It has no way to drop one host
-// from configfs, so this detaches the subsystem from its ports and attaches it again. Removing the host's link came
-// first, so it can't get back in. Every other host on this subsystem has to reconnect too, which stalls its I/O
-// without errors, for 10 s by default. Hosts on other subsystems aren't affected. See docs/testing.md.
+// disconnectRemovedHosts cuts off hosts that have just lost access, or whose DH-HMAC-CHAP keys changed. The kernel
+// only checks allowed_hosts and keys when a host connects, so one already connected could otherwise carry on reading
+// and writing. It has no way to drop one host from configfs, so this detaches the subsystem from its ports and
+// attaches it again. Removing the host's link, or writing its new key, came first, so it can only get back in as
+// allowed now. Every other host on this subsystem has to reconnect too, which stalls its I/O without errors, for
+// 10 s by default. Hosts on other subsystems aren't affected. See docs/testing.md.
 func (t *Target) disconnectRemovedHosts(prev, next *State, portChanged map[uint16]bool) error {
+	rekeyed := rekeyedHosts(prev, next)
 	for _, nqn := range sortedKeys(prev.Subsystems) {
 		old, cur := prev.Subsystems[nqn], next.Subsystems[nqn]
-		if cur == nil || !lostAccess(old, cur) {
+		if cur == nil || !lostAccess(old, cur) && !keptRekeyed(old, cur, rekeyed) {
 			continue
 		}
 		for _, id := range cur.Ports {
@@ -231,6 +240,25 @@ func (t *Target) disconnectRemovedHosts(prev, next *State, portChanged map[uint1
 		}
 	}
 	return nil
+}
+
+// rekeyedHosts names the hosts whose keys changed, including ones given a key for the first time.
+func rekeyedHosts(prev, next *State) map[string]bool {
+	out := map[string]bool{}
+	for nqn, h := range next.Hosts {
+		if old := prev.Hosts[nqn]; old != nil && (old.DHCHAPKey != h.DHCHAPKey || old.DHCHAPCtrlKey != h.DHCHAPCtrlKey) {
+			out[nqn] = true
+		}
+	}
+	return out
+}
+
+// keptRekeyed reports whether a subsystem still lists, by name, a host it listed before, whose keys changed.
+func keptRekeyed(old, cur *Subsystem, rekeyed map[string]bool) bool {
+	if cur.AllowAnyHost || old.AllowAnyHost {
+		return false
+	}
+	return slices.ContainsFunc(cur.AllowedHosts, func(h string) bool { return rekeyed[h] && contains(old.AllowedHosts, h) })
 }
 
 // lostAccess reports whether any host that could connect before no longer can.
@@ -429,7 +457,9 @@ func (t *Target) applyNamespace(nqn string, n *Namespace) error {
 	return nil
 }
 
-func (t *Target) applyPort(p *Port) error {
+// applyPort writes a port's attributes. next is the state being applied: subsystems it doesn't name were attached by
+// something else, and are attached again afterwards, whether or not the writes worked. Reconcile attaches the rest.
+func (t *Target) applyPort(p *Port, next *State) (err error) {
 	dir := t.portDir(p.ID)
 	if err := t.mkdir(dir); err != nil {
 		return err
@@ -461,9 +491,20 @@ func (t *Target) applyPort(p *Port) error {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return &KernelError{"list", dir, err}
 	}
+	var foreign []string
+	defer func() {
+		for _, nqn := range foreign {
+			if lerr := t.link(t.subsysDir(nqn), t.portLink(p.ID, nqn)); lerr != nil {
+				err = errors.Join(err, lerr)
+			}
+		}
+	}()
 	for _, nqn := range linked {
 		if err := t.unlink(t.portLink(p.ID, nqn)); err != nil {
 			return err
+		}
+		if next.Subsystems[nqn] == nil {
+			foreign = append(foreign, nqn)
 		}
 	}
 	for _, a := range pending {

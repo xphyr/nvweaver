@@ -1,6 +1,7 @@
 package target_test
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -208,6 +209,15 @@ func TestLosingAccessDropsConnections(t *testing.T) {
 		{name: "a namespace is removed", change: func(s *target.State) { delete(s.Subsystems[nqn].Namespaces, 1) }},
 		{name: "another subsystem loses a host", change: func(s *target.State) { s.Subsystems[other].AllowedHosts = nil },
 			want: []string{"unlink /nvmet/ports/1/subsystems/" + other, "link /nvmet/ports/1/subsystems/" + other}},
+		// A host connected with a key it no longer has must log in again, as if it had been removed.
+		{name: "a host's key is set", change: func(s *target.State) { s.Hosts[a].DHCHAPKey = "DHHC-1:00:new:" },
+			want: append(bounce(1), bounce(2)...)},
+		{name: "a host's key changes", before: func(s *target.Subsystem) {}, change: func(s *target.State) {
+			s.Hosts[a].DHCHAPKey, s.Hosts[a].DHCHAPCtrlKey = "DHHC-1:00:one:", "DHHC-1:00:ctrl:"
+		}, want: append(bounce(1), bounce(2)...)},
+		{name: "a host's hash changes, and not its key", change: func(s *target.State) { s.Hosts[a].DHCHAPHash = "hmac(sha512)" }},
+		{name: "a host that isn't on it changes its key", change: func(s *target.State) { s.Hosts[a].DHCHAPKey = "DHHC-1:00:new:" },
+			before: func(s *target.Subsystem) { s.AllowedHosts = []string{b} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := start()
@@ -262,5 +272,40 @@ func TestAHostIsRemovedBeforeConnectionsDrop(t *testing.T) {
 	port := slices.Index(c.ops, "unlink /nvmet/ports/1/subsystems/"+nqn)
 	if host < 0 || port < 0 || host > port {
 		t.Errorf("the host must go first: %v", c.ops)
+	}
+}
+
+// Changing a port detaches what's on it, and a subsystem this service doesn't manage must be put back too, even when
+// writing the new attributes fails.
+func TestAPortChangeKeepsForeignSubsystems(t *testing.T) {
+	const foreign = "/nvmet/subsystems/nqn.2026-11.test:foreign"
+	for _, fails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("writing fails: %v", fails), func(t *testing.T) {
+			st := sized(1, 1)
+			tgt, c := newTarget(t, st)
+			fake := c.ConfigFS.(*targettest.FS)
+			if err := fake.Mkdir(foreign); err != nil {
+				t.Fatal(err)
+			}
+			if err := fake.Symlink(foreign, "/nvmet/ports/1/subsystems/nqn.2026-11.test:foreign"); err != nil {
+				t.Fatal(err)
+			}
+			if fails {
+				fake.Fail["/addr_traddr"] = errors.New("refused")
+			}
+			next := st.Clone()
+			next.Ports[1].Address = "127.0.0.9"
+			err := tgt.Reconcile(st, next)
+			if (err != nil) != fails {
+				t.Fatalf("reconcile: %v", err)
+			}
+			linked, _ := fake.List("/nvmet/ports/1/subsystems")
+			if !slices.Contains(linked, "nqn.2026-11.test:foreign") {
+				t.Errorf("the foreign subsystem was left detached: %v", linked)
+			}
+			if !fails && !slices.Contains(linked, "nqn.2026-11.test:s0") {
+				t.Errorf("the managed one: %v", linked)
+			}
+		})
 	}
 }

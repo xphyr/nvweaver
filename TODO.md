@@ -144,19 +144,19 @@ Production-like scale is a requirement, so measure this before building on it.
 
 ## Review findings, before the CSI driver
 
-From an outside review, checked against the code after v0.3.0-rc1. All are real, and none are regressions. The details and suggested tests are in `CLAUDE.review.md`, which isn't in the repository. In this order, each with a test that fails first:
+From an outside review, checked against the code after v0.3.0-rc1. All are real, and none are regressions. All fixed, and the results are in `docs/testing.md`. The details and suggested tests are in `CLAUDE.review.md`, which isn't in the repository. In this order, each with a test that fails first:
 
-- [ ] The same disk can be exported under two paths: compare device and inode, `Rdev`, and a whole disk with its partitions, when a volume is mapped too
-- [ ] Passthrough doesn't check that a controller is free. Under native multipath, sysfs may list `nvme0c0n1`, not the `nvme0n1` in use, so a simple lookup could pass a busy controller: test this on emulated NVMe
-- [ ] A volume's grow can drop its intent if saving fails, or never rescan if the rescan fails
-- [ ] A host change on SPDK fetches every subsystem, even adding an unrelated host: about 40 s under the API lock at 5,000 subsystems
-- [ ] Managed `file` namespaces aren't in the intent log. Not decided: what happens to the file when a namespace moves to another `device_path`. An automatic delete would lose data silently, so refusing that change is the recommendation
-- [ ] Volume and snapshot `state` is always `online`: report `missing`, in the spec first, and show it in the interface
-- [ ] After one timeout, every SPDK RPC fails until a restart, as `json.Decoder` keeps its read error. Dial again. `bdevExists` should return errors, but `ENODEV` still has to mean that it isn't there
-- [ ] Changing a host's DH-CHAP key leaves its session connected on the kernel target. Not decided: dropping it stalls other hosts on that subsystem for about 10 s, and a host without the new key can't reconnect. Dropping it is the recommendation, with the order documented
-- [ ] A port update drops foreign subsystems: link them back afterwards, including if writing an attribute fails
-- [ ] Errors from writing to configfs quote the value, including DH-CHAP secrets
-- [ ] Smaller: compare labels on an idempotent create, compare resolved paths for reflink pools, name 503 and 507 in the README's error list, and tick "Make volume creation idempotent by name" if that's still open
+- [x] The same disk can be exported under two paths: compare device and inode, `Rdev`, and a whole disk with its partitions, when a volume is mapped too
+- [x] Passthrough doesn't check that a controller is free. Under native multipath, sysfs may list `nvme0c0n1`, not the `nvme0n1` in use, so a simple lookup could pass a busy controller: test this on emulated NVMe
+- [x] A volume's grow can drop its intent if saving fails, or never rescan if the rescan fails
+- [x] A host change on SPDK fetches every subsystem, even adding an unrelated host: about 40 s under the API lock at 5,000 subsystems
+- [x] Managed `file` namespaces aren't in the intent log. Moving one to another `device_path` is refused, as decided, rather than deleting its file: decision 42
+- [x] Volume and snapshot `state` is always `online`: report `missing`, in the spec first, and show it in the interface
+- [x] After one timeout, every SPDK RPC fails until a restart, as `json.Decoder` keeps its read error. Dial again. `bdevExists` should return errors, but `ENODEV` still has to mean that it isn't there
+- [x] Changing a host's DH-CHAP key leaves its session connected, on both targets as it turned out. Dropped now, as decided, with the order documented: decision 30
+- [x] A port update drops foreign subsystems: link them back afterwards, including if writing an attribute fails
+- [x] Errors from writing to configfs quote the value, including DH-CHAP secrets
+- [x] Smaller: compare labels on an idempotent create, compare resolved paths for reflink pools, name 503 and 507 in the README's error list, and tick "Make volume creation idempotent by name" if that's still open
 
 ## 7. Kubernetes CSI driver
 
@@ -164,7 +164,7 @@ From an outside review, checked against the code after v0.3.0-rc1. All are real,
       provisioning
   - [ ] Controller, and a privileged node plugin (`nvme connect`, format, mount), which takes the transport
         from the port rather than assuming TCP
-  - [ ] Make volume creation idempotent by name in the API, because CSI retries calls
+  - [x] Make volume creation idempotent by name in the API, because CSI retries calls
   - [ ] Use the snapshot and cloning features
   - [ ] Map volumes into per-node subsystems, and each shared volume into its own subsystem
   - [ ] Test RWX block volumes and KubeVirt live migration with the real thing. On the kernel target, removing the source host

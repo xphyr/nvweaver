@@ -24,6 +24,10 @@ const (
 	opCreate = "create"
 	opDelete = "delete"
 	opGrow   = "grow"
+	// A namespace's managed file, which follows the same rule: wanted if a namespace refers to it, and removed if not.
+	// Only files with an intent are touched, as one kept by deleting its namespace without delete_file is meant to stay.
+	opFileCreate = "file-create"
+	opFileDelete = "file-delete"
 )
 
 // intent is one change to a pool that hasn't been confirmed finished.
@@ -31,9 +35,13 @@ type intent struct {
 	Op        string `json:"op"`
 	Pool      string `json:"pool"`
 	Internal  string `json:"internal_name"`
+	File      string `json:"file,omitempty"` // a managed file's name, for the file ops
 	SizeBytes int64  `json:"size_bytes,omitempty"`
 	At        string `json:"at"`
 }
+
+// fileKey is what a managed file's intent is filed under. A pool's internal names can't start this way.
+func fileKey(name string) string { return "file-" + name }
 
 // The name becomes a file name, and comes back from disk, so this is also what stops a damaged
 // log from naming a file outside the pool.
@@ -51,6 +59,18 @@ func (m *Manager) beginIntent(op, pool, internal string, sizeBytes int64) error 
 		return err
 	}
 	if err := writeDurably(m.intentPath(internal), b); err != nil {
+		return fmt.Errorf("record intent: %w", err)
+	}
+	return nil
+}
+
+// beginFileIntent durably records a change to a namespace's managed file before it starts.
+func (m *Manager) beginFileIntent(op, name string) error {
+	b, err := json.Marshal(intent{Op: op, Internal: fileKey(name), File: name, At: time.Now().UTC().Format(time.RFC3339)})
+	if err != nil {
+		return err
+	}
+	if err := writeDurably(m.intentPath(fileKey(name)), b); err != nil {
 		return fmt.Errorf("record intent: %w", err)
 	}
 	return nil
@@ -97,13 +117,21 @@ func (m *Manager) readIntents() ([]intent, error) {
 			return nil, err
 		}
 		var in intent
-		if err := json.Unmarshal(b, &in); err != nil || in.Internal != name || !internalNameRE.MatchString(name) {
+		if err := json.Unmarshal(b, &in); err != nil || in.Internal != name || !validIntentName(in) {
 			m.log.Error("ignoring a damaged intent; check the pool for a file nothing refers to", "file", e.Name())
 			continue
 		}
 		out = append(out, in)
 	}
 	return out, nil
+}
+
+// validIntentName checks what an intent names, as that becomes a path.
+func validIntentName(in intent) bool {
+	if in.Op == opFileCreate || in.Op == opFileDelete {
+		return volumeNameRE.MatchString(in.File) && in.Internal == fileKey(in.File)
+	}
+	return internalNameRE.MatchString(in.Internal)
 }
 
 // Recover settles whatever was interrupted, and must run before the service takes requests. An
@@ -134,6 +162,9 @@ func (m *Manager) settleIntents(pool string) {
 }
 
 func (m *Manager) settle(in intent) error {
+	if in.Op == opFileCreate || in.Op == opFileDelete {
+		return m.settleFile(in)
+	}
 	var pool *target.Pool
 	var referenced bool
 	var volume string
@@ -195,6 +226,29 @@ func (m *Manager) finishGrow(driver storage.Driver, volume string, in intent) er
 	}
 	if mapped != nil && m.backend.LiveEnabled(mapped.Subsystem, mapped.NSID) {
 		return m.backend.Revalidate(mapped.Subsystem, mapped.NSID)
+	}
+	return nil
+}
+
+// settleFile keeps a managed file that a namespace refers to, and removes it otherwise.
+func (m *Manager) settleFile(in intent) error {
+	path := filepath.Join(m.volumeDir, in.File)
+	referenced := false
+	err := m.view(func(st *target.State) error {
+		for _, sub := range st.Subsystems {
+			for _, ns := range sub.Namespaces {
+				if ns.ManagedFile && ns.DevicePath == path {
+					referenced = true
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil || referenced {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 	return nil
 }

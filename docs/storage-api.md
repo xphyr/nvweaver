@@ -78,7 +78,7 @@ DELETE /v1/volumes/{name}       refused while it is mapped
 - **Lists come in pages:** `{"items": [...], "next_after": "name"}`. Pass `next_after` as `?after=` to continue. It's
   absent on the last page.
 - **Create is idempotent by name.** The same request again returns the existing volume with `200`, and
-  a new one returns `201`. The same name with different settings is `409`, because CSI retries.
+  a new one returns `201`. The same name with different settings, labels included, is `409`, because CSI retries.
 - **A clone gets a new UUID and NGUID,** and defaults to the source's size. It may be larger. It stays in its source's
   pool, so `pool` can be left out. A filesystem on it keeps its own UUID: XFS needs `-o nouuid` to mount a clone on a
   host that also has the original mounted.

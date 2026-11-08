@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -130,7 +131,20 @@ func (s *Server) listPools(w http.ResponseWriter, _ *http.Request) error {
 }
 
 func samePool(a, b *target.Pool) bool {
-	return a.Type == b.Type && a.Path == b.Path && a.VolumeGroup == b.VolumeGroup && a.ThinPool == b.ThinPool
+	return a.Type == b.Type && sameDir(a.Path, b.Path) && a.VolumeGroup == b.VolumeGroup && a.ThinPool == b.ThinPool
+}
+
+// sameDir reports whether two paths are one directory, however they're spelt or linked.
+func sameDir(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ai, aerr := os.Stat(a)
+	bi, berr := os.Stat(b)
+	if aerr == nil && berr == nil {
+		return os.SameFile(ai, bi)
+	}
+	return resolve(a) == resolve(b)
 }
 
 func (s *Server) createPool(w http.ResponseWriter, r *http.Request) error {
@@ -310,8 +324,16 @@ func mappings(st *target.State) map[string]*mappingView {
 	return out
 }
 
+// storageState is "missing" when a volume's or snapshot's storage can't be found, and "online" otherwise.
+func storageState(path string) string {
+	if _, err := os.Stat(path); err != nil {
+		return "missing"
+	}
+	return "online"
+}
+
 func viewVolume(vol *target.Volume, mapped map[string]*mappingView) volumeView {
-	return volumeView{Volume: vol, State: "online", MappedTo: mapped[vol.Name]}
+	return volumeView{Volume: vol, State: storageState(vol.DevicePath), MappedTo: mapped[vol.Name]}
 }
 
 func pageLimit(v string) (int, error) {
@@ -469,6 +491,7 @@ func (s *Server) existingVolume(req createVolumeRequest, existing *target.Volume
 	}
 	if (wantPool != "" && existing.Pool != wantPool) ||
 		(sizeGiven && existing.SizeBytes != wantSize) ||
+		!maps.Equal(existing.Labels, req.Labels) || // which treats none and empty as the same
 		!sameSource(existing.Source, req.Source) {
 		return target.NewConflict("volume %s already exists with different settings", req.Name)
 	}
@@ -658,11 +681,14 @@ func (s *Server) changeVolume(name string, sizeBytes *int64, labels map[string]s
 	}
 	var size int64
 	var growing string
+	// A size that's already saved is still rescanned, in case hosts weren't told last time.
+	rescan := false
 	if sizeBytes != nil {
 		vol := s.m.current().Volumes[name]
 		if vol == nil {
 			return notFound("no such volume %s", name)
 		}
+		rescan = true
 		if *sizeBytes != vol.SizeBytes {
 			if err := s.m.admit(); err != nil {
 				return err
@@ -704,10 +730,22 @@ func (s *Server) changeVolume(name string, sizeBytes *int64, labels map[string]s
 		}
 	}
 	if growing == "" {
-		return s.m.mutate(func(st *target.State) error {
-			_, err := label(st)
+		var mapped *mappingView
+		var internal string
+		err := s.m.mutate(func(st *target.State) error {
+			vol, err := label(st)
+			if err == nil {
+				mapped, internal = mappings(st)[name], vol.InternalName
+			}
 			return err
 		})
+		if err != nil || !rescan {
+			return err
+		}
+		if err := res.exclusive(volumeKey(name)); err != nil {
+			return err
+		}
+		return s.tellHosts(mapped, internal)
 	}
 	var mapped *mappingView
 	err := s.m.commit(func(st *target.State) error {
@@ -719,16 +757,23 @@ func (s *Server) changeVolume(name string, sizeBytes *int64, labels map[string]s
 		mapped = mappings(st)[name]
 		return nil
 	})
-	if err == nil {
-		s.m.crashPoint("saved")
-	}
-	s.m.endIntent(growing)
 	if err != nil {
+		// The storage grew and the size wasn't saved. The intent stays, so that the next start saves it.
 		return err
 	}
+	s.m.crashPoint("saved")
+	return s.tellHosts(mapped, growing)
+}
+
+// tellHosts rescans a volume that hosts are using, and only then forgets the intent to grow it. If the rescan fails,
+// the intent stays, and the same request again rescans.
+func (s *Server) tellHosts(mapped *mappingView, internal string) error {
 	if mapped != nil && s.m.backend.LiveEnabled(mapped.Subsystem, mapped.NSID) {
-		return s.m.backend.Revalidate(mapped.Subsystem, mapped.NSID)
+		if err := s.m.backend.Revalidate(mapped.Subsystem, mapped.NSID); err != nil {
+			return err
+		}
 	}
+	s.m.endIntent(internal)
 	return nil
 }
 
@@ -815,7 +860,7 @@ type snapshotPage struct {
 }
 
 func viewSnapshot(snap *target.Snapshot) snapshotView {
-	return snapshotView{Snapshot: snap, State: "online"}
+	return snapshotView{Snapshot: snap, State: storageState(snap.DevicePath)}
 }
 
 func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) error {

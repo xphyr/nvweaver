@@ -94,6 +94,8 @@ function humanTime(iso) {
 
 const pill = (text, kind) => el("span", { class: "pill " + (kind || "") }, text);
 const stateKind = (state) => (state === "online" ? "ok" : "bad");
+// A volume or snapshot whose storage can't be found, which is rare enough to show only then.
+const missing = (x) => x.state && x.state !== "online" && pill("Storage missing", "bad");
 const hash = (...parts) => "#/" + parts.map(encodeURIComponent).join("/");
 const link = (text, ...parts) => el("a", { href: hash(...parts) }, text);
 const mono = (text) => el("span", { class: "mono" }, text);
@@ -895,7 +897,7 @@ async function volumes(pool) {
         ? el("button", { class: "primary", id: "create-volume", onclick: () => createVolumeDialog(pool) }, "Create volume")
         : el("span", { class: "muted" }, ["Adopt a pool to create volumes: see ", el("a", { href: "#/pools" }, "Pools")])),
     table([
-      { title: "Name", cell: (v) => [el("strong", {}, link(v.name, "volume", v.name)), v.source && el("span", { class: "sub" }, `clone of ${v.source.snapshot || v.source.volume}`)], text: (v) => v.name },
+      { title: "Name", cell: (v) => [el("strong", {}, link(v.name, "volume", v.name)), missing(v), v.source && el("span", { class: "sub" }, `clone of ${v.source.snapshot || v.source.volume}`)], text: (v) => v.name },
       { title: "Pool", cell: (v) => link(v.pool, "volumes", v.pool), text: (v) => v.pool },
       { title: "Size", num: true, cell: (v) => humanSize(v.size_bytes) },
       { title: "Exported", cell: (v) => (v.mapped_to ? [link(v.mapped_to.subsystem, "subsystems", v.mapped_to.subsystem), el("span", { class: "sub" }, `namespace ${v.mapped_to.nsid}`)] : pill("Not exported", "quiet")), text: (v) => (v.mapped_to ? v.mapped_to.subsystem : "") },
@@ -930,6 +932,7 @@ async function volume(name) {
       el("button", { class: "danger-quiet", id: "delete-volume", disabled: Boolean(v.mapped_to), onclick: () => deleteVolumeDialog(v) }, "Delete"),
       v.mapped_to && el("span", { class: "muted", id: "delete-hint" }, "It can't be deleted while it's exported.")),
     el("dl", { class: "facts" },
+      missing(v) && fact("Storage", [missing(v), el("div", { class: "muted", id: "missing-hint" }, ["Its device can't be found: ", mono(v.device_path), ". Hosts can't use it until it's back. An LVM volume may need activating."])]),
       fact("Space", usageBar(usage)),
       fact("Pool", link(v.pool, "volumes", v.pool)),
       fact("Exported", v.mapped_to ? [link(v.mapped_to.subsystem, "subsystems", v.mapped_to.subsystem), ` as namespace ${v.mapped_to.nsid}`] : pill("Not exported", "quiet")),
@@ -944,7 +947,7 @@ async function volume(name) {
       fact("Labels", labelsText(v.labels) || "-")),
     el("h2", {}, "Snapshots"),
     table([
-      { title: "Name", cell: (s) => el("strong", {}, s.name), text: (s) => s.name },
+      { title: "Name", cell: (s) => [el("strong", {}, s.name), missing(s)], text: (s) => s.name },
       { title: "Size", num: true, cell: (s) => humanSize(s.size_bytes) },
       { title: "Taken", cell: (s) => humanTime(s.created_at) },
       { title: "", cell: snapshotActions },
@@ -957,7 +960,7 @@ async function snapshots() {
   return [
     el("h1", {}, "Snapshots"),
     table([
-      { title: "Name", cell: (s) => el("strong", {}, s.name), text: (s) => s.name },
+      { title: "Name", cell: (s) => [el("strong", {}, s.name), missing(s)], text: (s) => s.name },
       { title: "Volume", cell: (s) => link(s.volume, "volume", s.volume), text: (s) => s.volume },
       { title: "Pool", cell: (s) => link(s.pool, "volumes", s.pool), text: (s) => s.pool },
       { title: "Size", num: true, cell: (s) => humanSize(s.size_bytes) },

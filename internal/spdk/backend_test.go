@@ -294,7 +294,10 @@ func TestChangingPathReplacesBdev(t *testing.T) {
 	}
 }
 
-func TestKeyChangeDoesNotDropHost(t *testing.T) {
+// A host connected with a key that's been replaced must log in again, as on the kernel target. nvmf_subsystem_set_keys
+// leaves its session connected, which e2e.sh showed on SPDK 26.09, so the host is removed, which drops it, and added
+// again with its new keys. Other hosts on the subsystem aren't touched.
+func TestKeyChangeDropsTheHost(t *testing.T) {
 	b, f := newBackend()
 	b.keyDir = t.TempDir()
 	s := state()
@@ -303,8 +306,9 @@ func TestKeyChangeDoesNotDropHost(t *testing.T) {
 	f.calls = nil
 	s.Hosts[hostA].DHCHAPKey = "DHHC-1:00:two:"
 	apply(t, b, s)
-	if !slices.Contains(f.calls, "nvmf_subsystem_set_keys") || slices.Contains(f.calls, "nvmf_subsystem_remove_host") {
-		t.Errorf("expected keys to change in place: %v", f.calls)
+	remove, add := slices.Index(f.calls, "nvmf_subsystem_remove_host"), slices.Index(f.calls, "nvmf_subsystem_add_host")
+	if remove < 0 || add < remove || slices.Contains(f.calls, "nvmf_subsystem_set_keys") {
+		t.Errorf("expected the host to be removed and added again: %v", f.calls)
 	}
 	if got := f.subs[subA].Hosts[0].Key; got != keyName(hostA, "DHHC-1:00:two:") {
 		t.Errorf("key = %q", got)
@@ -472,6 +476,46 @@ func TestMakeWritesDurable(t *testing.T) {
 	}
 	if err := makeWritesDurable("/nonexistent"); err != nil {
 		t.Errorf("a missing path is for SPDK to report: %v", err)
+	}
+}
+
+// A host's change looks only at the subsystems that list it. SPDK keeps a host's key on each subsystem's entry for it,
+// so those must all be updated, and the rest left alone.
+func TestAHostChangeFetchesOnlyItsSubsystems(t *testing.T) {
+	b, f := newBackend()
+	b.keyDir = t.TempDir()
+	cur := state()
+	for i := range 50 {
+		nqn := fmt.Sprintf("nqn.2026-11.test:many%d", i)
+		cur.Subsystems[nqn] = &target.Subsystem{NQN: nqn, Serial: "s", Model: "m", AllowAnyHost: true, Ports: []uint16{1}, Namespaces: map[uint32]*target.Namespace{}}
+	}
+	cur.Normalize()
+	apply(t, b, cur)
+
+	steps := []struct {
+		name   string
+		change func(*target.State)
+	}{
+		{"a host on one subsystem gets a key", func(s *target.State) { s.Hosts[hostA].DHCHAPKey = "DHHC-1:00:one:" }},
+		{"its key changes", func(s *target.State) { s.Hosts[hostA].DHCHAPKey = "DHHC-1:00:two:" }},
+		{"a host on no subsystem is added", func(s *target.State) {
+			s.Hosts["nqn.2026-11.test:unused"] = &target.Host{NQN: "nqn.2026-11.test:unused"}
+		}},
+	}
+	for _, step := range steps {
+		next := cur.Clone()
+		step.change(next)
+		f.listed, f.listedAll = 0, 0
+		if err := b.Reconcile(cur, next); err != nil {
+			t.Fatal(err)
+		}
+		if f.listedAll != 0 || f.listed > 2 {
+			t.Errorf("%s: fetched %d subsystems, and every one %d times", step.name, f.listed, f.listedAll)
+		}
+		cur = next
+	}
+	if got := f.subs[subA].Hosts[0].Key; got != keyName(hostA, "DHHC-1:00:two:") {
+		t.Errorf("the subsystem that lists the host has key %q", got)
 	}
 }
 
@@ -765,5 +809,27 @@ func TestConnections(t *testing.T) {
 	f.fail = map[string]error{"nvmf_subsystem_get_qpairs": errors.New("SPDK has gone")}
 	if _, err := backend.Connections(st, a); err == nil {
 		t.Error("no error when SPDK can't be asked")
+	}
+}
+
+// Asking whether a bdev exists can fail for reasons other than its absence, and then neither creating nor deleting it
+// is safe. Only "No such device" means it isn't there.
+func TestABdevCheckThatFailsIsAnError(t *testing.T) {
+	b, f := newBackend()
+	cur := state()
+	apply(t, b, cur)
+	next := cur.Clone()
+	next.Subsystems[subA].Namespaces[9] = &target.Namespace{NSID: 9, DevicePath: "/d/nine", UUID: target.NewUUID(), NGUID: target.NewNGUID(), Enabled: true}
+	f.fail["bdev_get_bdevs"] = &RPCError{Code: -1, Message: "Operation not permitted"}
+	f.calls = nil
+	if err := b.Reconcile(cur, next); err == nil {
+		t.Error("a failed check was taken as no bdev")
+	}
+	if slices.Contains(f.calls, "bdev_aio_create") {
+		t.Errorf("created a bdev without knowing whether it existed: %v", f.calls)
+	}
+	delete(f.fail, "bdev_get_bdevs")
+	if err := b.Reconcile(cur, next); err != nil {
+		t.Errorf("with the check working again: %v", err)
 	}
 }

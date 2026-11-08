@@ -1065,7 +1065,24 @@ PCTRL=$(t "for c in /sys/class/nvme/*; do [ \"\$(cat \$c/serial | tr -d ' ')\" =
 PBLOCK=/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_NVWEAVER0002
 expect_has "found the controller" /dev/nvme "$PCTRL"
 PSUB=$NQN:passthru
-api "passthrough subsystem" 201 POST /v1/subsystems "{\"nqn\":\"$PSUB\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1],\"passthru_device\":\"$PCTRL\"}"
+# A controller in use can't be passed through. by-id links aren't in the container, so the namespace is named directly.
+PNS=$(t "readlink -f $PBLOCK")
+PBODY="{\"nqn\":\"$PSUB\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1],\"passthru_device\":\"$PCTRL\"}"
+if t "sudo mkfs.ext4 -q -F $PNS && sudo mount $PNS /mnt"; then
+	api "a controller with a mounted namespace can't be passed through" 409 POST /v1/subsystems "$PBODY"
+	t "sudo umount /mnt"
+else
+	bad "mount the controller's namespace"
+fi
+api "a subsystem exporting its namespace" 201 POST /v1/subsystems "{\"nqn\":\"$PSUB-ns\"}"
+api "the namespace exported" 201 POST "/v1/subsystems/$PSUB-ns/namespaces" "{\"device_path\":\"$PNS\"}"
+api "a controller with an exported namespace can't be passed through" 409 POST /v1/subsystems "$PBODY"
+api "remove that subsystem" 204 DELETE "/v1/subsystems/$PSUB-ns"
+api "passthrough subsystem" 201 POST /v1/subsystems "$PBODY"
+api "the same controller can't be passed through twice" 409 POST /v1/subsystems "{\"nqn\":\"$PSUB-2\",\"passthru_device\":\"$PCTRL\"}"
+api "a subsystem for exporting its namespace" 201 POST /v1/subsystems "{\"nqn\":\"$PSUB-ns\"}"
+api "its namespace can't be exported while it's passed through" 409 POST "/v1/subsystems/$PSUB-ns/namespaces" "{\"device_path\":\"$PNS\"}"
+api "remove that subsystem" 204 DELETE "/v1/subsystems/$PSUB-ns"
 out=$(connect "$PSUB") && ok "connects" || bad "connects" "$out"
 PDEV=$(ini_dev "$PSUB")
 if [ -n "$PDEV" ]; then

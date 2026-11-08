@@ -88,6 +88,15 @@ there, not as absolute numbers.
   the same backing store twice. There is deliberately no override.
 - **Why:** `nvmet` opens devices non-exclusively, and would export a mounted root disk for
   hosts to overwrite.
+- **"The same store" means what a path reaches, not its name:** a file by filesystem and inode, so a hard link or a bind
+  mount counts, and a block device by its number, where a disk and any of its partitions overlap. Two partitions of one
+  disk don't. This applies to mapping a volume too. The `O_EXCL` open stays, for what's mounted or held at that moment,
+  as it's released before `nvmet` opens the device. Not covered: a device-mapper device over a disk, which `O_EXCL`
+  refuses only while the mapping is active.
+- **Passthrough gets the same care, for every namespace of the controller,** found through sysfs. With native multipath,
+  as on fabrics controllers and shared namespaces, the controller's directory lists only hidden path devices, such as
+  `nvme2c2n1`, which have no device node. The namespace, `nvme2n1`, is in the NVMe subsystem's directory. Path devices
+  with no namespace found is refused, rather than taken as nothing to check, which a simpler lookup would do.
 
 ## 10. The API is on loopback unless it has a token
 
@@ -306,6 +315,11 @@ there, not as absolute numbers.
 - **Rejected: nvmet's debugfs,** which is thought to allow dropping one controller. That's unconfirmed, as Fedora's kernel is built without
   `CONFIG_NVME_TARGET_DEBUGFS`, so it can't be tried here. It's worth revisiting if the distributions turn it on, since it could avoid the stall.
 - **Rejected, for now: an option to keep connections.** Nothing needs it yet. The CSI driver might, for live migration: see `TODO.md`.
+- **Changing a host's `dhchap_key` or `dhchap_ctrl_key` drops its connections too, decided by the user.** Both targets only check keys at login,
+  so a host stayed connected on its old key indefinitely. On the kernel target this is the same detach and attach, after the new key is written,
+  with the same stall for other hosts on the subsystem. On SPDK, `nvmf_subsystem_set_keys` left the session up, as `e2e.sh` showed on 26.09, so
+  the host is removed and added again with its keys, which drops only that host. **So update a host's key on the host first:** a host without the
+  new key can't reconnect, and its I/O fails once it gives up.
 
 ## 31. The API's TLS uses files it's given, and reads them again when they change
 
@@ -424,3 +438,16 @@ there, not as absolute numbers.
 - **Rejected: the kernel's log,** which does name hosts. It's overwritten, doesn't say when hosts leave, and reading it would mean guessing.
 - **Rejected, for now: debugfs where it exists.** It couldn't be tested here, and an untested path that only some kernels take isn't worth having yet. It's in `TODO.md`.
 - **Cost:** one RPC for each subsystem on SPDK, so the interface only ever asks about one. Listing everyone hasn't been timed at scale.
+
+## 42. A namespace's own file is in the intent log, and keeps its namespace
+
+- **The problem, found by an outside review:** a namespace's `file`, which this service creates, was made and deleted
+  outside the intent log that pools use. A crash after making it, before saving, left a file under a name that could
+  never be used again. A crash after deleting the namespace, before removing the file, left it for good.
+- **Chosen:** the same rule as pools, with its own intents: a file is wanted if a namespace refers to it, and removed
+  otherwise, at the next start. Only files with an intent are touched, as one kept by deleting its namespace without
+  `delete_file` is meant to stay. A name that's taken is refused before the intent is written, so that recovery can't
+  remove a file that was there first.
+- **Changing `device_path` on such a namespace is refused, decided by the user.** The review proposed deleting the old
+  file once the change was saved. That destroys data on a `PATCH`, with no warning, and an orphan is the alternative.
+  Deleting the namespace, with `delete_file=true` if wanted, says what happens to the file.

@@ -1087,7 +1087,9 @@ paths:
       parameters:
         - name: delete_file
           in: query
-          description: Also delete the file, which must be one this service manages.
+          description: |
+            Also delete the file, which must be one this service manages. If the namespace goes and
+            removing the file fails, the request fails, and the next start removes it.
           schema:
             type: boolean
             default: false
@@ -1347,7 +1349,8 @@ components:
           format: date-time
         state:
           type: string
-          enum: [online]
+          enum: [online, missing]
+          description: '`missing` when its storage can''t be found, such as an LVM volume that isn''t active.'
         mapped_to:
           description: Where it is mapped, or null.
           oneOf:
@@ -1408,7 +1411,9 @@ components:
         size_bytes:
           type: integer
           format: int64
-          description: Grow only.
+          description: |
+            Grow only. Hosts using the volume are told of the new size. If that fails, the request
+            fails, and sending it again tells them, as does sending the size it already has.
         labels:
           type: object
           additionalProperties:
@@ -1437,7 +1442,8 @@ components:
           format: date-time
         state:
           type: string
-          enum: [online]
+          enum: [online, missing]
+          description: '`missing` when its storage can''t be found, such as an LVM volume that isn''t active.'
     SnapshotPage:
       type: object
       required: [items]
@@ -1704,7 +1710,9 @@ components:
         dhchap_key:
           type: string
           writeOnly: true
-          description: Never returned. Stored in plain text in the service's state file.
+          description: |
+            Never returned. Stored in plain text in the service's state file. Changing it, or
+            `dhchap_ctrl_key`, drops the host's connections, so give the host its new key first.
         dhchap_ctrl_key:
           type: string
           writeOnly: true
@@ -1791,7 +1799,9 @@ components:
           type: string
           description: |
             An NVMe controller such as `/dev/nvme0`, for hosts to use directly. The subsystem
-            can't then have namespaces. Refused by the SPDK backend.
+            can't then have namespaces. Refused by the SPDK backend. `409` if the controller is
+            already passed through, or one of its namespaces is exported or held on this machine,
+            such as mounted. Its namespaces can't be exported by `device_path` while it's passed through.
     SubsystemUpdate:
       type: object
       additionalProperties: false
@@ -1884,6 +1894,9 @@ components:
           type: boolean
         device_path:
           type: string
+          description: |
+            `409` for a namespace whose file this service created, as the file would be left behind.
+            Delete the namespace instead, with `delete_file=true` to remove the file, and create another.
         buffered_io:
           type: boolean
         size_bytes:

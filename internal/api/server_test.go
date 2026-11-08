@@ -420,6 +420,90 @@ func TestManagedVolumeLifecycle(t *testing.T) {
 	}
 }
 
+// A namespace's file is in the intent log, like a pool's volumes, so a crash leaves nothing behind that can't be made
+// again, and nothing that was meant to go.
+func TestManagedFilesSurviveACrash(t *testing.T) {
+	file := func(e *env) string { return filepath.Join(e.dir, "volumes", "vol") }
+	exists := func(e *env) bool { _, err := os.Stat(file(e)); return err == nil }
+	ns := subNQN + "/namespaces"
+	create := obj{"nsid": 1, "file": obj{"name": "vol", "size_bytes": 8192}}
+
+	t.Run("created, and not yet saved", func(t *testing.T) {
+		e := newEnv(t)
+		e.do("POST", "/v1/subsystems", obj{"nqn": subNQN}, 201)
+		e.crash("file created", func() { e.do("POST", "/v1/subsystems/"+ns, create, 201) })
+		e.do("GET", "/v1/subsystems/"+ns+"/1", nil, 404)
+		if exists(e) {
+			t.Error("a file that nothing refers to was left")
+		}
+		e.do("POST", "/v1/subsystems/"+ns, create, 201)
+		if n := e.intents(); n != 0 {
+			t.Errorf("%d intents left", n)
+		}
+	})
+
+	t.Run("forgotten, and not yet deleted", func(t *testing.T) {
+		e := newEnv(t)
+		e.do("POST", "/v1/subsystems", obj{"nqn": subNQN}, 201)
+		e.do("POST", "/v1/subsystems/"+ns, create, 201)
+		e.crash("file forgotten", func() { e.do("DELETE", "/v1/subsystems/"+ns+"/1?delete_file=true", nil, 204) })
+		e.do("GET", "/v1/subsystems/"+ns+"/1", nil, 404)
+		if exists(e) {
+			t.Error("the file asked to be deleted was left")
+		}
+		if n := e.intents(); n != 0 {
+			t.Errorf("%d intents left", n)
+		}
+	})
+
+	t.Run("kept on purpose", func(t *testing.T) {
+		e := newEnv(t)
+		e.do("POST", "/v1/subsystems", obj{"nqn": subNQN}, 201)
+		e.do("POST", "/v1/subsystems/"+ns, create, 201)
+		e.do("DELETE", "/v1/subsystems/"+ns+"/1", nil, 204)
+		e.start()
+		if !exists(e) {
+			t.Error("a file kept without delete_file was removed")
+		}
+	})
+}
+
+// Changing where a managed file's namespace points would orphan the file, or destroy it, so it's refused.
+func TestAManagedFilesNamespaceKeepsItsFile(t *testing.T) {
+	e := newEnv(t)
+	e.do("POST", "/v1/subsystems", obj{"nqn": subNQN}, 201)
+	ns := "/v1/subsystems/" + subNQN + "/namespaces"
+	e.do("POST", ns, obj{"nsid": 1, "file": obj{"name": "vol", "size_bytes": 8192}}, 201)
+	e.do("PATCH", ns+"/1", obj{"device_path": e.file("other.img")}, 409)
+	if _, err := os.Stat(filepath.Join(e.dir, "volumes", "vol")); err != nil {
+		t.Errorf("the file: %v", err)
+	}
+	if got := e.do("GET", ns+"/1", nil, 200); got["device_path"] != filepath.Join(e.dir, "volumes", "vol") {
+		t.Errorf("device_path = %v", got["device_path"])
+	}
+}
+
+// A key the kernel refuses mustn't come back in the error, which reaches the caller and, for a 500, the log.
+func TestAFailedKeyWriteDoesntQuoteTheKey(t *testing.T) {
+	const key = "DHHC-1:00:c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0:"
+	const ctrl = "DHHC-1:00:Y3RybGN0cmxjdHJsY3RybGN0cmxjdHJsY3RybGN0:"
+	for _, attr := range []string{"/dhchap_key", "/dhchap_ctrl_key"} {
+		for _, errno := range []error{syscall.EINVAL, syscall.EIO} {
+			e := newEnv(t)
+			e.fs.Fail[attr] = errno
+			b, _ := json.Marshal(obj{"nqn": hostNQN, "dhchap_key": key, "dhchap_ctrl_key": ctrl})
+			rec := httptest.NewRecorder()
+			e.http.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/hosts", bytes.NewReader(b)))
+			if rec.Code < 400 {
+				t.Fatalf("%s: %d", attr, rec.Code)
+			}
+			if body := rec.Body.String(); strings.Contains(body, "c2VjcmV0") || strings.Contains(body, "Y3RybGN0") || !strings.Contains(body, attr[1:]) {
+				t.Errorf("%s, %v: %s", attr, errno, body)
+			}
+		}
+	}
+}
+
 func TestSecretsAreNotReturned(t *testing.T) {
 	e := newEnv(t)
 	const key = "DHHC-1:00:c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0:"
