@@ -2,6 +2,27 @@
 
 The major differences between versions. For every change, see the commit history.
 
+## Unreleased
+
+### Changed
+
+- **Changing a host's DH-HMAC-CHAP key drops its connections,** so that it logs in again with the new key. Before, a connected host carried on
+  with its old key indefinitely. Give the host its new key first. On the kernel target, other hosts on that subsystem stall for about 10 s.
+- **The same storage can't be exported twice under another name:** a hard link, a bind mount, or a disk and one of its partitions. Passthrough
+  is refused for a controller that's already passed through, or has a namespace that's exported, mounted or otherwise in use.
+- **Changing `device_path` on a namespace whose file nvweaver created is refused,** as the file would be left behind. Delete the namespace
+  instead, with `delete_file=true` to remove the file.
+- **Creating a volume again with different labels is a `409`,** like any other different setting, rather than returning the existing volume.
+
+### Fixed
+
+- **A volume or snapshot whose storage can't be found is reported as `missing`,** rather than always `online`, and the interface shows it.
+- **After one SPDK request timed out, every later one failed** until the service restarted.
+- **A crash while creating or deleting a namespace's file left it behind,** under a name that couldn't be used again. A failed grow could
+  also leave hosts seeing the old size. Both now finish at the next start, or when the request is sent again.
+- **A failed write of a host's key returned the key in the error.**
+- **Changing a port detached subsystems that nvweaver doesn't manage.**
+
 ## v0.3.0
 
 ### Security

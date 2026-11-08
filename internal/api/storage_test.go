@@ -2,6 +2,8 @@ package api
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -201,6 +203,68 @@ func TestGrowingAVolume(t *testing.T) {
 		t.Errorf("target wasn't told: %q, %v", v, ok)
 	}
 	e.do("PATCH", "/v1/volumes/none", obj{"size_bytes": 16384}, 404)
+}
+
+// breakSaving makes saving the state fail, even as root: nothing can be renamed over a directory with something in it.
+func (e *env) breakSaving() (restore func()) {
+	e.t.Helper()
+	state := filepath.Join(e.dir, "state.json")
+	if err := os.Rename(state, state+".real"); err != nil {
+		e.t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(state, "in-the-way"), 0o700); err != nil {
+		e.t.Fatal(err)
+	}
+	return func() {
+		if err := os.RemoveAll(state); err != nil {
+			e.t.Fatal(err)
+		}
+		if err := os.Rename(state+".real", state); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+}
+
+// A grow that couldn't be saved keeps its intent, so that the next start finishes it.
+func TestAGrowThatCantBeSavedIsFinishedLater(t *testing.T) {
+	e := newEnv(t)
+	e.pool()
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 8192}, 201)
+	restore := e.breakSaving()
+	e.do("PATCH", "/v1/volumes/v", obj{"size_bytes": 16384}, 500)
+	restore()
+	if n := e.intents(); n != 1 {
+		t.Fatalf("%d intents, after storage grew and the size wasn't saved", n)
+	}
+	e.start()
+	if got := e.do("GET", "/v1/volumes/v", nil, 200); got["size_bytes"] != float64(16384) {
+		t.Errorf("after a restart, size_bytes = %v", got["size_bytes"])
+	}
+	e.consistent()
+}
+
+// A grow whose rescan failed keeps its intent, and the same request again tells hosts.
+func TestAGrowIsRetriedUntilHostsAreTold(t *testing.T) {
+	e := newEnv(t)
+	e.pool()
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 8192}, 201)
+	e.do("POST", "/v1/subsystems", obj{"nqn": subNQN}, 201)
+	e.do("POST", "/v1/subsystems/"+subNQN+"/namespaces", obj{"volume": "v"}, 201)
+	attr := "/nvmet/subsystems/" + subNQN + "/namespaces/1/revalidate_size"
+	e.fs.Fail["/namespaces/1/revalidate_size"] = syscall.EIO
+	e.do("PATCH", "/v1/volumes/v", obj{"size_bytes": 16384}, 500)
+	if n := e.intents(); n != 1 {
+		t.Errorf("%d intents, after hosts weren't told", n)
+	}
+	delete(e.fs.Fail, "/namespaces/1/revalidate_size")
+	if v, _ := e.fs.Attr(attr); v == "1" {
+		t.Fatal("the fake recorded a write that failed")
+	}
+	e.do("PATCH", "/v1/volumes/v", obj{"size_bytes": 16384}, 200)
+	if v, ok := e.fs.Attr(attr); !ok || v != "1" {
+		t.Errorf("the retry didn't rescan: %q, %v", v, ok)
+	}
+	e.consistent()
 }
 
 func TestPagingThroughVolumes(t *testing.T) {
@@ -499,4 +563,68 @@ func TestSizesThePoolRoundsUp(t *testing.T) {
 		t.Errorf("size_bytes = %v", got["size_bytes"])
 	}
 	e.consistent()
+}
+
+// A volume or snapshot whose storage can't be found says so, as a pool does.
+func TestMissingStorageIsReported(t *testing.T) {
+	e := newEnv(t)
+	e.pool()
+	vol := e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4096}, 201)
+	snap := e.do("POST", "/v1/snapshots", obj{"name": "s", "volume": "v"}, 201)
+	if vol["state"] != "online" || snap["state"] != "online" {
+		t.Fatalf("states: %v, %v", vol["state"], snap["state"])
+	}
+	for _, path := range []any{vol["device_path"], snap["device_path"]} {
+		if err := os.Rename(path.(string), path.(string)+".away"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := e.do("GET", "/v1/volumes/v", nil, 200)["state"]; got != "missing" {
+		t.Errorf("volume = %v", got)
+	}
+	if got := e.do("GET", "/v1/snapshots/s", nil, 200)["state"]; got != "missing" {
+		t.Errorf("snapshot = %v", got)
+	}
+	for _, list := range []string{"/v1/volumes", "/v1/snapshots"} {
+		items := e.do("GET", list, nil, 200)["items"].([]any)
+		if got := items[0].(map[string]any)["state"]; got != "missing" {
+			t.Errorf("%s = %v", list, got)
+		}
+	}
+	for _, path := range []any{vol["device_path"], snap["device_path"]} {
+		if err := os.Rename(path.(string)+".away", path.(string)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := e.do("GET", "/v1/volumes/v", nil, 200)["state"]; got != "online" {
+		t.Errorf("volume back = %v", got)
+	}
+}
+
+// Two names for one directory are one pool, and so are a symlink to it and a path spelt another way.
+func TestOneDirectoryIsOnePool(t *testing.T) {
+	e := newEnv(t)
+	dir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	e.do("POST", "/v1/pools", obj{"name": "p", "type": "reflink", "path": dir}, 201)
+	for _, path := range []string{link, dir + "/", dir + "/.", filepath.Dir(dir) + "/../" + filepath.Base(filepath.Dir(dir)) + "/" + filepath.Base(dir)} {
+		e.do("POST", "/v1/pools", obj{"name": "q", "type": "reflink", "path": path}, 409)
+	}
+	e.do("POST", "/v1/pools", obj{"name": "p", "type": "reflink", "path": link}, 200)
+	e.do("POST", "/v1/pools", obj{"name": "q", "type": "reflink", "path": t.TempDir()}, 201)
+}
+
+// Creating a volume again with other labels is a different request, not a retry.
+func TestARetryMustHaveTheSameLabels(t *testing.T) {
+	e := newEnv(t)
+	e.pool()
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4096, "labels": obj{"app": "a"}}, 201)
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4096, "labels": obj{"app": "a"}}, 200)
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4096, "labels": obj{"app": "b"}}, 409)
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 4096}, 409)
+	e.do("POST", "/v1/volumes", obj{"name": "w", "size_bytes": 4096}, 201)
+	e.do("POST", "/v1/volumes", obj{"name": "w", "size_bytes": 4096, "labels": obj{}}, 200) // none and empty are the same
 }

@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -673,6 +675,11 @@ func (s *Server) createSubsystem(w http.ResponseWriter, r *http.Request) error {
 		if st.Subsystems[req.NQN] != nil {
 			return target.NewConflict("subsystem %s already exists", req.NQN)
 		}
+		if sub.Passthru != "" {
+			if err := checkPassthruFree(st, sub.Passthru); err != nil {
+				return err
+			}
+		}
 		st.Subsystems[req.NQN] = sub
 		return nil
 	})
@@ -863,6 +870,7 @@ func (s *Server) createNamespace(w http.ResponseWriter, r *http.Request) error {
 		BufferedIO: req.BufferedIO,
 		Enabled:    req.Enabled == nil || *req.Enabled,
 	}
+	var intent string // a managed file's, once recorded
 	err := s.m.mutate(func(st *target.State) error {
 		sub := st.Subsystems[nqn]
 		if sub == nil {
@@ -887,28 +895,44 @@ func (s *Server) createNamespace(w http.ResponseWriter, r *http.Request) error {
 			if vol == nil {
 				return target.Invalid("no such volume %s", req.Volume)
 			}
+			// Its file, reached by another name, may already be exported.
+			if err := checkUnshared(st, vol.DevicePath, "", 0, vol.Name); err != nil {
+				return err
+			}
 			ns.Volume, ns.DevicePath, ns.UUID, ns.NGUID = vol.Name, vol.DevicePath, vol.UUID, vol.NGUID
 		} else if req.File != nil {
+			// Refused before the intent, which would otherwise make recovery remove a file that was there already.
+			if err := s.m.checkNewFile(req.File.Name); err != nil {
+				return err
+			}
+			if err := s.m.beginFileIntent(opFileCreate, req.File.Name); err != nil {
+				return err
+			}
+			intent = fileKey(req.File.Name)
 			path, err := s.m.createVolume(req.File.Name, req.File.SizeBytes)
 			if err != nil {
 				return err
 			}
 			ns.DevicePath, ns.ManagedFile = path, true
+			s.m.crashPoint("file created")
 		} else {
 			if err := checkBacking(ns.DevicePath); err != nil {
 				return err
 			}
-			if err := checkUnshared(st, ns.DevicePath, "", 0); err != nil {
+			if err := checkUnshared(st, ns.DevicePath, "", 0, ""); err != nil {
 				return err
 			}
 		}
 		sub.Namespaces[ns.NSID] = ns
 		return nil
 	})
+	if err != nil && ns.ManagedFile {
+		os.Remove(ns.DevicePath)
+	}
+	if intent != "" {
+		s.m.endIntent(intent)
+	}
 	if err != nil {
-		if ns.ManagedFile {
-			os.Remove(ns.DevicePath)
-		}
 		return err
 	}
 	writeJSON(w, http.StatusCreated, s.viewNamespaceLocked(nqn, ns))
@@ -969,10 +993,13 @@ func (s *Server) updateNamespace(w http.ResponseWriter, r *http.Request) error {
 			ns.BufferedIO = *req.BufferedIO
 		}
 		if req.DevicePath != nil && *req.DevicePath != ns.DevicePath {
+			if ns.ManagedFile {
+				return target.NewConflict("namespace %d's file was created by this service, and would be left behind: delete the namespace, with delete_file=true to remove its file, and create another", nsid)
+			}
 			if err := checkBacking(*req.DevicePath); err != nil {
 				return err
 			}
-			if err := checkUnshared(st, *req.DevicePath, nqn, nsid); err != nil {
+			if err := checkUnshared(st, *req.DevicePath, nqn, nsid, ""); err != nil {
 				return err
 			}
 			ns.DevicePath, ns.ManagedFile = *req.DevicePath, false
@@ -1017,7 +1044,7 @@ func (s *Server) deleteNamespace(w http.ResponseWriter, r *http.Request) error {
 	}
 	removeFile := r.URL.Query().Get("delete_file") == "true"
 	var path string
-	var managed bool
+	var managed, began bool
 	err = s.m.mutate(func(st *target.State) error {
 		sub := st.Subsystems[nqn]
 		if sub == nil || sub.Namespaces[nsid] == nil {
@@ -1027,16 +1054,29 @@ func (s *Server) deleteNamespace(w http.ResponseWriter, r *http.Request) error {
 		if removeFile && !managed {
 			return target.Invalid("delete_file applies only to file-backed volumes created by this service")
 		}
+		if removeFile {
+			if err := s.m.beginFileIntent(opFileDelete, filepath.Base(path)); err != nil {
+				return err
+			}
+			began = true
+		}
 		delete(sub.Namespaces, nsid)
 		return nil
 	})
-	if err != nil {
-		return err
-	}
-	if removeFile {
-		if err := os.Remove(path); err != nil {
+	if began {
+		key := fileKey(filepath.Base(path))
+		if err != nil {
+			s.m.endIntent(key) // The namespace is still there, so its file stays.
 			return err
 		}
+		s.m.crashPoint("file forgotten")
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("namespace %d was deleted, and removing its file failed, which the next start tries again: %w", nsid, err)
+		}
+		s.m.endIntent(key)
+	}
+	if err != nil {
+		return err
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil

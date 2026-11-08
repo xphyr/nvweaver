@@ -460,6 +460,22 @@ What else it found, and what changed:
   counter is now renamed into place.
 - `make-sboms.sh` left a container behind when copying from it failed, as `set -e` exited before removing it.
 
+### The outside review's findings
+
+Each fix came with a test that failed first, or, for crash points that didn't exist before, failed with the fix turned off. Then
+every suite ran on x86-64 VMs: 330 unit tests, 240 in the browser, 308 on the kernel target, 76 under systemd, 915 in the VMs and
+93 on real targets in a browser, all passing. SPDK failed 1 of 325: a host whose key changed stayed connected after
+`nvmf_subsystem_set_keys`, still `live` after 10 s. SPDK now removes the host and adds it again, and passed all 325.
+
+- **Passthrough, on a real controller:** on emulated PCIe NVMe, a mounted namespace, an exported one, and the same controller twice
+  were all refused, and so was exporting a namespace of a controller that's passed through. Native multipath, which these
+  controllers don't use, was checked by hand on the same VM, with `nvme-loop`: the controller's directory listed only
+  `nvme2c2n1`, which has no device node, and `nvme2n1` was only in `nvme-subsys2`. The unit tests use both layouts.
+- **SPDK says a missing bdev is "No such device",** code -19, which is now the only error that means absent. Every namespace
+  created in the SPDK run went through that check.
+- **Not tested:** passthrough of a controller with native multipath through the API, as none is available to pass through, and
+  a key change with two hosts on one SPDK subsystem, where only the changed one should drop.
+
 ## Not tested
 
 Deferred until hardware is available, as tracked in `TODO.md`:

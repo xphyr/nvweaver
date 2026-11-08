@@ -169,7 +169,7 @@ go run ./test/webui-demo     # then open http://127.0.0.1:8421/
 | SATA, SAS, virtio, loop, and so on | `device_path: /dev/sdc` | Any block device the host has. |
 | File on a volume you mounted | `device_path: /data/x.img` | Path as seen inside the container. |
 | Sparse file managed by the service | `file: {name, size_bytes}` | Can be grown live. Mount a volume at the data directory, as the examples do. |
-| Whole NVMe controller | `passthru_device: /dev/nvme0` on the subsystem | Hosts see the real controller. The subsystem can't have other namespaces. |
+| Whole NVMe controller | `passthru_device: /dev/nvme0` on the subsystem | Hosts see the real controller. The subsystem can't have other namespaces. Refused if any of its namespaces is mounted, held or exported. |
 
 The kernel target refuses files on overlayfs, which includes a container's own
 filesystem: hosts would see a disk of size zero with no device node.
@@ -186,8 +186,8 @@ refused, as is exporting the same device twice.
 ## API
 
 [`api/openapi.yaml`](api/openapi.yaml) is the full specification. JSON over HTTP. Errors are `{"error":"..."}` with status 400, 401, 404, 409
-(conflict, including an address already in use) or 422 (invalid). A failed change
-is rolled back, so it never leaves partial configuration.
+(conflict, including an address already in use), 422 (invalid), 429 (too many sign-in attempts), 503 with
+`Retry-After` (busy: try again) or 507 (a pool is full). A failed change is rolled back, so it never leaves partial configuration.
 
 | Resource | Methods |
 |---|---|
@@ -213,7 +213,9 @@ Behaviour worth knowing:
   Without it, the file is kept.
 - DH-HMAC-CHAP: set `dhchap_key` (and optionally `dhchap_ctrl_key`, `dhchap_hash`,
   `dhchap_dhgroup`) on a host. Secrets are never returned by the API. They are
-  stored in plain text in the mode 0600 state file.
+  stored in plain text in the mode 0600 state file. Changing a host's key drops its
+  connections, so that it logs in again with the new one: give the host its new key
+  first. On the kernel target, other hosts on the same subsystem stall for about 10 s.
 
 ## Configuration
 

@@ -50,7 +50,7 @@ func TestWhereTimeGoes(t *testing.T) {
 		}
 	})
 	stage("checkUnshared", func() {
-		if err := checkUnshared(st, "/p/none", "", 0); err != nil {
+		if err := checkUnshared(st, "/p/none", "", 0, ""); err != nil {
 			t.Fatal(err)
 		}
 	})

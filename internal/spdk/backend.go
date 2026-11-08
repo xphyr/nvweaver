@@ -286,7 +286,7 @@ func (b *Backend) reconcileAll(next *target.State) error {
 	if err != nil {
 		return err
 	}
-	if err := b.createBdevs(next, func(name string) bool { return have[name] }); err != nil {
+	if err := b.createBdevs(next, func(name string) (bool, error) { return have[name], nil }); err != nil {
 		return err
 	}
 	if live, err = b.subsystems(); err != nil {
@@ -309,17 +309,40 @@ func (b *Backend) reconcileAll(next *target.State) error {
 	return b.removeLeftovers(next)
 }
 
+// changedHosts names the hosts added, removed or changed.
+func changedHosts(prev, next map[string]*target.Host) map[string]bool {
+	out := map[string]bool{}
+	for nqn, h := range prev {
+		if !reflect.DeepEqual(h, next[nqn]) {
+			out[nqn] = true
+		}
+	}
+	for nqn := range next {
+		if prev[nqn] == nil {
+			out[nqn] = true
+		}
+	}
+	return out
+}
+
+// listsAny reports whether a subsystem allows any of these hosts by name.
+func listsAny(sub *target.Subsystem, hosts map[string]bool) bool {
+	return slices.ContainsFunc(sub.AllowedHosts, func(h string) bool { return hosts[h] })
+}
+
 // reconcileChanges does what a full reconcile does, for the subsystems that differ. Every RPC measured about 8 ms,
 // even ones that do next to nothing, and at any scale. So what a change costs is how many it makes, and that mustn't
 // depend on how many namespaces a subsystem has, let alone how many there are in total.
 func (b *Backend) reconcileChanges(prev, next *target.State) error {
-	hostsChanged := !reflect.DeepEqual(prev.Hosts, next.Hosts)
+	changedHosts := changedHosts(prev.Hosts, next.Hosts)
+	hostsChanged := len(changedHosts) > 0
 	scope := &target.State{Hosts: next.Hosts, Ports: next.Ports, Subsystems: map[string]*target.Subsystem{}}
 	live := map[string]*liveSubsystem{}
 	gone := map[string]bool{}
 	for nqn, old := range prev.Subsystems {
 		want := next.Subsystems[nqn]
-		if reflect.DeepEqual(old, want) && !hostsChanged {
+		// SPDK keeps a host's keys on each subsystem's entry for it, so a subsystem listing a changed host changes.
+		if reflect.DeepEqual(old, want) && !listsAny(old, changedHosts) {
 			continue
 		}
 		if want != nil {
@@ -364,7 +387,12 @@ func (b *Backend) reconcileChanges(prev, next *target.State) error {
 			}
 		}
 	}
-	if err := b.createBdevs(scope, func(name string) bool { return inUse[name] || b.bdevExists(name) }); err != nil {
+	if err := b.createBdevs(scope, func(name string) (bool, error) {
+		if inUse[name] {
+			return true, nil
+		}
+		return b.bdevExists(name)
+	}); err != nil {
 		return err
 	}
 	for _, nqn := range sortedKeys(scope.Subsystems) {
@@ -410,7 +438,11 @@ func (b *Backend) reconcileChanges(prev, next *target.State) error {
 		}
 	}
 	for _, name := range sortedKeys(gone) {
-		if b.bdevExists(name) {
+		exists, err := b.bdevExists(name)
+		if err != nil {
+			return err
+		}
+		if exists {
 			if err := b.call("bdev_aio_delete", map[string]any{"name": name}, nil); err != nil {
 				return err
 			}
@@ -454,9 +486,19 @@ func (b *Backend) subsystem(nqn string) (*liveSubsystem, error) {
 	return nil, nil
 }
 
-func (b *Backend) bdevExists(name string) bool {
+// bdevExists asks SPDK about one bdev. Only "No such device" means it isn't there: another failure leaves it unknown,
+// and creating or deleting it then isn't safe.
+func (b *Backend) bdevExists(name string) (bool, error) {
 	var list []liveBdev
-	return b.rpc.Call("bdev_get_bdevs", map[string]any{"name": name}, &list) == nil && len(list) > 0
+	err := b.rpc.Call("bdev_get_bdevs", map[string]any{"name": name}, &list)
+	var re *RPCError
+	if errors.As(err, &re) && re.Code == -int(syscall.ENODEV) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(list) > 0, nil
 }
 
 func boundAddresses(live map[string]*liveSubsystem) map[string]bool {
@@ -590,13 +632,20 @@ func (b *Backend) bdevs() (map[string]bool, error) {
 
 // createBdevs uses AIO for everything, which is what keeps non-NVMe disks and
 // files working: the storage stays on its normal kernel driver.
-func (b *Backend) createBdevs(next *target.State, exists func(string) bool) error {
+func (b *Backend) createBdevs(next *target.State, exists func(string) (bool, error)) error {
 	for _, nqn := range sortedKeys(next.Subsystems) {
 		sub := next.Subsystems[nqn]
 		for _, nsid := range sortedKeys(sub.Namespaces) {
 			ns := sub.Namespaces[nsid]
+			if !ns.Enabled {
+				continue
+			}
 			name := bdevName(nqn, nsid, ns.DevicePath)
-			if !ns.Enabled || exists(name) {
+			there, err := exists(name)
+			if err != nil {
+				return err
+			}
+			if there {
 				continue
 			}
 			params := map[string]any{"name": name, "filename": ns.DevicePath}
@@ -707,7 +756,14 @@ func (b *Backend) applyHosts(next *target.State, want *target.Subsystem, cur *li
 		}
 		l := cur.Hosts[i]
 		if l.Key != keyName(nqn, h.DHCHAPKey) || l.CtrlKey != keyName(nqn, h.DHCHAPCtrlKey) {
-			if err := b.call("nvmf_subsystem_set_keys", hostParams(want.NQN, h), nil); err != nil {
+			// nvmf_subsystem_set_keys leaves a connected host's session up, so it could carry on with the key it
+			// logged in with. Removing the host drops it, and it has to log in again with its new keys. Others on the
+			// subsystem aren't affected. See decision 30.
+			params := map[string]any{"nqn": want.NQN, "host": nqn}
+			if err := b.call("nvmf_subsystem_remove_host", params, nil); err != nil {
+				return err
+			}
+			if err := b.call("nvmf_subsystem_add_host", hostParams(want.NQN, h), nil); err != nil {
 				return err
 			}
 		}

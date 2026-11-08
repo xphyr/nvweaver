@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"slices"
 
 	"nvweaver/internal/target"
 )
@@ -54,6 +55,9 @@ func (m *Manager) reserve() *reservation {
 func (r *reservation) exclusive(key string) error {
 	r.m.busyMu.Lock()
 	defer r.m.busyMu.Unlock()
+	if slices.Contains(r.sole, key) {
+		return nil // This request has it already.
+	}
 	if r.m.busy[key] != 0 {
 		return busy("%s is in the middle of another change", key)
 	}

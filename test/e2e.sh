@@ -479,6 +479,23 @@ api "its namespace" 201 POST "/v1/subsystems/$SD/namespaces" '{"nsid":1,"file":{
 if out=$(connect "$H3" "$HID3" "$SD" $P1); then bad "no key refused" "$out"; disconnect "$SD"; else ok "no key refused"; fi
 if out=$(connect "$H3" "$HID3" "$SD" $P1 "--dhchap-secret=$WRONG"); then bad "wrong key refused" "$out"; disconnect "$SD"; else ok "wrong key refused"; fi
 out=$(connect "$H3" "$HID3" "$SD" $P1 "--dhchap-secret=$KEY") && ok "right key accepted" || bad "right key accepted" "$out"
+# A host connected with a key that's been replaced has to log in again, with the new one, as decision 30 has it for a
+# host that's removed. The target only checks keys at login, so without this the old key works for as long as the
+# connection lasts.
+CD=$(ctrl_of "$SD")
+expect_eq "connected, before the key changes" live "$(ini "cat /sys/class/nvme/$(basename "${CD:-none}")/state 2>/dev/null")"
+NEWKEY=$(ini "nvme gen-dhchap-key --nqn=$H3 --hmac=1")
+api "change the host's key" 200 PATCH "/v1/hosts/$H3" "{\"dhchap_key\":\"$NEWKEY\"}"
+state=live
+for _ in $(seq 1 $((20 * SCALE))); do
+	state=$(ini "cat /sys/class/nvme/$(basename "${CD:-none}")/state 2>/dev/null || echo gone")
+	[ "$state" != live ] && break
+	sleep 0.5
+done
+if [ "$state" != live ]; then ok "the session using the old key is dropped ($state)"; else bad "the session using the old key is dropped" "still live after 10 s"; fi
+disconnect "$SD"
+if out=$(connect "$H3" "$HID3" "$SD" $P1 "--dhchap-secret=$KEY"); then bad "the old key is refused" "$out"; disconnect "$SD"; else ok "the old key is refused"; fi
+out=$(connect "$H3" "$HID3" "$SD" $P1 "--dhchap-secret=$NEWKEY") && ok "the new key is accepted" || bad "the new key is accepted" "$out"
 disconnect "$SD"
 api "remove auth subsystem" 204 DELETE "/v1/subsystems/$SD"
 
