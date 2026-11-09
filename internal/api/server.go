@@ -40,6 +40,8 @@ type Server struct {
 	Tokens *auth.Tokens
 	// AllowInsecureLogin lets passwords cross the network in clear text.
 	AllowInsecureLogin bool
+	// requests counts and times the API's requests, for /metrics.
+	requests *requestMetrics
 	// anyHost skips checking the Host header with no token. Only tests set it, whose requests have made-up names.
 	anyHost bool
 }
@@ -47,7 +49,7 @@ type Server struct {
 // NewServer returns an API handler. A non-empty token is required as a bearer
 // token on everything except /healthz.
 func NewServer(m *Manager, token string) *Server {
-	return &Server{m: m, token: token}
+	return &Server{m: m, token: token, requests: newRequestMetrics()}
 }
 
 type statusError struct {
@@ -207,10 +209,11 @@ func (s *Server) Handler() http.Handler {
 		if !strings.HasPrefix(pattern, "GET ") && !scopedMay[pattern] {
 			h = adminOnly(h)
 		}
-		mux.HandleFunc(pattern, s.wrap(h))
+		mux.HandleFunc(pattern, s.instrument(pattern, s.wrap(h)))
 	}
 
 	route("GET /v1/system", s.getSystem)
+	route("GET /metrics", s.getMetrics)
 
 	route("GET /v1/connections", s.listConnections)
 	route("GET /v1/ports", s.listPorts)

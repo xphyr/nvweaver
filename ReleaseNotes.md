@@ -6,6 +6,9 @@ The major differences between versions. For every change, see the commit history
 
 ### Added
 
+- **Metrics, at `GET /metrics`,** in Prometheus's text format: how full each pool is, in data and LVM metadata, object counts,
+  warnings, stuck changes, and API requests and their latency. OpenTelemetry users scrape it with the Collector. Metric names,
+  scrape configs and example alerts are in `docs/monitoring.md`.
 - **A Kubernetes CSI driver,** in `csi/`: dynamic provisioning of filesystem and raw block volumes from nvweaver's pools, over NVMe/TCP,
   with growing, snapshots and clones, and raw block volumes shared by several nodes. It's new, tested so far in a k3s lab of three VMs,
   and its image isn't published yet: build it with `make images`. See "Kubernetes CSI driver" in the README.

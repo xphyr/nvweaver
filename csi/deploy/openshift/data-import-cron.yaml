@@ -1,0 +1,23 @@
+# A golden image for KubeVirt VMs, kept up to date on nvweaver: CDI imports the latest Fedora container disk each week, and
+# keeps it as a snapshot, as the StorageProfile asks, under the DataSource "fedora", which VMs clone their disks from. The access
+# and volume modes come from the StorageProfile too. The first import starts as soon as this is applied. See README.md.
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataImportCron
+metadata:
+  name: fedora-golden
+  namespace: golden-images
+spec:
+  schedule: "30 1 * * 1"
+  managedDataSource: fedora
+  garbageCollect: Outdated
+  importsToKeep: 3
+  template:
+    spec:
+      source:
+        registry:
+          url: docker://quay.io/containerdisks/fedora:latest
+      storage:
+        storageClassName: nvweaver
+        resources:
+          requests:
+            storage: 40Gi

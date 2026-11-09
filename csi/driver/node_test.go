@@ -40,7 +40,7 @@ func newFakeNode(t *testing.T) *fakeNode {
 
 func testNodeCfg() Config {
 	c := testCfg
-	c.CtrlLossTmo, c.MaxVolumesPerNode = -1, 1024
+	c.CtrlLossTmo, c.MaxVolumesPerNode, c.ReconnectDelay = -1, 1024, 10
 	return c
 }
 
@@ -88,7 +88,7 @@ func TestStagingConnectsFormatsAndMounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"nvme connect -t tcp -a 10.98.0.1 -s 4420 -n " + sub + " -q " + nodeA + " --ctrl-loss-tmo=-1",
+		"nvme connect -t tcp -a 10.98.0.1 -s 4420 -n " + sub + " -q " + nodeA + " --ctrl-loss-tmo=-1 --reconnect-delay=10",
 		"blkid -p -o value -s TYPE /dev/nvme1n1",
 		"mkfs.ext4 -q -F /dev/nvme1n1",
 		"mount -t ext4 /dev/nvme1n1 " + stage,
@@ -176,7 +176,11 @@ func TestTheNodeKeepsRetryingAndSaysHowManyVolumesFit(t *testing.T) {
 	if err := f.connect(context.Background(), map[string]string{ctxNQN: "nqn.x", ctxAddress: "a", ctxService: "1"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.ran[len(f.ran)-1]; !strings.HasSuffix(got, " --ctrl-loss-tmo=600") {
+	f.cfg.ReconnectDelay = 2
+	if err := f.connect(context.Background(), map[string]string{ctxNQN: "nqn.y", ctxAddress: "a", ctxService: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.ran[len(f.ran)-1]; !strings.HasSuffix(got, " --ctrl-loss-tmo=600 --reconnect-delay=2") {
 		t.Errorf("ran %s", got)
 	}
 }

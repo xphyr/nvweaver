@@ -220,6 +220,14 @@ func finish(resp *http.Response, out any) error {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
+	if raw, ok := out.(*[]byte); ok {
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("reading the API's response: %w", err)
+		}
+		*raw = b
+		return nil
+	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("reading the API's response: %w", err)
 	}
@@ -281,6 +289,15 @@ func (c *Client) Health(ctx context.Context) (*Health, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// Metrics returns the service's metrics, in Prometheus's text format.
+func (c *Client) Metrics(ctx context.Context) (string, error) {
+	var b []byte
+	if err := c.request(ctx, http.MethodGet, "/metrics", nil, nil, &b); err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // System describes the service and its target, including any warnings about how the machine is set up.

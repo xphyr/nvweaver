@@ -61,6 +61,9 @@ type Config struct {
 	Port int
 	// CtrlLossTmo is how long, in seconds, a node keeps trying to reconnect before it gives a volume up; -1 is for ever.
 	CtrlLossTmo int
+	// ReconnectDelay is how long, in seconds, a node waits between attempts to reconnect. It sets how long I/O stalls when a
+	// connection drops, such as when another node is removed from a shared volume's subsystem on the kernel target.
+	ReconnectDelay int
 	// MaxVolumesPerNode is what the node tells Kubernetes it can take.
 	MaxVolumesPerNode int64
 	Log               *slog.Logger
@@ -82,6 +85,9 @@ func (c Config) Check() error {
 	}
 	if c.CtrlLossTmo < -1 {
 		return fmt.Errorf("ctrl-loss-tmo %d: it's seconds, or -1 for ever", c.CtrlLossTmo)
+	}
+	if c.ReconnectDelay < 1 {
+		return fmt.Errorf("reconnect-delay %d: it's at least a second", c.ReconnectDelay)
 	}
 	if c.MaxVolumesPerNode < 0 || c.MaxVolumesPerNode > MaxNamespaces {
 		return fmt.Errorf("max-volumes-per-node %d: it's at most %d, the namespaces a subsystem can hold", c.MaxVolumesPerNode, MaxNamespaces)

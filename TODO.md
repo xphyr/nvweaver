@@ -177,7 +177,8 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [x] `nvme-tcp` loaded and a unique `hostnqn` on each node, by MachineConfig if RHCOS doesn't already. `nvme-tcp` was loaded already. RHCOS doesn't: every node
         had the same host NQN and host ID. `csi/deploy/openshift/` has a MachineConfig for each pool, applied to `nvw`'s master pool
   - [x] A CDI StorageProfile, `csi/deploy/openshift/storageprofile.yaml`: a VM and a live migration passed with it
-  - [ ] A DataImportCron, and a guest writing while it migrates
+  - [x] A DataImportCron: Fedora's golden image as a snapshot, and VMs cloned from it, once nvweaver's class is KubeVirt's default
+  - [ ] A guest writing while it migrates. The stall itself was measured with pods: see the reconnect delay below
 - [x] Create a Kubernetes CSI driver that works with the API to handle dynamic
       provisioning: `csi/`, decisions 44 and 45, tested end to end in the k3s lab by `test/vm/k3s-csi.sh`
   - [x] Controller, and a privileged node plugin (`nvme connect`, format, mount), which takes the transport
@@ -200,7 +201,8 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [x] Test RWX block volumes and KubeVirt live migration with the real thing: both passed on OpenShift. On the kernel target, removing the source host
         stalls the destination for about 10 s: see decision 30. Measured on OpenShift: the new node's I/O queued for 10 s, 10 s after
         the migration, with no error. A shorter reconnect delay may help, and hasn't been measured
-  - [ ] Decide the node's reconnect delay (`nvme connect --reconnect-delay`), which sets how long that stall lasts, and measure it
+  - [x] Decide the node's reconnect delay (`nvme connect --reconnect-delay`), which sets how long that stall lasts, and measure it:
+        2 s, decision 45, measured at 10, 2 and 1
   - [ ] Moving a cluster to another port, such as a storage network: today its StorageClass is recreated and each node's subsystem
         cleared by hand, as nodes keep their live connection. The driver could offer each node's subsystem on the new port, and
         have nodes connect to it, as a second path
@@ -239,13 +241,14 @@ are in `CLAUDE.review.md`, which isn't in the repository.
 
 ## Monitoring
 
-- [ ] A Prometheus endpoint, `/metrics`, and OpenTelemetry metrics, so that usage can be watched and alerts set up with a third-party
+- [x] A Prometheus endpoint, `/metrics`, and OpenTelemetry metrics, so that usage can be watched and alerts set up with a third-party
       tool. At least: each pool's size, use and data and metadata percentages, as a thin pool filling up gives hosts I/O errors; counts of
       volumes, snapshots, subsystems, namespaces and connections; API requests by route and status, and their latency; the
       reconcile and intent log; and `warnings`. Spec first, and authenticated like the rest of the API
-  - [ ] Decide how OpenTelemetry is sent: OTLP over HTTP can be written with the standard library, while the OpenTelemetry Go SDK
-        would be a new dependency, which decision 40 says needs the user's agreement
-  - [ ] Example alert rules, such as a pool over 80% and a target that isn't ready
+  - [x] Decide how OpenTelemetry is sent: through the Collector's `prometheus` receiver, decision 47. `docs/monitoring.md`
+  - [x] Example alert rules, such as a pool over 80% and a target that isn't ready: in `docs/monitoring.md`
+  - [ ] Push OTLP from nvweaver itself, if scraping isn't enough: by hand with the standard library, or with the SDK, decision 40
+  - [ ] More metrics: connections, which cost an RPC per subsystem on SPDK, reconcile timings, and the driver's own
   - [ ] The CSI driver's own metrics, from its sidecars, documented
 
 ## Later (low priority)

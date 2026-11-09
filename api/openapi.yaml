@@ -151,6 +151,24 @@ paths:
                 $ref: '#/components/schemas/System'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /metrics:
+    get:
+      operationId: getMetrics
+      summary: Metrics, for Prometheus or the OpenTelemetry Collector
+      description: |
+        In Prometheus's text format, version 0.0.4. Authenticated like the rest of the API: a scoped token that owns
+        nothing is a read-only token for a monitoring system. Each scrape asks every pool how full it is, as
+        `GET /v1/pools` does. Metric names, and what each means, are in `docs/monitoring.md`.
+      tags: [system]
+      responses:
+        '200':
+          description: The metrics.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/connections:
     get:
       operationId: listConnections
