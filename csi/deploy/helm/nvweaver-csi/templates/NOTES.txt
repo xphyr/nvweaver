@@ -1,0 +1,13 @@
+nvweaver's CSI driver is installed for cluster "{{ .Values.cluster }}", reaching nvweaver at
+{{ if .Values.nvweaver.existingSecret }}the URL in secret {{ .Values.nvweaver.existingSecret }}{{ else }}{{ .Values.nvweaver.url }}{{ end }}.
+
+Check it's running:
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ .Release.Name }}-controller
+  kubectl -n {{ .Release.Namespace }} rollout status daemonset/{{ .Release.Name }}-node
+
+Before using it, check that every node has its own NVMe host NQN, in /etc/nvme/hostnqn: nodes that share one share every
+volume. See csi/README.md.
+{{- if include "nvweaver-csi.openshift" . }}
+
+On OpenShift with OpenShift Virtualization, apply the CDI StorageProfile in csi/deploy/openshift/storageprofile.yaml too.
+{{- end }}

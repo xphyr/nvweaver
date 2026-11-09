@@ -598,6 +598,17 @@ and read on another while both had it, and nothing left after everything was del
   outage test against SPDK, or for longer than the kernel's default 10-minute timeout. `e2e.sh` doesn't run with a tokens
   file: the k3s lab is the only real service that has.
 
+### The Helm chart
+
+On the OpenShift cluster, the manifest-installed driver was removed, keeping its namespace and API secret, and the chart
+installed in its place with the existing secret, the class on the storage network's port and KubeVirt's default set. It detected
+OpenShift and granted the node plugin the privileged SCC by itself, made the snapshot class as the CRDs were there, and the
+driver came up. The 13 checks passed, as restricted pods, and a VM from the Fedora golden image was running in 40 s on a
+ReadWriteMany raw block disk. `helm upgrade` changed the reconnect delay on every node, and back. Rendering refuses a missing
+or badly formed `cluster`, and a missing API, with messages saying which. `make lint` lints it with `--strict` and renders it as
+on plain Kubernetes and as on OpenShift. Not tested yet: the chart on k3s, and installing it on a cluster that never had the
+driver.
+
 ### Before v0.4.0
 
 Every suite on x86-64 VMs, with images built from the release branch: unit 347, browser 245, kernel `e2e.sh` 311, SPDK `e2e.sh`
