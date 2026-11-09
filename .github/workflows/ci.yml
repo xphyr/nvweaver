@@ -61,12 +61,21 @@ jobs:
         run: printf '%s' "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin
       - name: Build images
         env:
-          # Pull requests read the cache, and only main and releases write to it.
+          # Everything reads the cache, and only main writes to it. A release only reads it, so that a problem writing a cache,
+          # which only saves time, can't stop a release: v0.4.0's first attempt failed on it. When the release workflow calls
+          # this, github.workflow is "Release".
           BUILD_FLAGS: >-
             --layers --cache-from ${{ env.CACHE_REPO }}
-            ${{ github.event_name != 'pull_request' && format('--cache-to {0}', env.CACHE_REPO) || '' }}
+            ${{ github.event_name == 'push' && github.workflow == 'CI' && format('--cache-to {0}', env.CACHE_REPO) || '' }}
           INPUT_VERSION: ${{ inputs.version }}
-        run: make images VERSION="${INPUT_VERSION:-$(git describe --tags --always --dirty)}"
+        # Writing the cache only saves time, so a failure to write it builds again without, from the layers just built, and
+        # warns. A real build failure fails both times.
+        run: |
+          version="${INPUT_VERSION:-$(git describe --tags --always --dirty)}"
+          if ! make images VERSION="$version"; then
+            echo "::warning::Building with the cache failed: building again without writing to it"
+            make images VERSION="$version" BUILD_FLAGS="--layers --cache-from $CACHE_REPO"
+          fi
       - name: Build the release tarball
         env:
           INPUT_VERSION: ${{ inputs.version }}
