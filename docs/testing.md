@@ -609,6 +609,15 @@ or badly formed `cluster`, and a missing API, with messages saying which. `make 
 on plain Kubernetes and as on OpenShift. Not tested yet: the chart on k3s, and installing it on a cluster that never had the
 driver.
 
+### v0.4.0-rc1, as published
+
+The release run passed every job, and published a pre-release. Its 14 files matched `SHA256SUMS`, and each had a valid
+attestation from the tag, as did all three images. Each image was multi-arch, amd64 and arm64, and pulled with no credentials,
+the driver's once its new package was made public; each reported `0.4.0-rc1`, and `latest` stayed on 0.3.0, as a pre-release
+leaves it. Every SBOM said `go1.26.10`, and the driver's listed its seven modules on both architectures, but gave its own
+module, `nvweaver/csi`, the version `UNKNOWN`, as `make-sboms.sh` stamped only `nvweaver`'s: fixed, and checked, for v0.4.0. The
+OpenShift cluster's Helm release was moved to the published driver image, and the 13 checks passed.
+
 ### Before v0.4.0
 
 Every suite on x86-64 VMs, with images built from the release branch: unit 347, browser 245, kernel `e2e.sh` 311, SPDK `e2e.sh`
