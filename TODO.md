@@ -4,7 +4,26 @@ The goal is to test locally what an enterprise NVMe/TCP array would do, without 
 investment in one. So the Kubernetes CSI driver must handle production-like scale, not
 just a handful of lab volumes.
 
-Work through these in order: each phase depends on the ones before it.
+The phases below were written in dependency order, and are mostly done. What's next is decided with the user, and listed
+here first. Each step points at its items further down.
+
+## Next
+
+Agreed with the user on 2026-11-09, in this order:
+
+1. **Bring this list up to date.** Done in the same change as this section.
+2. **Harden the CSI driver, before OpenShift:** run it on SPDK; settle the node's controller-loss timeout, and test nvweaver
+   restarting and a node rebooting with volumes mounted; report `MaxVolumesPerNode`; add `ListVolumes` and `ListSnapshots`,
+   then pass `csi-sanity`; and scoped API tokens, so that a cluster's driver can only touch its own names. See phase 7 and
+   "Security"
+3. **OpenShift,** on the user's three-node virtual cluster, with nvweaver on a dedicated test server's disks, over a real network:
+   RHCOS, SCCs, MachineConfig, and KubeVirt live migration. See phase 7
+4. **Scale:** measure the target's connection limits, then the driver at production-like volume and node counts. See phases 5 and 7
+5. **Monitoring:** a Prometheus endpoint and OpenTelemetry metrics, so that usage can be watched and alerts set up in a third-party
+   tool. See "Monitoring"
+6. **Release v0.4.0 with the driver:** its image for amd64 and arm64, with notices, `k3s-csi.sh` before each release, and a test
+   that a new version reads the previous release's state. See phases 1 and 7
+7. **Changed block tracking,** starting with its correctness test. See phase 7
 
 ## 1. Build and release
 
@@ -40,7 +59,8 @@ Work through these in order: each phase depends on the ones before it.
   - [x] Have CI fail if the SBOM doesn't list what's in `THIRD_PARTY_NOTICES.md`, so that this can't quietly go stale
 - [x] For v0.3.0: publish the `nvweaver` command line utility as its own artifact, as `nvweaver-cli-<version>-linux-<arch>`, for people who only want the client. Linux on amd64 and arm64,
       built natively, as the suites and the Arm runner already test it. Include them in the checksums, attestations and SBOM, and say in the README how to get them
-- [ ] Pin base images in the Containerfiles by digest, with automated updates
+- [ ] Pin base images in the Containerfiles by digest, with automated updates, the CSI driver's included
+- [ ] Test that a new version reads the previous release's saved state, before each release. Nothing does yet
 - [x] Add a `LICENSE` (MIT)
 - [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)
 
@@ -129,7 +149,7 @@ Production-like scale is a requirement, so measure this before building on it.
 
 ## 6. Web UI
 
-**Next, by choice,** ahead of what's left of phases 3 and 5, so that there's something to see.
+Built ahead of what was left of phases 3 and 5, by choice, so that there was something to see.
 
 - [x] Read-only screens, embedded in the binary, tested in a real browser. See decision 37
 - [x] Sign in with a username and password, from a users file in bcrypt. See decision 40
@@ -142,35 +162,19 @@ Production-like scale is a requirement, so measure this before building on it.
 - [x] Show which hosts are connected on a subsystem's page, and before un-exporting or deleting it
 - [x] Run a browser against both real targets in VMs: `test/webui-real-e2e.sh`
 
-## Review findings, before the CSI driver
+## Review findings
 
-From an outside review, checked against the code after v0.3.0-rc1. All are real, and none are regressions. All fixed, and the results are in `docs/testing.md`. The details and suggested tests are in `CLAUDE.review.md`, which isn't in the repository. In this order, each with a test that fails first:
-
-- [x] The same disk can be exported under two paths: compare device and inode, `Rdev`, and a whole disk with its partitions, when a volume is mapped too
-- [x] Passthrough doesn't check that a controller is free. Under native multipath, sysfs may list `nvme0c0n1`, not the `nvme0n1` in use, so a simple lookup could pass a busy controller: test this on emulated NVMe
-- [x] A volume's grow can drop its intent if saving fails, or never rescan if the rescan fails
-- [x] A host change on SPDK fetches every subsystem, even adding an unrelated host: about 40 s under the API lock at 5,000 subsystems
-- [x] Managed `file` namespaces aren't in the intent log. Moving one to another `device_path` is refused, as decided, rather than deleting its file: decision 42
-- [x] Volume and snapshot `state` is always `online`: report `missing`, in the spec first, and show it in the interface
-- [x] After one timeout, every SPDK RPC fails until a restart, as `json.Decoder` keeps its read error. Dial again. `bdevExists` should return errors, but `ENODEV` still has to mean that it isn't there
-- [x] Changing a host's DH-CHAP key leaves its session connected, on both targets as it turned out. Dropped now, as decided, with the order documented: decision 30
-- [x] A port update drops foreign subsystems: link them back afterwards, including if writing an attribute fails
-- [x] Errors from writing to configfs quote the value, including DH-CHAP secrets
-- [x] Smaller: compare labels on an idempotent create, compare resolved paths for reflink pools, name 503 and 507 in the README's error list, and tick "Make volume creation idempotent by name" if that's still open
-
-A second pass, after `671000d`, also all real:
-
-- [x] A block device that sysfs can't describe passes the disk-and-partition check: refuse it. Decision 9
-- [x] A logical volume over a disk that's already exported isn't caught, as `O_EXCL` only sees the other order: walk the new device's slaves. Decision 9
-- [x] A failed create forgets its file's intent even when the file couldn't be removed, also when sizing the file fails
-- [x] The key dialog doesn't say that saving drops the host's sessions
-- [x] Listing every connection on SPDK asks each subsystem in turn: refused without `subsystem`, under a capability of its own. Decision 43
+Two outside reviews, after v0.3.0: every finding was real, and all are fixed, each with a test that failed first. See "The
+outside review's findings" and "The second pass" in `docs/testing.md`, and decisions 9, 30, 42 and 43. The reviewer's notes
+are in `CLAUDE.review.md`, which isn't in the repository.
 
 ## 7. Kubernetes CSI driver
 
 - [x] A disposable Kubernetes lab: `test/vm/k3s-lab.sh`, k3s on three VMs and nvweaver on a fourth. See `docs/testing.md`
 - [ ] Test on OpenShift too, on a three-node virtual cluster with nested VMs for KubeVirt: RHCOS, SCCs and MachineConfig. Three
       virtual nodes don't prove production-like node counts or performance, which stay open below
+  - [ ] An SCC for the privileged node plugin, and the manifests' paths checked on RHCOS
+  - [ ] `nvme-tcp` loaded and a unique `hostnqn` on each node, by MachineConfig if RHCOS doesn't already
 - [x] Create a Kubernetes CSI driver that works with the API to handle dynamic
       provisioning: `csi/`, decisions 44 and 45, tested end to end in the k3s lab by `test/vm/k3s-csi.sh`
   - [x] Controller, and a privileged node plugin (`nvme connect`, format, mount), which takes the transport
@@ -197,17 +201,46 @@ A second pass, after `671000d`, also all real:
   - [ ] Detect nodes sharing a `hostnqn`, common on cloned images, which breaks access
         control
   - [ ] Limit queue counts per connection, based on the phase 5 measurements
-  - [ ] Pass the `csi-sanity` conformance suite
+  - [x] Run `k3s-csi.sh` against the SPDK target: all 25 passed
+  - [x] Survive outages: nodes retry for ever by default (`--ctrl-loss-tmo=-1`), decision 45. Tested with nvweaver stopped for
+        90 s, and a node rebooting, with a pod writing
+  - [ ] Run the outage test on SPDK, and for longer than the kernel's default 10 minutes, with the default once to show the difference
+  - [x] Report `MaxVolumesPerNode`, from the 1024 namespaces a subsystem can hold on both targets, so the scheduler knows
+  - [x] Pass the `csi-sanity` conformance suite: 75 of 75, v5.6.0, by `k3s-csi.sh sanity`
   - [ ] Publish the driver's image in releases, for amd64 and arm64, with its third-party notices, and run `k3s-csi.sh` in CI or before each release
   - [ ] DH-HMAC-CHAP for nodes: a key per node, from a Secret, set on its host
   - [ ] Delete a node's subsystem and host when the node leaves the cluster. They stay while the driver runs, for its next volume
   - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver
-  - [ ] `ListVolumes` and `ListSnapshots`, which `csi-sanity` and some backup tools use
+  - [x] `ListVolumes` and `ListSnapshots`, which `csi-sanity` and some backup tools use
   - [ ] Test at production-like volume and node counts
   - [ ] Document that there is a single target, with no failover
+  - [ ] Document what can never change once volumes exist: `--cluster`, the NQN prefix and the driver's name, as changing them
+        orphans every volume. Test upgrading the driver with volumes in use
+  - [ ] Add `k3s-csi.sh` to `run-all.sh`, or run it before each release
   - [ ] Test a clone of a volume with LVM inside it, on a node that also has the original. Its PV UUID and VG name match its source's, so the node's LVM should
         see duplicates. Nothing has tested this yet. Real arrays have the same problem, and the target can't fix it without changing the client's data. Find
         out what happens to pods on both volumes, then either document it or have the node plugin handle it, as with `vgimportclone`
+## Security
+
+- [x] Scoped API tokens, so that clusters sharing one nvweaver can't delete each other's volumes: by ownership, not name prefixes,
+      decision 46. Tested in the k3s lab, with the driver on a scoped token
+- [ ] Roles for people in the web interface, which decision 40 left out: everyone signed in is still an admin
+- [ ] A way to hand a cluster's existing volumes, snapshots and subsystems to its scoped token in one go, rather than one at a time
+- [ ] Hosts owned by a token, when nodes get DH-HMAC-CHAP keys, which only admins may set now
+- [ ] Document backing up nvweaver's data directory, and recovering from losing it: it's a single target, and the state is what
+      says which volume is which
+
+## Monitoring
+
+- [ ] A Prometheus endpoint, `/metrics`, and OpenTelemetry metrics, so that usage can be watched and alerts set up with a third-party
+      tool. At least: each pool's size, use and data and metadata percentages, as a thin pool filling up gives hosts I/O errors; counts of
+      volumes, snapshots, subsystems, namespaces and connections; API requests by route and status, and their latency; the
+      reconcile and intent log; and `warnings`. Spec first, and authenticated like the rest of the API
+  - [ ] Decide how OpenTelemetry is sent: OTLP over HTTP can be written with the standard library, while the OpenTelemetry Go SDK
+        would be a new dependency, which decision 40 says needs the user's agreement
+  - [ ] Example alert rules, such as a pool over 80% and a target that isn't ready
+  - [ ] The CSI driver's own metrics, from its sidecars, documented
+
 ## Later (low priority)
 
 - [ ] Publish the `nvweaver` command line utility for macOS, on arm64 and amd64, and Windows on amd64. Only the client: the service stays Linux only. Name them as the Linux ones are, and include them in
@@ -243,9 +276,9 @@ To decide later: these matter if tests should match enterprise array behaviour c
 
 ## Testing without hardware
 
-No physical NVMe hardware is available right now, so development continues on emulation.
-The tests so far use one machine over loopback, with files, loop devices, `null_blk` and
-network-attached NVMe namespaces.
+No physical NVMe hardware is available right now, so development continues on emulation: loopback on one machine, QEMU VMs
+with emulated NVMe, SATA and virtio disks, a k3s lab, a Raspberry Pi CM4 over a real network, and a dedicated test server, a VM with four
+virtual disks for hosting nvweaver.
 
 - [x] Run all suites on rootful Podman
 - [x] Add a QEMU environment with emulated NVMe drives and separate target and initiator
@@ -254,25 +287,24 @@ network-attached NVMe namespaces.
 - [x] Use the VMs to test with a separate initiator
 - [x] Use the VMs to test the systemd setup for real: `make install` as root, enable, reboot
       the VM, SELinux enforcing, and the Quadlet on the VM's own Podman
-- [ ] Run benchmarks between the VMs and over the 1 Gb network, on both backends
+- [ ] Run benchmarks between the VMs and over the 1 Gb network, on both backends. A dedicated test server and the k3s nodes make the network half possible now
 - [ ] Long term: run the suites on a Debian VM too. All VM testing so far is on Fedora, and Debian differs where it matters, such as
       LVM having no devices file by default
 
 ### Deferred until hardware is available
 
 - [ ] Test block device and passthrough namespaces on a physical NVMe drive
-- [ ] Test with a separate physical initiator over a real network. A network test from another
-      machine to a target on the lab host needs no new hardware, but is also not done yet
+- [ ] Test with a separate physical initiator over a real network. A network test between machines is done, from the CM4: see below
 - [ ] Measure real performance on both backends. Current numbers are from a loaded VM over
       loopback
 - [ ] Test a real power cut on SPDK with a block device, on a drive with a volatile write cache. SPDK ignores FUA, which
       QEMU's disks can't show the effect of. See decision 28
-- [ ] Install on a real host and reboot, to prove the boot ordering. So far systemd has
-      only been tested in a container
+- [ ] Install on a real host and reboot, to prove the boot ordering. So far that's been done in containers, and in VMs by
+      `vm-e2e.sh`
 - [x] Test on a host that really has no `nvmet-tcp`: a Raspberry Pi CM4, where SPDK took over. See `docs/testing.md`
 - [ ] Finish testing on real Raspberry Pis, on a 64-bit OS:
   - [x] CM4 (Cortex-A72, no AES or SHA) with SPDK, over a real network: 43 of 43. See `docs/testing.md`
-  - [ ] Add that network test to the repository: it needs an `e2e.sh` that can use a remote initiator
+  - [ ] Add that network test to the repository: it needs an `e2e.sh` that can use a remote initiator. The dedicated test server and the CM4 can both serve as one
   - [x] Run the SPDK Quadlet on the CM4
   - [ ] Run the plain systemd unit on the CM4
   - [ ] Pi 5 (Cortex-A76): Raspberry Pi OS defaults to a 16K-page kernel, while our VMs use 4K, which

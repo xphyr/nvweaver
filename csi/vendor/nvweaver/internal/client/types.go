@@ -111,6 +111,8 @@ type Subsystem struct {
 	Ports          []int       `json:"ports"`
 	PassthruDevice string      `json:"passthru_device,omitempty"`
 	Namespaces     []Namespace `json:"namespaces"`
+	// Owner is the scoped token that may change it, or empty if only admins may.
+	Owner string `json:"owner,omitempty"`
 }
 
 // SubsystemCreate creates a subsystem.
@@ -122,11 +124,15 @@ type SubsystemCreate struct {
 	AllowedHosts   []string `json:"allowed_hosts,omitempty"`
 	Ports          []int    `json:"ports,omitempty"`
 	PassthruDevice string   `json:"passthru_device,omitempty"`
+	// Owner is for admins: a scoped token always owns what it creates.
+	Owner string `json:"owner,omitempty"`
 }
 
 // SubsystemUpdate changes what's set.
 type SubsystemUpdate struct {
 	AllowAnyHost *bool `json:"allow_any_host,omitempty"`
+	// Owner is for admins: "" gives it to no one.
+	Owner *string `json:"owner,omitempty"`
 }
 
 // Namespace is what a subsystem exports.
@@ -234,6 +240,7 @@ type Volume struct {
 	NGUID        string            `json:"nguid"`
 	Source       *VolumeSource     `json:"source"`
 	Labels       map[string]string `json:"labels,omitempty"`
+	Owner        string            `json:"owner,omitempty"`
 	CreatedAt    string            `json:"created_at"`
 	State        string            `json:"state"`
 	MappedTo     *VolumeMapping    `json:"mapped_to"`
@@ -258,12 +265,14 @@ type VolumeCreate struct {
 	SizeBytes int64             `json:"size_bytes,omitempty"`
 	Source    *VolumeSource     `json:"source,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
+	Owner     string            `json:"owner,omitempty"`
 }
 
 // VolumeUpdate changes what's set. Pointing Labels at an empty map removes them all.
 type VolumeUpdate struct {
 	SizeBytes *int64             `json:"size_bytes,omitempty"`
 	Labels    *map[string]string `json:"labels,omitempty"`
+	Owner     *string            `json:"owner,omitempty"`
 }
 
 // Snapshot is a read-only copy of a volume.
@@ -276,6 +285,7 @@ type Snapshot struct {
 	SizeBytes    int64  `json:"size_bytes"`
 	CreatedAt    string `json:"created_at"`
 	State        string `json:"state"`
+	Owner        string `json:"owner,omitempty"`
 }
 
 // SnapshotPage is one page of snapshots. NextAfter is empty on the last.
@@ -288,4 +298,5 @@ type SnapshotPage struct {
 type SnapshotCreate struct {
 	Name   string `json:"name"`
 	Volume string `json:"volume"`
+	Owner  string `json:"owner,omitempty"`
 }

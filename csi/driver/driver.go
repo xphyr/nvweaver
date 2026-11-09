@@ -42,6 +42,8 @@ type API interface {
 	CreateVolume(ctx context.Context, in client.VolumeCreate) (*client.Volume, error)
 	UpdateVolume(ctx context.Context, name string, in client.VolumeUpdate) (*client.Volume, error)
 	DeleteVolume(ctx context.Context, name string) error
+	VolumesPage(ctx context.Context, pool string, limit int, after string) (*client.VolumePage, error)
+	SnapshotsPage(ctx context.Context, volume string, limit int, after string) (*client.SnapshotPage, error)
 	GetSnapshot(ctx context.Context, name string) (*client.Snapshot, error)
 	CreateSnapshot(ctx context.Context, in client.SnapshotCreate) (*client.Snapshot, error)
 	DeleteSnapshot(ctx context.Context, name string) error
@@ -57,8 +59,16 @@ type Config struct {
 	NQNPrefix string
 	// Port is the nvweaver port that volumes are offered on, unless a StorageClass names another.
 	Port int
-	Log  *slog.Logger
+	// CtrlLossTmo is how long, in seconds, a node keeps trying to reconnect before it gives a volume up; -1 is for ever.
+	CtrlLossTmo int
+	// MaxVolumesPerNode is what the node tells Kubernetes it can take.
+	MaxVolumesPerNode int64
+	Log               *slog.Logger
 }
+
+// MaxNamespaces is how many namespaces a subsystem can hold, on both targets: NVMET_MAX_NAMESPACES in the kernel's, and
+// what nvweaver gives SPDK's subsystems. A node's volumes share its subsystem, so it's the most a node can have.
+const MaxNamespaces = 1024
 
 var clusterRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
 
@@ -69,6 +79,12 @@ func (c Config) Check() error {
 	}
 	if c.Port < 0 {
 		return fmt.Errorf("port %d", c.Port)
+	}
+	if c.CtrlLossTmo < -1 {
+		return fmt.Errorf("ctrl-loss-tmo %d: it's seconds, or -1 for ever", c.CtrlLossTmo)
+	}
+	if c.MaxVolumesPerNode < 0 || c.MaxVolumesPerNode > MaxNamespaces {
+		return fmt.Errorf("max-volumes-per-node %d: it's at most %d, the namespaces a subsystem can hold", c.MaxVolumesPerNode, MaxNamespaces)
 	}
 	return nil
 }

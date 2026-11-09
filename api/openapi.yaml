@@ -9,6 +9,13 @@ info:
     A request either happens completely or not at all: if the target refuses part of a
     change, what was already applied is rolled back. Until version 1.0.0, this API may
     still change.
+
+    **Who may do what.** The token in `NVWEAVER_API_TOKEN`, and everyone signed in from the users file, may do everything.
+    A scoped token, from the file in `NVWEAVER_TOKENS_FILE`, may read everything, but may only change what it owns: the
+    volumes, snapshots and subsystems it created, which carry its name as their `owner`. It may also create hosts, with no
+    DH-HMAC-CHAP keys. Anything else that changes the service is `403` to it: pools, ports, changing or deleting hosts,
+    passthrough, letting any host connect, and namespaces on devices or files rather than its own volumes. One scoped token
+    for each Kubernetes cluster keeps clusters that share a service from touching each other's volumes.
   version: 0.3.0
   license:
     name: MIT
@@ -215,6 +222,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
         '422':
@@ -263,6 +272,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -281,6 +292,8 @@ paths:
           description: The port is gone.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -324,6 +337,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
         '422':
@@ -370,6 +385,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -388,6 +405,8 @@ paths:
           description: The host is gone.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -431,6 +450,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
         '422':
@@ -479,6 +500,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -497,6 +520,8 @@ paths:
           description: The subsystem is gone.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -517,6 +542,8 @@ paths:
           description: The subsystem is attached.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -535,6 +562,8 @@ paths:
           description: The subsystem is detached.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -560,6 +589,8 @@ paths:
           description: The host is allowed.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -580,6 +611,8 @@ paths:
           description: The host is no longer allowed.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -632,6 +665,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
         '422':
@@ -677,6 +712,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '422':
@@ -693,6 +730,8 @@ paths:
           description: The pool is forgotten.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -766,6 +805,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
         '422':
@@ -818,6 +859,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '422':
@@ -834,6 +877,8 @@ paths:
           description: The volume is gone.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -932,6 +977,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
         '422':
@@ -972,6 +1019,8 @@ paths:
           description: The snapshot is gone.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '503':
@@ -1020,6 +1069,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -1076,6 +1127,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -1102,6 +1155,8 @@ paths:
           description: The namespace is gone.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -1176,6 +1231,12 @@ components:
             $ref: '#/components/schemas/Error'
     Unauthorized:
       description: The bearer token is missing or wrong.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: A scoped token may not do this, either at all or to something it doesn't own.
       content:
         application/json:
           schema:
@@ -1348,6 +1409,9 @@ components:
           type: object
           additionalProperties:
             type: string
+        owner:
+          type: string
+          description: The scoped token that created it, which may change it, as an admin may. Absent when an admin made it with no owner.
         created_at:
           type: string
           format: date-time
@@ -1408,6 +1472,10 @@ components:
           type: object
           additionalProperties:
             type: string
+        owner:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$'
+          description: For an admin, the scoped token that owns it. A scoped token always owns what it creates, and may not set this.
     VolumeUpdate:
       type: object
       additionalProperties: false
@@ -1422,6 +1490,9 @@ components:
           type: object
           additionalProperties:
             type: string
+        owner:
+          type: string
+          description: Admins only. Gives it to another scoped token, or with `""`, to no one, which leaves it to admins.
     Snapshot:
       type: object
       required: [name, volume, pool, internal_name, device_path, size_bytes, created_at, state]
@@ -1448,6 +1519,9 @@ components:
           type: string
           enum: [online, missing]
           description: '`missing` when its storage can''t be found, such as an LVM volume that isn''t active.'
+        owner:
+          type: string
+          description: The scoped token that created it, which may change it, as an admin may. Absent when an admin made it with no owner.
     SnapshotPage:
       type: object
       required: [items]
@@ -1470,6 +1544,10 @@ components:
           description: Unique across the service.
         volume:
           type: string
+        owner:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$'
+          description: For an admin, the scoped token that owns it. A scoped token always owns what it creates, and may not set this.
     NQN:
       type: string
       maxLength: 223
@@ -1773,6 +1851,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Namespace'
+        owner:
+          type: string
+          description: The scoped token that created it, which may change it, as an admin may. Absent when an admin made it with no owner.
     SubsystemCreate:
       type: object
       additionalProperties: false
@@ -1810,12 +1891,19 @@ components:
             can't then have namespaces. Refused by the SPDK backend. `409` if the controller is
             already passed through, or one of its namespaces is exported or held on this machine,
             such as mounted. Its namespaces can't be exported by `device_path` while it's passed through.
+        owner:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$'
+          description: For an admin, the scoped token that owns it. A scoped token always owns what it creates, and may not set this.
     SubsystemUpdate:
       type: object
       additionalProperties: false
       properties:
         allow_any_host:
           type: boolean
+        owner:
+          type: string
+          description: Admins only. Gives it to another scoped token, or with `""`, to no one, which leaves it to admins.
     Namespace:
       type: object
       required: [nsid, device_path, uuid, nguid, enabled, buffered_io, live_enabled]

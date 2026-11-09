@@ -406,8 +406,8 @@ func poolFull(pool string, err error) error {
 
 // cloneSource is what a clone is made from.
 type cloneSource struct {
-	pool, internal string
-	sizeBytes      int64
+	pool, internal, owner string
+	sizeBytes             int64
 }
 
 func findSource(st *target.State, src *target.VolumeSource) (cloneSource, error) {
@@ -416,13 +416,13 @@ func findSource(st *target.State, src *target.VolumeSource) (cloneSource, error)
 		if snap == nil {
 			return cloneSource{}, target.Invalid("no such snapshot %s", src.Snapshot)
 		}
-		return cloneSource{snap.Pool, snap.InternalName, snap.SizeBytes}, nil
+		return cloneSource{pool: snap.Pool, internal: snap.InternalName, owner: snap.Owner, sizeBytes: snap.SizeBytes}, nil
 	}
 	vol := st.Volumes[src.Volume]
 	if vol == nil {
 		return cloneSource{}, target.Invalid("no such volume %s", src.Volume)
 	}
-	return cloneSource{vol.Pool, vol.InternalName, vol.SizeBytes}, nil
+	return cloneSource{pool: vol.Pool, internal: vol.InternalName, owner: vol.Owner, sizeBytes: vol.SizeBytes}, nil
 }
 
 func sameSource(a, b *target.VolumeSource) bool {
@@ -438,6 +438,9 @@ type createVolumeRequest struct {
 	SizeBytes int64                `json:"size_bytes"`
 	Source    *target.VolumeSource `json:"source"`
 	Labels    map[string]string    `json:"labels"`
+	Owner     string               `json:"owner"`
+	// scope is the scoped token asking, if it's one. See decision 46.
+	scope string
 }
 
 func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) error {
@@ -445,6 +448,12 @@ func (s *Server) createVolume(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(w, r, &req); err != nil {
 		return err
 	}
+	req.scope = scopeOf(r)
+	owner, err := ownerFor(req.scope, req.Owner)
+	if err != nil {
+		return err
+	}
+	req.Owner = owner
 	if err := checkObjectName("volume", req.Name); err != nil {
 		return err
 	}
@@ -492,6 +501,7 @@ func (s *Server) existingVolume(req createVolumeRequest, existing *target.Volume
 	if (wantPool != "" && existing.Pool != wantPool) ||
 		(sizeGiven && existing.SizeBytes != wantSize) ||
 		!maps.Equal(existing.Labels, req.Labels) || // which treats none and empty as the same
+		existing.Owner != req.Owner ||
 		!sameSource(existing.Source, req.Source) {
 		return target.NewConflict("volume %s already exists with different settings", req.Name)
 	}
@@ -508,6 +518,9 @@ func (s *Server) provisionVolume(req createVolumeRequest) (*target.Volume, bool,
 	}
 	// This comes first because a clone's source may have gone by the time of a retry.
 	if existing := s.m.current().Volumes[req.Name]; existing != nil {
+		if err := mayChange(req.scope, existing.Owner, "volume "+req.Name); err != nil {
+			return nil, false, err
+		}
 		if err := s.existingVolume(req, existing); err != nil {
 			return nil, false, err
 		}
@@ -535,6 +548,9 @@ func (s *Server) provisionVolume(req createVolumeRequest) (*target.Volume, bool,
 	var err error
 	if req.Source != nil {
 		if source, err = findSource(st, req.Source); err != nil {
+			return nil, false, err
+		}
+		if err := mayChange(req.scope, source.owner, "the source"); err != nil {
 			return nil, false, err
 		}
 		if req.Pool != "" && req.Pool != source.pool {
@@ -593,6 +609,7 @@ func (s *Server) provisionVolume(req createVolumeRequest) (*target.Volume, bool,
 		NGUID:        target.NewNGUID(),
 		Source:       req.Source,
 		Labels:       req.Labels,
+		Owner:        req.Owner,
 		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := s.m.commit(func(st *target.State) error {
@@ -654,11 +671,16 @@ func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) error {
 	var req struct {
 		SizeBytes *int64            `json:"size_bytes"`
 		Labels    map[string]string `json:"labels"`
+		Owner     *string           `json:"owner"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		return err
 	}
-	if err := s.changeVolume(name, req.SizeBytes, req.Labels); err != nil {
+	scope := scopeOf(r)
+	if err := newOwner(scope, req.Owner); err != nil {
+		return err
+	}
+	if err := s.changeVolume(name, req.SizeBytes, req.Labels, req.Owner, scope); err != nil {
 		return err
 	}
 	return s.getVolume(w, r)
@@ -666,16 +688,28 @@ func (s *Server) updateVolume(w http.ResponseWriter, r *http.Request) error {
 
 // changeVolume grows the storage, if asked to, without the lock. Labels alone don't need to wait for
 // anything.
-func (s *Server) changeVolume(name string, sizeBytes *int64, labels map[string]string) error {
+func (s *Server) changeVolume(name string, sizeBytes *int64, labels map[string]string, owner *string, scope string) error {
 	res := s.m.reserve()
 	defer res.release()
+	// Checked first, so a scoped token can't start a grow on what isn't its own, and again with the lock, when it's saved.
+	if vol := s.m.current().Volumes[name]; vol != nil {
+		if err := mayChange(scope, vol.Owner, "volume "+name); err != nil {
+			return err
+		}
+	}
 	label := func(st *target.State) (*target.Volume, error) {
 		vol := st.Volumes[name]
 		if vol == nil {
 			return nil, notFound("no such volume %s", name)
 		}
+		if err := mayChange(scope, vol.Owner, "volume "+name); err != nil {
+			return nil, err
+		}
 		if labels != nil {
 			vol.Labels = labels
+		}
+		if owner != nil {
+			vol.Owner = *owner
 		}
 		return vol, nil
 	}
@@ -779,14 +813,14 @@ func (s *Server) tellHosts(mapped *mappingView, internal string) error {
 
 func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) error {
 	name := r.PathValue("volume")
-	if err := s.removeVolume(name); err != nil {
+	if err := s.removeVolume(name, scopeOf(r)); err != nil {
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 
-func (s *Server) removeVolume(name string) error {
+func (s *Server) removeVolume(name, scope string) error {
 	res := s.m.reserve()
 	defer res.release()
 	if err := s.m.admit(); err != nil {
@@ -799,6 +833,9 @@ func (s *Server) removeVolume(name string) error {
 		vol := st.Volumes[name]
 		if vol == nil {
 			return nil, notFound("no such volume %s", name)
+		}
+		if err := mayChange(scope, vol.Owner, "volume "+name); err != nil {
+			return nil, err
 		}
 		if m := mappings(st)[name]; m != nil {
 			return nil, target.NewConflict("volume %s is mapped into %s as namespace %d", name, m.Subsystem, m.NSID)
@@ -893,6 +930,7 @@ func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) error {
 	var req struct {
 		Name   string `json:"name"`
 		Volume string `json:"volume"`
+		Owner  string `json:"owner"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		return err
@@ -900,7 +938,12 @@ func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) error {
 	if err := checkObjectName("snapshot", req.Name); err != nil {
 		return err
 	}
-	snap, created, err := s.takeSnapshot(req.Name, req.Volume)
+	scope := scopeOf(r)
+	owner, err := ownerFor(scope, req.Owner)
+	if err != nil {
+		return err
+	}
+	snap, created, err := s.takeSnapshot(req.Name, req.Volume, owner, scope)
 	if err != nil {
 		return err
 	}
@@ -912,7 +955,7 @@ func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (s *Server) takeSnapshot(name, volume string) (*target.Snapshot, bool, error) {
+func (s *Server) takeSnapshot(name, volume, owner, scope string) (*target.Snapshot, bool, error) {
 	res := s.m.reserve()
 	defer res.release()
 	if err := res.exclusive(snapshotKey(name)); err != nil {
@@ -920,7 +963,10 @@ func (s *Server) takeSnapshot(name, volume string) (*target.Snapshot, bool, erro
 	}
 	// This comes first because the volume may have gone by the time CSI retries.
 	if existing := s.m.current().Snapshots[name]; existing != nil {
-		if existing.Volume != volume {
+		if err := mayChange(scope, existing.Owner, "snapshot "+name); err != nil {
+			return nil, false, err
+		}
+		if existing.Volume != volume || existing.Owner != owner {
 			return nil, false, target.NewConflict("snapshot %s already exists, of volume %s", name, existing.Volume)
 		}
 		return existing, false, nil
@@ -938,6 +984,9 @@ func (s *Server) takeSnapshot(name, volume string) (*target.Snapshot, bool, erro
 	vol := s.m.current().Volumes[volume]
 	if vol == nil {
 		return nil, false, target.Invalid("no such volume %s", volume)
+	}
+	if err := mayChange(scope, vol.Owner, "volume "+volume); err != nil {
+		return nil, false, err
 	}
 	if err := res.pool(vol.Pool); err != nil {
 		return nil, false, err
@@ -965,6 +1014,7 @@ func (s *Server) takeSnapshot(name, volume string) (*target.Snapshot, bool, erro
 		InternalName: internal,
 		DevicePath:   path,
 		SizeBytes:    vol.SizeBytes,
+		Owner:        owner,
 		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := s.m.commit(func(st *target.State) error {
@@ -993,14 +1043,14 @@ func (s *Server) getSnapshot(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Server) deleteSnapshot(w http.ResponseWriter, r *http.Request) error {
 	name := r.PathValue("snapshot")
-	if err := s.removeSnapshot(name); err != nil {
+	if err := s.removeSnapshot(name, scopeOf(r)); err != nil {
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 
-func (s *Server) removeSnapshot(name string) error {
+func (s *Server) removeSnapshot(name, scope string) error {
 	res := s.m.reserve()
 	defer res.release()
 	if err := s.m.admit(); err != nil {
@@ -1012,6 +1062,9 @@ func (s *Server) removeSnapshot(name string) error {
 	snap := s.m.current().Snapshots[name]
 	if snap == nil {
 		return notFound("no such snapshot %s", name)
+	}
+	if err := mayChange(scope, snap.Owner, "snapshot "+name); err != nil {
+		return err
 	}
 	return s.removeStorage(res, snap.Pool, snap.InternalName, func(st *target.State) error {
 		delete(st.Snapshots, name)

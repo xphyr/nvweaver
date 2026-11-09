@@ -99,6 +99,8 @@ const missing = (x) => x.state && x.state !== "online" && pill("Storage missing"
 const hash = (...parts) => "#/" + parts.map(encodeURIComponent).join("/");
 const link = (text, ...parts) => el("a", { href: hash(...parts) }, text);
 const mono = (text) => el("span", { class: "mono" }, text);
+// Who may change something besides admins: the scoped token that made it, such as a Kubernetes cluster's. See decision 46.
+const ownerColumn = { title: "Owner", cell: (x) => x.owner || "-", text: (x) => x.owner || "" };
 const labelsText = (labels) => Object.entries(labels || {}).map(([k, v]) => `${k}=${v}`).join(", ");
 
 function usageBar(usage) {
@@ -908,6 +910,7 @@ async function volumes(pool) {
       { title: "Exported", cell: (v) => (v.mapped_to ? [link(v.mapped_to.subsystem, "subsystems", v.mapped_to.subsystem), el("span", { class: "sub" }, `namespace ${v.mapped_to.nsid}`)] : pill("Not exported", "quiet")), text: (v) => (v.mapped_to ? v.mapped_to.subsystem : "") },
       { title: "NGUID", cell: (v) => mono(v.nguid), text: (v) => v.nguid },
       { title: "Labels", cell: (v) => labelsText(v.labels) || "-", text: (v) => labelsText(v.labels) },
+      ownerColumn,
     ], items, { empty: "No volumes yet.", state: stateOf("volumes" + pool), more: more ? loadMore : undefined }),
     !more && items.length > 0 && el("p", { class: "count" }, `${mapped} of ${items.length} are exported.`),
   ];
@@ -949,7 +952,8 @@ async function volume(name) {
       fact("Created", humanTime(v.created_at)),
       fact("UUID", mono(v.uuid)), fact("NGUID", mono(v.nguid)),
       fact("Backed by", mono(v.device_path)),
-      fact("Labels", labelsText(v.labels) || "-")),
+      fact("Labels", labelsText(v.labels) || "-"),
+      fact("Owner", v.owner || "Admins only")),
     el("h2", {}, "Snapshots"),
     table([
       { title: "Name", cell: (s) => [el("strong", {}, s.name), missing(s)], text: (s) => s.name },
@@ -970,6 +974,7 @@ async function snapshots() {
       { title: "Pool", cell: (s) => link(s.pool, "volumes", s.pool), text: (s) => s.pool },
       { title: "Size", num: true, cell: (s) => humanSize(s.size_bytes) },
       { title: "Taken", cell: (s) => humanTime(s.created_at) },
+      ownerColumn,
       { title: "", cell: snapshotActions },
     ], items, { empty: "No snapshots yet. Open a volume to take one.", state: stateOf("snapshots"), more: more ? loadMore : undefined }),
   ];
@@ -986,6 +991,7 @@ async function subsystems() {
       { title: "Ports", cell: (s) => (s.ports || []).join(", ") || "-" },
       { title: "Namespaces", num: true, cell: (s) => (s.namespaces || []).length },
       { title: "Serial", cell: (s) => mono(s.serial), text: (s) => s.serial },
+      ownerColumn,
     ], list, { empty: "No subsystems yet.", state: stateOf("subsystems") }),
   ];
 }
@@ -1002,7 +1008,7 @@ async function subsystem(nqn) {
     el("div", { class: "toolbar" }, el("button", { class: "danger-quiet", id: "delete-subsystem", onclick: () => deleteSubsystemDialog(s) }, "Delete")),
     notServed.length > 0 && el("div", { class: "panel-notice bad" }, `Namespace ${notServed.map((n) => n.nsid).join(", ")} should be served, but isn't.`),
     el("dl", { class: "facts" },
-      fact("Serial", mono(s.serial)), fact("Model", s.model),
+      fact("Serial", mono(s.serial)), fact("Model", s.model), fact("Owner", s.owner || "Admins only"),
       s.passthru_device && fact("Passes through", mono(s.passthru_device))),
     el("div", { class: "section-head" },
       el("h2", {}, "Who can connect"),

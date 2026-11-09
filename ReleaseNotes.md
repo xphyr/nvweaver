@@ -9,6 +9,9 @@ The major differences between versions. For every change, see the commit history
 - **A Kubernetes CSI driver,** in `csi/`: dynamic provisioning of filesystem and raw block volumes from nvweaver's pools, over NVMe/TCP,
   with growing, snapshots and clones, and raw block volumes shared by several nodes. It's new, tested so far in a k3s lab of three VMs,
   and its image isn't published yet: build it with `make images`. See "Kubernetes CSI driver" in the README.
+- **Scoped API tokens,** from a file in `NVWEAVER_TOKENS_FILE`, made with `nvweaver token new`. A scoped token may read everything,
+  but only change the volumes, snapshots and subsystems it created, which show it as their owner in the API, the CLI and the web
+  interface. One for each Kubernetes cluster keeps clusters sharing an nvweaver from touching each other's volumes.
 - **A Kubernetes lab for testing it,** `test/vm/k3s-lab.sh`: k3s on three VMs and nvweaver on a fourth, with no root.
 
 ### Changed

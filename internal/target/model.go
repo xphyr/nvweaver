@@ -58,6 +58,7 @@ type Volume struct {
 	NGUID        string            `json:"nguid"`
 	Source       *VolumeSource     `json:"source"`
 	Labels       map[string]string `json:"labels,omitempty"`
+	Owner        string            `json:"owner,omitempty"`
 	CreatedAt    string            `json:"created_at"`
 }
 
@@ -76,6 +77,7 @@ type Snapshot struct {
 	InternalName string `json:"internal_name"`
 	DevicePath   string `json:"device_path"`
 	SizeBytes    int64  `json:"size_bytes"`
+	Owner        string `json:"owner,omitempty"`
 	CreatedAt    string `json:"created_at"`
 }
 
@@ -111,6 +113,8 @@ type Subsystem struct {
 	Ports        []uint16              `json:"ports"`
 	Namespaces   map[uint32]*Namespace `json:"namespaces"`
 	Passthru     string                `json:"passthru_device,omitempty"`
+	// Owner is the scoped token that may change it, besides admins. See decision 46.
+	Owner string `json:"owner,omitempty"`
 }
 
 // Namespace is one exported block device or file.

@@ -34,7 +34,7 @@ below it, never through this process.
 | Path | Purpose |
 |---|---|
 | `cmd/nvweaver` | The command line utility, which only uses `internal/client` |
-| `internal/auth` | Signing in: the users file, bcrypt, sessions in memory and limiting guesses |
+| `internal/auth` | Signing in: the users file, bcrypt, sessions in memory and limiting guesses; scoped tokens and their file (decision 46) |
 | `internal/webui` | The browser interface: static files embedded in the binary, which only use the public API |
 | `internal/client` | Go client for the API, for the command line utility and CSI driver |
 | `csi/` | The CSI driver, a module of its own (decision 44): controller (`driver/controller.go`), node plugin (`driver/node.go`), manifests (`deploy/`) |

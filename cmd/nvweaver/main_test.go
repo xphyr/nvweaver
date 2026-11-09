@@ -425,3 +425,51 @@ func TestPasswdRefusals(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenNewMakesATokenTheServiceAccepts(t *testing.T) {
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "lab.token")
+	var stdout, stderr bytes.Buffer
+	if err := tokenNew([]string{"new", "lab", "--token-file", tokenFile}, nil, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(tokenFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := strings.TrimSpace(string(b))
+	if info, _ := os.Stat(tokenFile); info.Mode().Perm() != 0o600 {
+		t.Errorf("the token file is mode %o", info.Mode().Perm())
+	}
+	if strings.Contains(stdout.String(), token) || stderr.Len() != 0 {
+		t.Errorf("the token was printed: %q, %q", stdout.String(), stderr.String())
+	}
+	tokens := filepath.Join(dir, "tokens")
+	if err := os.WriteFile(tokens, stdout.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	toks, err := auth.NewTokens(tokens, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name, ok := toks.Check(token); !ok || name != "lab" {
+		t.Errorf("the service doesn't accept it: %q, %v", name, ok)
+	}
+	if err := tokenNew([]string{"new", "lab", "--token-file", tokenFile}, nil, &stdout, &stderr); err == nil {
+		t.Error("an existing token file was overwritten")
+	}
+
+	// With no file, the token goes to stderr, and only the line to stdout.
+	stdout.Reset()
+	if err := tokenNew([]string{"new", "other"}, nil, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "nvw_") || strings.Contains(stdout.String(), "nvw_") || !strings.HasPrefix(stdout.String(), "other:sha256:") {
+		t.Errorf("stdout %q, stderr %q", stdout.String(), stderr.String())
+	}
+	for _, args := range [][]string{nil, {"new"}, {"make", "lab"}, {"new", "Not OK"}, {"new", "lab", "extra"}} {
+		if err := tokenNew(args, nil, &stdout, &stderr); err == nil {
+			t.Errorf("%v: accepted", args)
+		}
+	}
+}

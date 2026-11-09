@@ -182,7 +182,11 @@ kubectl apply -f csi/deploy/classes.yaml     # edit the pool first
 - **Each node gets one subsystem** for its volumes, which it stays connected to. A volume that several nodes use at once, ReadWriteMany or ReadOnlyMany, gets a subsystem of its own.
 - **ReadWriteMany is for raw block volumes only,** as a filesystem written from two nodes would be corrupted. Whatever shares one must use direct I/O, as each node's page cache keeps what it read.
 - **`--cluster`** starts every name the driver makes, so several clusters can share one nvweaver. Give each its own.
-- **Not yet:** `csi-sanity`, DH-HMAC-CHAP for nodes, topology, capacity reporting, published release images, and testing at scale or on OpenShift. See `TODO.md`.
+- **Give each cluster's driver a scoped token** in its `nvweaver-api` secret, rather than the admin token, so that it can only
+  change its own volumes. Name it as `--cluster` is. A cluster that has used the admin token already needs its volumes, snapshots
+  and subsystems given to its token first, with `nvweaver volume update NAME --owner TOKEN` and the same for subsystems.
+- **Nodes keep retrying if nvweaver goes away,** for ever by default (`--ctrl-loss-tmo=-1`), so I/O waits for it rather than failing. Each node takes up to 1024 volumes (`--max-volumes-per-node`).
+- **It passes `csi-sanity`,** the CSI conformance suite. **Not yet:** DH-HMAC-CHAP for nodes, topology, capacity reporting, published release images, and testing at scale or on OpenShift. See `TODO.md`.
 
 ## What can back a namespace
 
@@ -247,6 +251,7 @@ Behaviour worth knowing:
 | `NVWEAVER_LISTEN` | `127.0.0.1:8420` | API address. |
 | `NVWEAVER_API_TOKEN` | none | Bearer token. This or a users file is required unless the API is on loopback. |
 | `NVWEAVER_USERS_FILE` | none | Users for the web interface, as `name:hash` lines in bcrypt. See [Web interface](#web-interface). |
+| `NVWEAVER_TOKENS_FILE` | none | Scoped tokens, as `name:sha256:<hex>` lines from `nvweaver token new`. Each may only change what it created. See [Security](#security). |
 | `NVWEAVER_ALLOW_INSECURE_LOGIN` | `false` | Accept passwords over plain HTTP off loopback, where anyone on the network can read them. |
 | `NVWEAVER_TLS_CERT` | none | PEM certificate, with any intermediates. Set this and the key to serve the API over HTTPS. |
 | `NVWEAVER_TLS_KEY` | none | PEM private key. Keep it mode 0600. |
@@ -384,6 +389,12 @@ This is for isolated lab networks.
   SELinux doesn't log this denial. To fix one, run `chcon --reference=/etc/nvweaver/tls` on the files.
 - NVMe/TCP traffic is unencrypted. TLS for NVMe/TCP is not implemented here.
 - Host NQNs are claims, not proof of identity. Use DH-HMAC-CHAP if that matters.
+- **Scoped tokens** let several Kubernetes clusters, or other programs, share one nvweaver without touching each other's storage.
+  Each may read everything, but may only change the volumes, snapshots and subsystems it created, which carry its name as
+  their `owner`, shown in the CLI and the web interface. It can't touch pools, ports, host keys, raw devices or files. Make one
+  with `nvweaver token new NAME --token-file NAME.token >> tokens`, keep the `tokens` file mode 0600, and set
+  `NVWEAVER_TOKENS_FILE` to it. Tokens are read again when the file changes, so one can be revoked by removing its line. The
+  admin token and the users file can still do everything, and only they can give something to a token, with `--owner`.
 
 ## Testing
 
