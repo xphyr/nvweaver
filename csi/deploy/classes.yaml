@@ -1,0 +1,19 @@
+# Example classes. pool names one of nvweaver's pools; with only one pool it can be left out.
+# port is the ID of the nvweaver port that volumes are offered on, 1 unless the driver is told otherwise.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nvweaver
+provisioner: nvweaver.xphyr.github.io
+parameters:
+  pool: csi
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: nvweaver
+driver: nvweaver.xphyr.github.io
+deletionPolicy: Delete

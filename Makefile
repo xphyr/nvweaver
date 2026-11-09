@@ -26,6 +26,7 @@ nvweaver.service: dist/systemd/nvweaver.service.in
 test:
 	go vet ./...
 	go test ./...
+	cd csi && go vet ./... && go test ./...
 
 SHELLCHECK_IMAGE = docker.io/koalaman/shellcheck:v0.10.0
 ACTIONLINT_IMAGE = docker.io/rhysd/actionlint:1.7.7
@@ -33,9 +34,12 @@ REDOCLY_IMAGE = docker.io/redocly/cli:2.8.0
 
 # Formatting, then shell scripts and workflows, using pinned tools in rootless Podman.
 lint:
-	@files=$$(gofmt -l .); if [ -n "$$files" ]; then echo "Not gofmt-formatted: $$files"; exit 1; fi
+	@files=$$(find . -name '*.go' -not -path '*/vendor/*' -not -path './.git/*' -exec gofmt -l {} +); if [ -n "$$files" ]; then echo "Not gofmt-formatted: $$files"; exit 1; fi
+	@# The CSI driver vendors the API client from this tree. After changing the client, run: cd csi && go mod vendor
+	@for f in internal/client/*.go; do case $$f in *_test.go) continue ;; esac; \
+		cmp -s $$f csi/vendor/nvweaver/$$f || { echo "csi/vendor/nvweaver/$$f is out of date: cd csi && go mod vendor"; exit 1; }; done
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(SHELLCHECK_IMAGE) -S warning \
-		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/vm-e2e.sh test/vm/run-all.sh test/vm/scale-bench.sh test/webui-e2e.sh test/webui-real-e2e.sh .github/publish-images.sh
+		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/k3s-lab.sh test/vm/k3s-csi.sh test/vm/vm-e2e.sh test/vm/run-all.sh test/vm/scale-bench.sh test/webui-e2e.sh test/webui-real-e2e.sh .github/publish-images.sh
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(ACTIONLINT_IMAGE)
 	podman run --rm --pull=missing -v "$$PWD:/spec:ro,Z" --workdir /spec $(REDOCLY_IMAGE) \
 		lint --skip-rule operation-4xx-response api/openapi.yaml
@@ -45,6 +49,7 @@ images:
 	podman build $(BUILD_FLAGS) -t nvweaver:dev --build-arg VERSION=$(VERSION) -f Containerfile .
 	podman build $(BUILD_FLAGS) -t nvweaver:spdk --build-arg VERSION=$(VERSION) -f Containerfile.spdk .
 	podman build $(BUILD_FLAGS) -t nvweaver:systemd-test -f test/systemd/Containerfile .
+	podman build $(BUILD_FLAGS) -t nvweaver-csi:dev --build-arg VERSION=$(VERSION) csi
 
 # The release tarball, the command line utility on its own, and their checksums, in build/, for the architecture that Go is building for.
 PACKAGE = nvweaver-$(VERSION)-linux-$(shell go env GOARCH)

@@ -50,10 +50,13 @@ It does stop at startup if the chosen target can't run. LVM has only been tested
 
 **On each client:** `nvme-cli` and the kernel's `nvme-tcp` module. This is the only client tested. Any NVMe/TCP initiator should work, though that hasn't been tested.
 
+**On each Kubernetes node, for the CSI driver:** the kernel's `nvme-tcp` module, and a unique `/etc/nvme/hostnqn`. The node plugin's image brings `nvme-cli`, `util-linux`, `e2fsprogs`, `xfsprogs` and `kmod`.
+
 **To build:** Go 1.26 and `make` for the binary, and Podman for the images. Docker is a fallback. The SPDK image downloads and compiles SPDK.
 
-**To run the tests:** `go test` needs only Go. `make lint` needs Podman. `e2e.sh` and `systemd-e2e.sh` need rootful Podman, and the kernel modules above. The VM suites need QEMU with `.github/make-sboms.sh` needs Podman, which runs Syft in a container, and `jq`.
-KVM, including `qemu-img`, and `genisoimage`, and no root.
+**To run the tests:** `go test` needs only Go. `make lint` needs Podman. `e2e.sh` and `systemd-e2e.sh` need rootful Podman, and the kernel modules above. The VM suites need QEMU with
+KVM, including `qemu-img`, and `genisoimage`, and no root. The Kubernetes lab, `test/vm/k3s-lab.sh`, also needs `python3`, and
+downloads a pinned k3s, checked against its checksum, into its VMs. `.github/make-sboms.sh` needs Podman, which runs Syft in a container, and `jq`.
 
 ## Quick start
 
@@ -160,6 +163,26 @@ To see it with no root or real target, using sample data on a fake target, run t
 ```sh
 go run ./test/webui-demo     # then open http://127.0.0.1:8421/
 ```
+
+## Kubernetes CSI driver
+
+`csi/` is a CSI driver that provisions volumes from nvweaver's pools and connects nodes to them over NVMe/TCP. It's new, and so far tested only in a k3s lab of three VMs: see `test/vm/k3s-csi.sh`.
+
+```sh
+make images                                  # builds nvweaver-csi:dev too; or: podman build -t nvweaver-csi:dev csi
+kubectl create namespace nvweaver-csi
+kubectl -n nvweaver-csi create secret generic nvweaver-api \
+  --from-literal=url=https://storage.example:8420 --from-file=token=TOKEN_FILE --from-file=ca.crt=CA_FILE
+sed -e 's#IMAGE#nvweaver-csi:dev#' -e 's#CLUSTER#prod#' csi/deploy/nvweaver-csi.yaml | kubectl apply -f -
+kubectl apply -f csi/deploy/classes.yaml     # edit the pool first
+```
+
+- **What it does:** create, delete, grow, snapshot and clone volumes, as filesystems (ext4 or XFS) or raw block devices. Snapshots need the snapshot CRDs and controller from `kubernetes-csi/external-snapshotter`.
+- **StorageClass parameters:** `pool`, which can be left out with only one pool, and `port`, the ID of the nvweaver port to offer volumes on, 1 by default.
+- **Each node gets one subsystem** for its volumes, which it stays connected to. A volume that several nodes use at once, ReadWriteMany or ReadOnlyMany, gets a subsystem of its own.
+- **ReadWriteMany is for raw block volumes only,** as a filesystem written from two nodes would be corrupted. Whatever shares one must use direct I/O, as each node's page cache keeps what it read.
+- **`--cluster`** starts every name the driver makes, so several clusters can share one nvweaver. Give each its own.
+- **Not yet:** `csi-sanity`, DH-HMAC-CHAP for nodes, topology, capacity reporting, published release images, and testing at scale or on OpenShift. See `TODO.md`.
 
 ## What can back a namespace
 

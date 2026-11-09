@@ -37,6 +37,7 @@ below it, never through this process.
 | `internal/auth` | Signing in: the users file, bcrypt, sessions in memory and limiting guesses |
 | `internal/webui` | The browser interface: static files embedded in the binary, which only use the public API |
 | `internal/client` | Go client for the API, for the command line utility and CSI driver |
+| `csi/` | The CSI driver, a module of its own (decision 44): controller (`driver/controller.go`), node plugin (`driver/node.go`), manifests (`deploy/`) |
 | `cmd/nvweaverd` | Startup: settings, backend selection, API server, shutdown |
 | `internal/api` | HTTP handlers (`server.go`), state and safety checks (`manager.go`), checking whether this machine's LVM can read exports (`lvmwatch.go`) |
 | `internal/target` | State model and validation (`model.go`), `Backend` interface (`backend.go`), kernel backend (`reconcile.go`) |

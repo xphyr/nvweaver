@@ -168,12 +168,15 @@ A second pass, after `671000d`, also all real:
 
 ## 7. Kubernetes CSI driver
 
-- [ ] Create a Kubernetes CSI driver that works with the API to handle dynamic
-      provisioning
-  - [ ] Controller, and a privileged node plugin (`nvme connect`, format, mount), which takes the transport
+- [x] A disposable Kubernetes lab: `test/vm/k3s-lab.sh`, k3s on three VMs and nvweaver on a fourth. See `docs/testing.md`
+- [ ] Test on OpenShift too, on a three-node virtual cluster with nested VMs for KubeVirt: RHCOS, SCCs and MachineConfig. Three
+      virtual nodes don't prove production-like node counts or performance, which stay open below
+- [x] Create a Kubernetes CSI driver that works with the API to handle dynamic
+      provisioning: `csi/`, decisions 44 and 45, tested end to end in the k3s lab by `test/vm/k3s-csi.sh`
+  - [x] Controller, and a privileged node plugin (`nvme connect`, format, mount), which takes the transport
         from the port rather than assuming TCP
   - [x] Make volume creation idempotent by name in the API, because CSI retries calls
-  - [ ] Use the snapshot and cloning features
+  - [x] Use the snapshot and cloning features
   - [ ] Changed block tracking: CSI's `SnapshotMetadata` service (KEP-3314, beta in Kubernetes 1.36, CSI spec 1.10), for incremental
         backups of block volumes. After snapshots work in the driver. Storage does the work, so both targets get it
     - [ ] First, on its own: prove the storage side never under-reports, as a missed block silently corrupts every incremental backup
@@ -186,14 +189,20 @@ A second pass, after `671000d`, also all real:
     - [ ] Driver: the `SnapshotMetadata` service, the `external-snapshot-metadata` sidecar with its TLS and token audiences, and a
           `SnapshotMetadataService` object. Test end to end in the k3s lab with the sidecar project's example client, and check
           whether Velero or Kasten use it yet
-  - [ ] Map volumes into per-node subsystems, and each shared volume into its own subsystem
-  - [ ] Test RWX block volumes and KubeVirt live migration with the real thing. On the kernel target, removing the source host
+  - [x] Map volumes into per-node subsystems, and each shared volume into its own subsystem
+  - [ ] Test RWX block volumes and KubeVirt live migration with the real thing. Two nodes sharing a raw block volume passed in the k3s lab.
+        Still to do: live migration. On the kernel target, removing the source host
         stalls the destination for about 10 s: see decision 30. A shorter reconnect delay may help, and hasn't been measured
-  - [ ] Scope names per cluster, so that several clusters can share one target
+  - [x] Scope names per cluster, so that several clusters can share one target: `--cluster`, decision 45
   - [ ] Detect nodes sharing a `hostnqn`, common on cloned images, which breaks access
         control
   - [ ] Limit queue counts per connection, based on the phase 5 measurements
   - [ ] Pass the `csi-sanity` conformance suite
+  - [ ] Publish the driver's image in releases, for amd64 and arm64, with its third-party notices, and run `k3s-csi.sh` in CI or before each release
+  - [ ] DH-HMAC-CHAP for nodes: a key per node, from a Secret, set on its host
+  - [ ] Delete a node's subsystem and host when the node leaves the cluster. They stay while the driver runs, for its next volume
+  - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver
+  - [ ] `ListVolumes` and `ListSnapshots`, which `csi-sanity` and some backup tools use
   - [ ] Test at production-like volume and node counts
   - [ ] Document that there is a single target, with no failover
   - [ ] Test a clone of a volume with LVM inside it, on a node that also has the original. Its PV UUID and VG name match its source's, so the node's LVM should
