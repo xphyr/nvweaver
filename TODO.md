@@ -158,6 +158,14 @@ From an outside review, checked against the code after v0.3.0-rc1. All are real,
 - [x] Errors from writing to configfs quote the value, including DH-CHAP secrets
 - [x] Smaller: compare labels on an idempotent create, compare resolved paths for reflink pools, name 503 and 507 in the README's error list, and tick "Make volume creation idempotent by name" if that's still open
 
+A second pass, after `671000d`, also all real:
+
+- [x] A block device that sysfs can't describe passes the disk-and-partition check: refuse it. Decision 9
+- [x] A logical volume over a disk that's already exported isn't caught, as `O_EXCL` only sees the other order: walk the new device's slaves. Decision 9
+- [x] A failed create forgets its file's intent even when the file couldn't be removed, also when sizing the file fails
+- [x] The key dialog doesn't say that saving drops the host's sessions
+- [x] Listing every connection on SPDK asks each subsystem in turn: refused without `subsystem`, under a capability of its own. Decision 43
+
 ## 7. Kubernetes CSI driver
 
 - [ ] Create a Kubernetes CSI driver that works with the API to handle dynamic
@@ -166,6 +174,18 @@ From an outside review, checked against the code after v0.3.0-rc1. All are real,
         from the port rather than assuming TCP
   - [x] Make volume creation idempotent by name in the API, because CSI retries calls
   - [ ] Use the snapshot and cloning features
+  - [ ] Changed block tracking: CSI's `SnapshotMetadata` service (KEP-3314, beta in Kubernetes 1.36, CSI spec 1.10), for incremental
+        backups of block volumes. After snapshots work in the driver. Storage does the work, so both targets get it
+    - [ ] First, on its own: prove the storage side never under-reports, as a missed block silently corrupts every incremental backup
+          built on it. Write known data, snapshot, change known ranges, including across chunk boundaries and with TRIM, snapshot
+          again, and check the reported delta covers every byte that differs. On LVM at several chunk sizes, and on XFS
+    - [ ] LVM thin: `thin_delta` and `thin_dump` on a reserved metadata snapshot, one at a time per pool. Ranges come in the pool's
+          chunk size. Add `device-mapper-persistent-data` to the images and to "Tools" in the README
+    - [ ] Reflink: `FIEMAP` on both snapshot files, where a different physical extent or a hole is a change
+    - [ ] API, spec first: paginated, read-only allocated and changed ranges on snapshots, with each pool's block size
+    - [ ] Driver: the `SnapshotMetadata` service, the `external-snapshot-metadata` sidecar with its TLS and token audiences, and a
+          `SnapshotMetadataService` object. Test end to end in the k3s lab with the sidecar project's example client, and check
+          whether Velero or Kasten use it yet
   - [ ] Map volumes into per-node subsystems, and each shared volume into its own subsystem
   - [ ] Test RWX block volumes and KubeVirt live migration with the real thing. On the kernel target, removing the source host
         stalls the destination for about 10 s: see decision 30. A shorter reconnect delay may help, and hasn't been measured

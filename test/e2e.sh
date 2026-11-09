@@ -260,13 +260,22 @@ QUEUES=$(ini "jq -r '.[0].queues' /tmp/body")
 api "system says what this target can tell" 200 GET /v1/system
 if [ "$BACKEND" = spdk ]; then
 	expect_eq "SPDK can name hosts" true "$(ini "jq -r .capabilities.identifies_connected_hosts /tmp/body")"
+	expect_eq "SPDK can't list everyone at once" false "$(ini "jq -r .capabilities.lists_all_connections /tmp/body")"
 	api "list who's connected, again" 200 GET "/v1/connections?subsystem=$SA"
 	expect_eq "SPDK names the host" "$H1" "$(ini "jq -r '.[0].host_nqn' /tmp/body")"
 	expect_eq "and the subsystem" "$SA" "$(ini "jq -r '.[0].subsystem' /tmp/body")"
-	api "list everyone" 200 GET /v1/connections
-	expect_eq "each subsystem has its own" 2 "$(ini "jq length /tmp/body")"
+	api "so listing everyone is refused, as it would ask each subsystem in turn" 422 GET /v1/connections
+	expect_has "and says what to pass" "subsystem=" "$(ini "cat /tmp/body")"
+	if CLI_OUT=$($ENGINE exec "$TGT" nvweaver --api "$API" connection list 2>&1); then
+		bad "the command line, with no subsystem, fails and says why" "$CLI_OUT"
+	else
+		expect_has "the command line, with no subsystem, fails and says why" "subsystem=" "$CLI_OUT"
+	fi
 else
 	expect_eq "the kernel can't name hosts" false "$(ini "jq -r .capabilities.identifies_connected_hosts /tmp/body")"
+	expect_eq "but can list everyone at once" true "$(ini "jq -r .capabilities.lists_all_connections /tmp/body")"
+	api "list everyone" 200 GET /v1/connections
+	expect_has "including the host" 127.0.0.1 "$(ini "jq -r '.[].host_address' /tmp/body")"
 	api "list who's connected, again" 200 GET "/v1/connections?subsystem=$SA"
 	expect_eq "so it doesn't" null "$(ini "jq -r '.[0].host_nqn' /tmp/body")"
 fi

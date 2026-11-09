@@ -193,7 +193,7 @@ refused, as is exporting the same device twice.
 |---|---|
 | `/healthz` | `GET` (needs no token) |
 | `/v1/system` | `GET` (includes the active `backend` and its `capabilities`) |
-| `/v1/connections` | `GET`, with `?subsystem=` for one subsystem (see `identifies_connected_hosts` under `capabilities`) |
+| `/v1/connections` | `GET`, with `?subsystem=` for one subsystem, which SPDK requires (see `identifies_connected_hosts` and `lists_all_connections` under `capabilities`) |
 | `/v1/ports`, `/v1/ports/{id}` | `GET` `POST`, `GET` `PATCH` `DELETE` |
 | `/v1/hosts`, `/v1/hosts/{nqn}` | `GET` `POST`, `GET` `PATCH` `DELETE` |
 | `/v1/subsystems`, `/v1/subsystems/{nqn}` | `GET` `POST`, `GET` `PATCH` `DELETE` |

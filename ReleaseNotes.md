@@ -6,6 +6,13 @@ The major differences between versions. For every change, see the commit history
 
 ### Changed
 
+- **On SPDK, `GET /v1/connections` needs `?subsystem=`,** and `nvweaver connection list` needs `--subsystem`. Listing every connection
+  asked each subsystem in turn, which takes tens of seconds at thousands of subsystems and holds up changes. The kernel target still
+  lists everyone. `lists_all_connections` under `capabilities` says which applies.
+- **A logical volume can't be exported over a disk that's exported already,** nor a block device that sysfs can't describe, as the
+  check that a disk and its partition aren't both exported needs sysfs.
+- **The key dialog in the web interface says what saving a key does:** put the key on the host first, as its sessions are dropped.
+
 - **Changing a host's DH-HMAC-CHAP key drops its connections,** so that it logs in again with the new key. Before, a connected host carried on
   with its old key indefinitely. Give the host its new key first. On the kernel target, other hosts on that subsystem stall for about 10 s.
 - **The same storage can't be exported twice under another name:** a hard link, a bind mount, or a disk and one of its partitions. Passthrough
@@ -22,6 +29,8 @@ The major differences between versions. For every change, see the commit history
   also leave hosts seeing the old size. Both now finish at the next start, or when the request is sent again.
 - **A failed write of a host's key returned the key in the error.**
 - **Changing a port detached subsystems that nvweaver doesn't manage.**
+- **A namespace's new file that couldn't be removed, after its create failed, was forgotten,** so the name stayed taken. It's now
+  removed at the next start.
 
 ## v0.3.0
 

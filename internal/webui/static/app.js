@@ -659,10 +659,15 @@ function addHostDialog() {
   });
 }
 
-function hostKeysDialog(host) {
+// Saving a key drops the sessions that logged in with the old one, so the host must have it first. See decision 30.
+async function hostKeysDialog(host) {
+  const sys = await api("/v1/system");
+  const others = sys.backend === "spdk"
+    ? "Only this host is dropped."
+    : "On the kernel target, other hosts on each subsystem that lists this host also pause for about 10 s while they reconnect, with no errors.";
   openDialog({
     title: "Set authentication keys",
-    intro: `For ${host.nqn}. Keys can be replaced, but to remove them, delete the host and add it again. The host needs the same key.`,
+    intro: `For ${host.nqn}. Put the new key on the host first: saving it here drops the sessions that logged in with the old one, and the host can only reconnect with the new key. ${others} Keys can be replaced, but to remove them, delete the host and add it again.`,
     submit: "Save",
     fields: keyFields,
     action: (v) => {

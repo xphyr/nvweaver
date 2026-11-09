@@ -16,6 +16,7 @@ type Capabilities struct {
 	PerHostDHCHAPParams      bool     `json:"per_host_dhchap_params"`
 	WildcardListen           bool     `json:"wildcard_listen"`
 	IdentifiesConnectedHosts bool     `json:"identifies_connected_hosts"`
+	ListsAllConnections      bool     `json:"lists_all_connections"`
 	Transports               []string `json:"transports"`
 }
 

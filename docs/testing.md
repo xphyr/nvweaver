@@ -476,6 +476,21 @@ every suite ran on x86-64 VMs: 330 unit tests, 240 in the browser, 308 on the ke
 - **Not tested:** passthrough of a controller with native multipath through the API, as none is available to pass through, and
   a key change with two hosts on one SPDK subsystem, where only the changed one should drop.
 
+### The second pass
+
+Each fix came with a test that failed first, or, where the functions were new, failed with that part of the fix turned
+off. The key dialog's three new browser checks all failed against the old dialog. Then, scoped by decision 39, on x86-64
+VMs: unit tests and lint, 243 in the browser, 311 on the kernel target, 327 on SPDK and 915 in the VMs, all passing.
+`systemd-e2e.sh` and `webui-real-e2e.sh` weren't run: nothing they cover changed.
+
+- **The new `e2e.sh` check failed at first, on its own mistake:** it read the capability from a response that an earlier
+  step had already replaced with a connection list. The check was moved, and SPDK passed all 327.
+- **`vm-e2e.sh` maps several thin volumes of one pool at once,** on real LVM, which would fail if volumes built on the same
+  devices were taken to overlap. They weren't. The development machine has no device-mapper devices, so the test of the
+  walk on a real device skips there.
+- **`webui-e2e.sh` needs its tree on XFS or btrfs,** as the demo makes a reflink pool. Run from a tmpfs, it stops with "the
+  demo didn't start".
+
 ## Not tested
 
 Deferred until hardware is available, as tracked in `TODO.md`:
