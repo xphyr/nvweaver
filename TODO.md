@@ -60,6 +60,9 @@ Agreed with the user on 2026-11-09, in this order:
 - [x] For v0.3.0: publish the `nvweaver` command line utility as its own artifact, as `nvweaver-cli-<version>-linux-<arch>`, for people who only want the client. Linux on amd64 and arm64,
       built natively, as the suites and the Arm runner already test it. Include them in the checksums, attestations and SBOM, and say in the README how to get them
 - [ ] Pin base images in the Containerfiles by digest, with automated updates, the CSI driver's included
+- [ ] Find out why the workflow's token was refused writing to `nvweaver-buildcache` from about 21:50 UTC on 2026-11-09, with the
+      repository holding Admin access to it: `denied: permission_denied: write_package`. Writing it is best-effort now, so `main`'s CI
+      only warns, and releases don't write it
 - [ ] Test that a new version reads the previous release's saved state, before each release. Nothing does yet
 - [x] Add a `LICENSE` (MIT)
 - [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)

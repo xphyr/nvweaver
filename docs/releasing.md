@@ -28,6 +28,10 @@ including all end-to-end suites, and publishes only if they all pass:
 A tag with a suffix, like `v0.1.0-rc1`, makes a pre-release and leaves `latest` alone. Use one
 to try the pipeline.
 
+**A release only reads the build cache,** `ghcr.io/xphyr/nvweaver-buildcache`, which only CI on `main` writes, and a failure to
+write it there builds again without it and warns. The cache only saves time, and v0.4.0's first attempt failed when the
+workflow's token was suddenly refused writing to that package, though it had Admin access.
+
 CI cancels its own older runs of a pull request or of `main` when a newer one starts, so merging several pull requests in a
 row leaves one run on `main`. A release's tests are never cancelled that way: see `concurrency` in `ci.yml`.
 
