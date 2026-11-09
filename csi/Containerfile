@@ -10,9 +10,9 @@ RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w -X main.version
 
 FROM docker.io/library/alpine:3.22
 # What the node plugin runs: nvme-cli to connect, blkid, mount and blockdev from
-# util-linux, and the tools to make and grow ext4 and XFS. kmod loads nvme-tcp
-# from the host's /lib/modules if it isn't loaded already.
-RUN apk add --no-cache nvme-cli util-linux e2fsprogs e2fsprogs-extra xfsprogs xfsprogs-extra kmod
+# util-linux, and the tools to make and grow ext4 and XFS. It doesn't load
+# nvme-tcp, which the node has to load at boot: see README.md.
+RUN apk add --no-cache nvme-cli util-linux e2fsprogs e2fsprogs-extra xfsprogs xfsprogs-extra
 COPY --from=build /nvweaver-csi /usr/local/bin/
 COPY --from=build /licenses /usr/share/licenses/nvweaver-csi/vendor/
 COPY --from=build /usr/local/go/LICENSE /usr/local/go/PATENTS /usr/share/licenses/nvweaver-csi/go/

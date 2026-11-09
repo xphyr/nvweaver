@@ -200,7 +200,6 @@ spec:
             - {name: dev, mountPath: /dev}
             - {name: sys, mountPath: /sys}
             - {name: nvme, mountPath: /etc/nvme, readOnly: true}
-            - {name: modules, mountPath: /lib/modules, readOnly: true}
         - name: registrar
           image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.18.0
           args: [--csi-address=/csi/csi.sock, --kubelet-registration-path=/var/lib/kubelet/plugins/nvweaver.xphyr.github.io/csi.sock]
@@ -218,4 +217,3 @@ spec:
         - {name: dev, hostPath: {path: /dev, type: Directory}}
         - {name: sys, hostPath: {path: /sys, type: Directory}}
         - {name: nvme, hostPath: {path: /etc/nvme, type: Directory}}
-        - {name: modules, hostPath: {path: /lib/modules, type: Directory}}

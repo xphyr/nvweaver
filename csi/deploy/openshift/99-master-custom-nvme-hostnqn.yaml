@@ -1,0 +1,30 @@
+# Gives each master node its own NVMe host NQN and host ID, at every boot. nvme gen-hostnqn makes the NQN from the machine's
+# DMI product UUID, so it's the same on every boot of one node, and differs between nodes. OpenShift's nodes otherwise all have
+# the same ones, and nvweaver couldn't tell them apart. See csi/README.md. Applying it reboots the pool's nodes, one at a time.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 99-master-custom-nvme-hostnqn
+spec:
+  config:
+    ignition:
+      version: 3.4.0
+    systemd:
+      units:
+        - contents: |
+            [Unit]
+            Description=Custom CoreOS Generate NVMe Hostnqn
+            Before=kubelet.service
+
+            [Service]
+            Type=oneshot
+            # Only replaced once the new NQN is made, so a failure can't leave an empty file. The host ID is the NQN's UUID.
+            ExecStart=/usr/bin/sh -c 'n=$$(/usr/sbin/nvme gen-hostnqn) && [ -n "$$n" ] && echo "$$n" > /etc/nvme/hostnqn && echo "$${n##*:uuid:}" > /etc/nvme/hostid'
+            RemainAfterExit=yes
+
+            [Install]
+            WantedBy=multi-user.target
+          enabled: true
+          name: custom-coreos-generate-nvme-hostnqn.service
