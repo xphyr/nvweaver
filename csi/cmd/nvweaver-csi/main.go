@@ -37,13 +37,14 @@ func main() {
 	port := flag.Int("port", 1, "the nvweaver port that volumes are offered on, unless a StorageClass sets port")
 	hostNQN := flag.String("hostnqn-file", "/etc/nvme/hostnqn", "the node's NVMe host NQN, which is its node ID")
 	lossTmo := flag.Int("ctrl-loss-tmo", -1, "seconds a node keeps reconnecting to nvweaver before giving its volumes up; -1 is for ever, as there's no failover")
+	reconnect := flag.Int("reconnect-delay", 2, "seconds a node waits between attempts to reconnect to nvweaver, which sets how long I/O stalls when a connection drops")
 	maxVols := flag.Int64("max-volumes-per-node", driver.MaxNamespaces, "how many volumes a node tells Kubernetes it can take")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(*endpoint, *mode, *hostNQN, driver.Config{
 		Name: *name, Version: version, Cluster: *cluster, NQNPrefix: *prefix, Port: *port,
-		CtrlLossTmo: *lossTmo, MaxVolumesPerNode: *maxVols, Log: log,
+		CtrlLossTmo: *lossTmo, ReconnectDelay: *reconnect, MaxVolumesPerNode: *maxVols, Log: log,
 	}, log); err != nil {
 		log.Error("stopped", "err", err)
 		os.Exit(1)

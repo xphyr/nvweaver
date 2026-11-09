@@ -444,6 +444,7 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
 - [docs/testing.md](docs/testing.md): coverage, latest results and known pitfalls
 - [docs/releasing.md](docs/releasing.md): CI, and how releases are made and verified
 - [docs/pools.md](docs/pools.md): creating LVM thin and reflink pools, in preparation for that feature
+- [docs/monitoring.md](docs/monitoring.md): metrics at `/metrics`, for Prometheus or the OpenTelemetry Collector, and example alerts
 
 ## License
 

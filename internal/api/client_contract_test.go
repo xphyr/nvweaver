@@ -96,6 +96,11 @@ func TestClientReachesEveryOperation(t *testing.T) {
 	if health.Status == "" {
 		t.Error("no health status")
 	}
+	metrics, err := c.Metrics(ctx)
+	must("metrics", err)
+	if !strings.Contains(metrics, "nvweaver_info") {
+		t.Errorf("metrics: %.200s", metrics)
+	}
 	sys, err := c.System(ctx)
 	must("system", err)
 	if sys.Backend == "" || sys.Warnings == nil {

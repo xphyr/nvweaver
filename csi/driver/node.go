@@ -345,7 +345,7 @@ func (n *Node) connect(ctx context.Context, pc map[string]string) error {
 	// There's one target and no failover, so by default a node never gives up: an outage pauses I/O until nvweaver is back,
 	// rather than failing it for good after the kernel's default of 10 minutes.
 	out, err := n.run(ctx, "nvme", "connect", "-t", transport, "-a", addr, "-s", svc, "-n", nqn, "-q", n.hostNQN,
-		fmt.Sprintf("--ctrl-loss-tmo=%d", n.cfg.CtrlLossTmo))
+		fmt.Sprintf("--ctrl-loss-tmo=%d", n.cfg.CtrlLossTmo), fmt.Sprintf("--reconnect-delay=%d", n.cfg.ReconnectDelay))
 	if err != nil && !strings.Contains(string(out), "already connected") {
 		return status.Errorf(codes.Unavailable, "connecting to %s at %s:%s: %v", nqn, addr, svc, err)
 	}

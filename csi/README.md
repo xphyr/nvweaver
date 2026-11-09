@@ -150,6 +150,25 @@ oc apply -f csi/deploy/openshift/storageprofile.yaml
 oc get storageprofile nvweaver -o yaml      # status: should show the claim property sets and csi-clone
 ```
 
+Apply it again whenever the StorageClass is recreated: CDI resets it.
+
+**Make it KubeVirt's default class,** or a VM's disk that names no class goes to the cluster's default class instead, and a
+clone from an nvweaver golden image becomes a full copy onto other storage:
+
+```sh
+oc annotate storageclass nvweaver storageclass.kubevirt.io/is-default-virt-class=true
+```
+
+**On a cluster that's running, that moves OpenShift Virtualization's own golden images too,** such as RHEL and Fedora, straight
+away: CDI deletes their existing claims on the old default class, and imports them again onto nvweaver, where the StorageProfile
+keeps them as VolumeSnapshots rather than claims. Nothing is lost, but they no longer appear among the cluster's claims, and VMs
+being created from them meanwhile have to wait. Make the change when nothing depends on them, or set `storageClassName` on each
+DataVolume instead.
+
+**Golden images:** [`deploy/openshift/data-import-cron.yaml`](deploy/openshift/data-import-cron.yaml) keeps Fedora's latest
+container disk as a snapshot in nvweaver, under the DataSource `fedora`, updated weekly. A VM whose disk names
+`sourceRef: {kind: DataSource, name: fedora}` gets a thin clone of it in a fraction of a second.
+
 `oc apply` warns that the StorageProfile has no `last-applied-configuration`, as CDI made it: that's expected.
 
 - **Disks are raw block, ReadWriteMany by preference,** as live migration needs a disk that both nodes can use at once. The
@@ -158,9 +177,9 @@ oc get storageprofile nvweaver -o yaml      # status: should show the claim prop
 - **Clones are the driver's own (`csi-clone`):** thin on LVM, a reflink copy on XFS, with no data copied.
 - **Golden images from DataImportCrons are kept as snapshots,** and each VM's disk is a thin clone of one.
 
-A VM and a live migration have passed on OpenShift 4.22. **After a live migration, the VM's disk stalls for about 10 seconds**
-on nvweaver's kernel target: taking the old node off the volume briefly drops the new node's connection too, and the node waits
-its reconnect delay before carrying on. The VM sees no error. A DataImportCron hasn't been tested yet. See `TODO.md`.
+A VM, a live migration and a DataImportCron have passed on OpenShift 4.22. **After a live migration, the VM's disk stalls for
+about 2 seconds** on nvweaver's kernel target: taking the old node off the volume briefly drops the new node's connection too,
+and the node waits its reconnect delay, `--reconnect-delay`, before carrying on. The VM sees no error.
 
 ### StorageClass parameters
 
@@ -171,6 +190,27 @@ its reconnect delay before carrying on. The VM sees no error. A DataImportCron h
 
 Filesystems are ext4 unless the StorageClass's `csi.storage.k8s.io/fstype` says `xfs`.
 
+### A dedicated storage network
+
+nvweaver can serve several networks at once, with one port on each address, and each StorageClass chooses its port. So a
+cluster with a dedicated storage network, often with jumbo frames, can use it, while other clients use the routed network, and
+nvweaver's API stays on the routed network either way:
+
+```sh
+nvweaver port create --id 2 --address 172.16.20.60      # nvweaver's address on the storage network
+```
+
+Then set `port: "2"` in the StorageClass. Nodes connect from whichever of their interfaces reaches that address, so each needs an
+address on that network. Jumbo frames are optional: TCP settles on the smaller MTU of the two ends. Every device on the path has to
+pass them, though: if the nodes and nvweaver use 9000 but a switch passes only 1500, connections stall. Check from a node with
+`ping -M do -s 8972 <nvweaver's address>`.
+
+**Moving a cluster from one port to another:** a StorageClass's parameters can't be changed, so delete and recreate it, with no
+volumes using it. Then remove each node's connection to its old subsystem, `nvme disconnect -n <prefix>:<cluster>:node-…` on the
+node, and delete those subsystems in nvweaver, as nodes keep using a connection that's still up rather than adding a new path. The
+driver makes them again, on the new port, for each node's next volume. On OpenShift, apply the StorageProfile again too, as
+recreating the class resets it. A way to do this without the manual steps is in `TODO.md`.
+
 ### Driver flags
 
 Set in `deploy/nvweaver-csi.yaml`, on the `driver` containers.
@@ -180,6 +220,7 @@ Set in `deploy/nvweaver-csi.yaml`, on the `driver` containers.
 | `--cluster` | `k8s` | Starts every name the driver makes. Give each cluster sharing an nvweaver its own. |
 | `--port` | `1` | The nvweaver port that volumes are offered on, unless a StorageClass says otherwise. |
 | `--ctrl-loss-tmo` | `-1` | Seconds a node keeps reconnecting to nvweaver before giving its volumes up. -1 is for ever. |
+| `--reconnect-delay` | `2` | Seconds between a node's attempts to reconnect, which is how long I/O stalls when a connection drops. |
 | `--max-volumes-per-node` | `1024` | What each node tells Kubernetes it can take: the namespaces a subsystem can hold. |
 | `--nqn-prefix` | `nqn.2026-11.io.github.xphyr.nvweaver:csi` | How the NQN of each subsystem the driver makes starts. |
 | `--hostnqn-file` | `/etc/nvme/hostnqn` | The node's host NQN, which is its ID. |
@@ -234,7 +275,6 @@ then disconnect each node with `nvme disconnect -n` and the same name.
 All tracked in `TODO.md`:
 
 - Tested on Arm, and at production-like scale
-- A shorter stall after a live migration
 - A published image, for amd64 and arm64
 - DH-HMAC-CHAP for nodes
 - Refusing to run when two nodes share a host NQN, rather than relying on the check above

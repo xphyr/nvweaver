@@ -562,6 +562,35 @@ and read on another while both had it, and nothing left after everything was del
   until it reconnected, 10 s later, its reconnect delay. The VM never saw an error, as nodes retry for ever. A shorter
   reconnect delay would shorten this, and hasn't been measured. Afterwards, nothing was left in nvweaver but the three nodes'
   subsystems, which are kept, and no node had a device left.
+- **On a dedicated storage network, from a multi-homed nvweaver.** The nvweaver VM then had two interfaces: the routed one at MTU
+  1500, carrying the API and port 1, and a non-routed storage VLAN at MTU 9000, carrying port 2, which only the OpenShift nodes
+  could reach, each through an extra interface at 9000. With the StorageClass on port 2, all 13 checks passed again, the VM
+  live-migrated in 3 s, and every NVMe connection ran between the two VLAN addresses, with a 9000-byte path MTU and 8948-byte
+  segments. 64 MiB of random data written with direct I/O on one node read back identically on another. Moving the cluster to
+  port 2 meant recreating the StorageClass, which reset CDI's StorageProfile, and clearing the nodes' old subsystems, as a node
+  keeps using a live connection: both are in `csi/README.md`.
+- **nvweaver installed as a service, and its host rebooted.** In a container started with `podman run --restart=always`, nvweaver
+  didn't come back when its VM rebooted: Podman doesn't restart those at boot without its own restart service. Installed from
+  `make package` with the systemd unit, it did: rebooted with a KubeVirt VM running on one of its volumes, it was back in 22 s
+  with both ports and every volume, the node reconnected over the storage VLAN on its second attempt, and the VM stayed Running,
+  never paused.
+- **The stall after a live migration, against the reconnect delay.** Two pods shared a raw block volume on two nodes; one
+  wrote with direct I/O every 100 ms, timing each write from `/proc/uptime`, and the other's pod was deleted, which takes its
+  node off the volume's subsystem, as a migration's end does. The longest gap between writes was 10.17 s, 2.19 s and 1.11 s at
+  a reconnect delay of 10, 2 and 1 s, matching the kernel's log, and no write failed. The default is 2 s now: decision 45.
+- **A DataImportCron, and VMs from its golden image.** CDI imported Fedora's latest container disk onto nvweaver and kept it as
+  a 40 GiB VolumeSnapshot, as the StorageProfile asks, under a DataSource. **The first VM from it went to the wrong storage:**
+  its disk named no class, and with no default class for KubeVirt, CDI used the cluster's, vSphere's, copying 40 GiB from the
+  snapshot for 6 minutes onto a ReadWriteOnce disk. With `storageclass.kubevirt.io/is-default-virt-class` on nvweaver's class,
+  as the guide now says, the next VM was running 41 s after it was made, on a ReadWriteMany raw block disk, live-migratable,
+  and the driver's CreateVolume from the snapshot took 159 ms: a thin clone.
+  **Changing the default class had a side effect:** seconds later, CDI deleted OpenShift's built-in golden images, three claims
+  on vSphere storage, and imported them again onto nvweaver as snapshots, as the API server's audit log showed. Nothing was lost,
+  but the claims were gone. The guide warns of it now.
+- **Metrics, decision 47.** On the nvweaver VM, with the OpenShift cluster's volumes, `/metrics` refused a request with no token
+  (401) and answered one with a `monitoring` scoped token made as `docs/monitoring.md` says: 55 lines, with the LVM pool's data
+  and metadata use, object counts and no warnings. Prometheus's `promtool check metrics` found no problems in it. The unit tests
+  check the names, values and format, and failed with request recording turned off, and with label escaping turned off.
 - **Found on the way, outside nvweaver:** the nvweaver VM's interface was set to an MTU of 9000 on a network that passes only
   1500. NVMe/TCP to the cluster worked, as TCP settled on the nodes' 1500, but pulling an image from the lab registry stalled,
   as its storage host also used 9000.

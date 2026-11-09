@@ -513,6 +513,11 @@ there, not as absolute numbers.
 - **Nodes never give up on nvweaver by default:** they connect with `--ctrl-loss-tmo=-1`, so an outage pauses I/O until
   nvweaver is back. The kernel's default of 10 minutes would then drop the controller, and mounted volumes would fail for
   good. That's the right trade-off with a single target and no failover. `--ctrl-loss-tmo` on the node plugin changes it.
+- **Nodes reconnect every 2 seconds, not the kernel's 10:** `--reconnect-delay=2`. On the kernel target, taking a node off a
+  shared volume's subsystem, as at the end of a live migration, drops the other nodes' connections too (decision 30), and their
+  I/O waits for the next reconnect. Measured on OpenShift, the stall was the delay plus about 0.1 s: 10.2 s, 2.2 s and 1.1 s at
+  10, 2 and 1, with no failed write. 1 would halve it again, but in a real outage every node would then retry every subsystem
+  every second.
 - **A node reports 1024 volumes at most,** the namespaces its subsystem can hold on either target. `--max-volumes-per-node`
   lowers it.
 - **A node ID that isn't an NQN is refused as not found,** as no node of ours can have one.
@@ -552,3 +557,22 @@ there, not as absolute numbers.
 - **Rejected: tokens made through the API,** chosen by the user: the API could then mint credentials, and the state file
   would hold them. **Rejected: hosts owned by a token.** Hosts are a node's identity, and a node could be shared; when
   nodes get DH-HMAC-CHAP keys, which only admins may set now, this needs another look.
+
+## 47. Metrics are Prometheus text, written with the standard library
+
+- **The problem:** the user wants usage watched, and alerts set, in a third-party tool, starting before v0.4.0. A thin pool
+  that fills up gives every host using it I/O errors, and today only `warnings` in the API says so.
+- **Chosen, by the user:** `GET /metrics`, in Prometheus's text format, written with the standard library: pools' size, use and
+  metadata, object counts, warnings, pending intents, and API requests by route and status, with their latency. OpenTelemetry
+  users scrape it with the OpenTelemetry Collector's `prometheus` receiver. Names and alert examples are in
+  `docs/monitoring.md`.
+- **Authenticated like the API,** as it names every pool, and a scoped token that owns nothing makes a read-only token for a
+  monitoring system (decision 46). An unauthenticated endpoint would need its own listener, and its own decision.
+- **Routes are labels by pattern,** such as `/v1/volumes/{volume}`, never by the name asked for, so a cluster creating
+  thousands of volumes doesn't make thousands of series.
+- **Pool figures are read at each scrape,** as `GET /v1/pools` does, rather than cached: at a 30-second interval that's one
+  `lvs` per pool, and the numbers are never stale.
+- **Rejected, for now: pushing OTLP.** With the OpenTelemetry Go SDK it's a large new dependency (decision 40); by hand, OTLP
+  over HTTP is possible with the standard library, but more to get right than a first version needs. In `TODO.md`.
+- **Not yet:** connections, which on SPDK cost an RPC per subsystem (decision 43), reconcile timings, and the CSI driver's
+  own metrics beyond its sidecars'.
