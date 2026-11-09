@@ -28,6 +28,9 @@ including all end-to-end suites, and publishes only if they all pass:
 A tag with a suffix, like `v0.1.0-rc1`, makes a pre-release and leaves `latest` alone. Use one
 to try the pipeline.
 
+CI cancels its own older runs of a pull request or of `main` when a newer one starts, so merging several pull requests in a
+row leaves one run on `main`. A release's tests are never cancelled that way: see `concurrency` in `ci.yml`.
+
 **Before a release, run `test/vm/k3s-csi.sh`** with the release's images, as CI doesn't: hosted runners are too small for the
 k3s lab. **The first release to publish a new image makes a new package,** as `nvweaver-csi` did in v0.4.0, and GitHub makes new
 packages private: make it public, under the package's settings, before people need to pull it.

@@ -18,9 +18,9 @@ scan() { # SOURCE: what Syft sees, into $WORK/scanned
 	podman run --rm --pull=missing -v "$WORK:/w:Z" -e SYFT_CHECK_FOR_APP_UPDATE=false "$SYFT" "$1" -q -o "spdx-json=/w/scanned"
 }
 
-# Go reports no version for nvweaver itself, as it isn't a published module.
+# Go reports no version for nvweaver itself, as it isn't a published module, nor for the CSI driver's module, nvweaver/csi.
 finish() { # OUTPUT
-	jq --arg v "$VERSION" '(.packages[] | select(.name == "nvweaver")).versionInfo = $v' "$WORK/scanned" >"$1"
+	jq --arg v "$VERSION" '(.packages[] | select(.name == "nvweaver" or .name == "nvweaver/csi")).versionInfo = $v' "$WORK/scanned" >"$1"
 }
 
 # SPDK, DPDK and ISA-L are compiled into one binary, so a scanner can't see them, and the SBOM would look clean without the code that matters most.
@@ -75,6 +75,10 @@ check() { # FILE KIND, where KIND is spdk for the SPDK image, csi for the CSI dr
 	done < <(grep '^|' "$NOTICES")
 	version=$(jq -r '[.packages[] | select(.name == "nvweaver") | .versionInfo][0] // ""' "$1")
 	[ "$version" = "$VERSION" ] || { echo "$(basename "$1") says nvweaver is '$version', not $VERSION" >&2; exit 1; }
+	if [ "$2" = csi ]; then
+		version=$(jq -r '[.packages[] | select(.name == "nvweaver/csi") | .versionInfo][0] // ""' "$1")
+		[ "$version" = "$VERSION" ] || { echo "$(basename "$1") says nvweaver/csi is '$version', not $VERSION" >&2; exit 1; }
+	fi
 }
 
 for arch in "$@"; do
