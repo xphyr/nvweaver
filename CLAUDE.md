@@ -11,6 +11,7 @@ Read these before changing related code:
 - [docs/testing.md](docs/testing.md): coverage, latest results, untested areas, pitfalls
 - [docs/releasing.md](docs/releasing.md): CI, releases and what they publish
 - [api/openapi.yaml](api/openapi.yaml): the API. Change it first, then the code; tests compare them
+- [csi/README.md](csi/README.md): installing the CSI driver, and what it needs from nodes
 - [TODO.md](TODO.md): the roadmap, with the agreed next steps at the top
 
 ## Commands

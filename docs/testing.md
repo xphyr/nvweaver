@@ -542,7 +542,30 @@ and read on another while both had it, and nothing left after everything was del
   a scoped token could adopt a pool; without the forced owner, what a token made had none. The browser test checks the Owner
   column and filtering by it, 245 of 245. Scoped by decision 39, `e2e.sh` passed on both targets, 311 and 327, and the
   browser against real targets 93 of 93, unchanged by the new checks on every request.
-- **Not tested yet:** more than three nodes or a handful of volumes, OpenShift, KubeVirt live migration, Arm, and the
+- **OpenShift's nodes share a host NQN.** A fresh compact OpenShift 4.22 cluster, three nodes on vSphere, had the same
+  `/etc/nvme/hostnqn` and `/etc/nvme/hostid` on every node, from the image, which would have put every node in one subsystem.
+  Not worked around in nvweaver, as decided: the MachineConfig in `csi/deploy/openshift/`, applied to the `master` pool, as the
+  cluster is compact and the `worker` pool has no machines, runs `nvme gen-hostnqn` at each boot. That was checked first: it
+  gives the same NQN twice on one node, from the DMI product UUID, and a different one on each node. Applied during an upgrade
+  to 4.22.22: one node rebooted twice, and two went straight to the combined configuration. Afterwards every node's NQN and host
+  ID were its own, matched each other and the node's product UUID, and the unit had exited 0. A reboot with it in place, to show
+  the NQN stays the same, hasn't been done separately.
+- **On OpenShift 4.22.22,** a compact three-node cluster on vSphere, with nvweaver on a separate Fedora 44 VM on the kernel
+  target, an LVM thin pool on a 250 GB disk, over a routed 1 Gb network, and the driver on a scoped token from the lab
+  registry. The node plugin ran with the privileged SCC, as the guide says, and each node registered with its own NQN once the
+  MachineConfig was applied. The k3s lab's checks, run as restricted, non-root pods, passed 13 of 13: a filesystem written on
+  one node and read on another, growing it on a third, a snapshot and a clone, and a raw block volume shared by two nodes.
+- **KubeVirt, with the StorageProfile in `csi/deploy/openshift/`:** CDI took it as written, and imported a CirrOS disk onto a
+  ReadWriteMany raw block volume without being asked for one. The VM ran, live-migratable, and migrated between nodes in 3 s,
+  staying Running and Ready. **The new node's I/O then stalled for 10 s:** when the old node was removed from the volume's
+  subsystem, the kernel target dropped the new node's connection too, as decision 30 says it does, and the node queued I/O
+  until it reconnected, 10 s later, its reconnect delay. The VM never saw an error, as nodes retry for ever. A shorter
+  reconnect delay would shorten this, and hasn't been measured. Afterwards, nothing was left in nvweaver but the three nodes'
+  subsystems, which are kept, and no node had a device left.
+- **Found on the way, outside nvweaver:** the nvweaver VM's interface was set to an MTU of 9000 on a network that passes only
+  1500. NVMe/TCP to the cluster worked, as TCP settled on the nodes' 1500, but pulling an image from the lab registry stalled,
+  as its storage host also used 9000.
+- **Not tested yet:** more than three nodes or a handful of volumes, a DataImportCron, a guest writing during a migration, Arm, and the
   outage test against SPDK, or for longer than the kernel's default 10-minute timeout. `e2e.sh` doesn't run with a tokens
   file: the k3s lab is the only real service that has.
 

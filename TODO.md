@@ -171,10 +171,13 @@ are in `CLAUDE.review.md`, which isn't in the repository.
 ## 7. Kubernetes CSI driver
 
 - [x] A disposable Kubernetes lab: `test/vm/k3s-lab.sh`, k3s on three VMs and nvweaver on a fourth. See `docs/testing.md`
-- [ ] Test on OpenShift too, on a three-node virtual cluster with nested VMs for KubeVirt: RHCOS, SCCs and MachineConfig. Three
+- [x] Test on OpenShift too, on a three-node virtual cluster with nested VMs for KubeVirt: RHCOS, SCCs and MachineConfig. Three
       virtual nodes don't prove production-like node counts or performance, which stay open below
-  - [ ] An SCC for the privileged node plugin, and the manifests' paths checked on RHCOS
-  - [ ] `nvme-tcp` loaded and a unique `hostnqn` on each node, by MachineConfig if RHCOS doesn't already
+  - [x] An SCC for the privileged node plugin, and the manifests' paths checked on RHCOS: the privileged SCC, as `csi/README.md` says
+  - [x] `nvme-tcp` loaded and a unique `hostnqn` on each node, by MachineConfig if RHCOS doesn't already. `nvme-tcp` was loaded already. RHCOS doesn't: every node
+        had the same host NQN and host ID. `csi/deploy/openshift/` has a MachineConfig for each pool, applied to `nvw`'s master pool
+  - [x] A CDI StorageProfile, `csi/deploy/openshift/storageprofile.yaml`: a VM and a live migration passed with it
+  - [ ] A DataImportCron, and a guest writing while it migrates
 - [x] Create a Kubernetes CSI driver that works with the API to handle dynamic
       provisioning: `csi/`, decisions 44 and 45, tested end to end in the k3s lab by `test/vm/k3s-csi.sh`
   - [x] Controller, and a privileged node plugin (`nvme connect`, format, mount), which takes the transport
@@ -194,9 +197,10 @@ are in `CLAUDE.review.md`, which isn't in the repository.
           `SnapshotMetadataService` object. Test end to end in the k3s lab with the sidecar project's example client, and check
           whether Velero or Kasten use it yet
   - [x] Map volumes into per-node subsystems, and each shared volume into its own subsystem
-  - [ ] Test RWX block volumes and KubeVirt live migration with the real thing. Two nodes sharing a raw block volume passed in the k3s lab.
-        Still to do: live migration. On the kernel target, removing the source host
-        stalls the destination for about 10 s: see decision 30. A shorter reconnect delay may help, and hasn't been measured
+  - [x] Test RWX block volumes and KubeVirt live migration with the real thing: both passed on OpenShift. On the kernel target, removing the source host
+        stalls the destination for about 10 s: see decision 30. Measured on OpenShift: the new node's I/O queued for 10 s, 10 s after
+        the migration, with no error. A shorter reconnect delay may help, and hasn't been measured
+  - [ ] Decide the node's reconnect delay (`nvme connect --reconnect-delay`), which sets how long that stall lasts, and measure it
   - [x] Scope names per cluster, so that several clusters can share one target: `--cluster`, decision 45
   - [ ] Detect nodes sharing a `hostnqn`, common on cloned images, which breaks access
         control

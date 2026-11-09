@@ -1,0 +1,25 @@
+# What KubeVirt's Containerized Data Importer (CDI) should ask nvweaver's driver for. CDI makes a StorageProfile for each
+# StorageClass, named after it, and fills it in only for drivers it knows, which this isn't. Without this, every DataVolume
+# would have to say its access mode and volume mode itself. Apply it after the StorageClass, from classes.yaml, and rename it
+# if the StorageClass is renamed. See README.md.
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: StorageProfile
+metadata:
+  name: nvweaver
+spec:
+  # In order of preference. ReadWriteMany raw block comes first, as it's what a VM needs to live-migrate, and the driver
+  # gives a volume that several nodes use a subsystem of its own. A ReadWriteMany filesystem isn't offered: the driver
+  # refuses it, as a filesystem written from two nodes would be corrupted.
+  claimPropertySets:
+    - accessModes: [ReadWriteMany]
+      volumeMode: Block
+    - accessModes: [ReadWriteOnce]
+      volumeMode: Block
+    - accessModes: [ReadWriteOnce]
+      volumeMode: Filesystem
+  # The driver clones a volume directly, which nvweaver does as a thin clone on LVM, or a reflink copy on XFS: no data is
+  # copied, and no snapshot is left behind, as the snapshot strategy would.
+  cloneStrategy: csi-clone
+  # Golden images from DataImportCrons are kept as snapshots, and each VM's disk is a thin clone of one.
+  dataImportCronSourceFormat: snapshot
+  snapshotClass: nvweaver
