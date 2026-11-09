@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Makes the SBOMs for a release, in SPDX JSON, from the tested images and from build/, and fails if one doesn't list what THIRD_PARTY_NOTICES.md says is in it.
-# Usage: make-sboms.sh VERSION ARCH...   Local images are expected as release.yml loads them: localhost/nvweaver:dev for amd64, and :dev-arm64 for arm64.
+# Usage: make-sboms.sh VERSION ARCH...   Local images are expected as release.yml loads them: localhost/nvweaver:dev for amd64, and :dev-arm64 for arm64,
+# and the same for :spdk and localhost/nvweaver-csi:dev.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -48,11 +49,13 @@ sbom_name() {
 	case "$1" in
 	"Go runtime and standard library") echo stdlib ;;
 	golang.org/x/crypto | SPDK | DPDK | ISA-L) echo "$1" ;;
+	google.golang.org/grpc | google.golang.org/protobuf | github.com/container-storage-interface/spec | \
+		google.golang.org/genproto/googleapis/rpc | golang.org/x/net | golang.org/x/sys | golang.org/x/text) echo "$1" ;;
 	*) echo "nothing says what '$1' from the notices is called in an SBOM: add it to $0" >&2; exit 1 ;;
 	esac
 }
 
-check() { # FILE KIND, where KIND is spdk for the SPDK image, or anything else
+check() { # FILE KIND, where KIND is spdk for the SPDK image, csi for the CSI driver's, or anything else
 	local row component where name version
 	while IFS= read -r row; do
 		component=$(cut -d'|' -f2 <<<"$row" | sed -E 's/^ *//; s/ *$//; s/^\[([^]]*)\].*/\1/')
@@ -60,6 +63,9 @@ check() { # FILE KIND, where KIND is spdk for the SPDK image, or anything else
 		[ "$component" = Component ] && continue
 		case "$component" in ---*) continue ;; esac
 		case "$where" in *"SPDK image"*) [ "$2" = spdk ] || continue ;; esac
+		# The driver's image has its own modules, and the Go runtime, and nothing else of the service's.
+		case "$where" in *"CSI driver image"*) [ "$2" = csi ] || continue ;; esac
+		case "$where" in *nvweaver-csi*) ;; *) [ "$2" != csi ] || continue ;; esac
 		name=$(sbom_name "$component")
 		version=$(jq -r --arg n "$name" '[.packages[] | select(.name == $n) | .versionInfo][0] // ""' "$1")
 		case "$version" in
@@ -91,6 +97,11 @@ for arch in "$@"; do
 	[ "$copied" = 0 ] || exit "$copied"
 	add_components "$OUT/nvweaver-$VERSION-spdk-image-$arch.spdx.json" "$WORK/components"
 	check "$OUT/nvweaver-$VERSION-spdk-image-$arch.spdx.json" spdk
+
+	podman save -q --format oci-archive -o "$WORK/image.tar" "localhost/nvweaver-csi:dev$suffix"
+	scan oci-archive:/w/image.tar
+	finish "$OUT/nvweaver-csi-$VERSION-image-$arch.spdx.json"
+	check "$OUT/nvweaver-csi-$VERSION-image-$arch.spdx.json" csi
 
 	mkdir -p "$WORK/$arch"
 	tar xzf "$OUT/nvweaver-$VERSION-linux-$arch.tar.gz" -C "$WORK/$arch"

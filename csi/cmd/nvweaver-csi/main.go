@@ -39,7 +39,12 @@ func main() {
 	lossTmo := flag.Int("ctrl-loss-tmo", -1, "seconds a node keeps reconnecting to nvweaver before giving its volumes up; -1 is for ever, as there's no failover")
 	reconnect := flag.Int("reconnect-delay", 2, "seconds a node waits between attempts to reconnect to nvweaver, which sets how long I/O stalls when a connection drops")
 	maxVols := flag.Int64("max-volumes-per-node", driver.MaxNamespaces, "how many volumes a node tells Kubernetes it can take")
+	showVersion := flag.Bool("version", false, "print the version, and stop")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("nvweaver-csi " + version)
+		return
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(*endpoint, *mode, *hostNQN, driver.Config{

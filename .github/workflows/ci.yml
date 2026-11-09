@@ -75,7 +75,7 @@ jobs:
           ./.github/make-sboms.sh "${INPUT_VERSION:-$(git describe --tags --always --dirty)}" amd64
           rm -f build/*.spdx.json
       - name: Save images
-        run: podman save -m -o images.tar localhost/nvweaver:dev localhost/nvweaver:spdk localhost/nvweaver:systemd-test
+        run: podman save -m -o images.tar localhost/nvweaver:dev localhost/nvweaver:spdk localhost/nvweaver:systemd-test localhost/nvweaver-csi:dev
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: images
@@ -133,6 +133,7 @@ jobs:
         run: |
           go vet ./...
           go test -race ./...
+          cd csi && go vet ./... && go test -race ./...
       - name: Check the kernel has the modules
         # Unlike on x86-64, this kernel's own package has them, and there's no modules-extra package.
         run: modinfo -F filename nvmet_tcp nvme_tcp
@@ -147,6 +148,7 @@ jobs:
         run: |
           sudo podman build -q -t nvweaver:dev --build-arg VERSION="$VERSION" -f Containerfile .
           sudo podman build -q -t nvweaver:spdk --build-arg VERSION="$VERSION" -f Containerfile.spdk .
+          sudo podman build -q -t nvweaver-csi:dev --build-arg VERSION="$VERSION" csi
       - name: Check they report this version
         # The publish job can't do this, as it runs on x86-64.
         env:
@@ -157,6 +159,9 @@ jobs:
             echo "$got"
             [ "$got" = "nvweaverd $VERSION" ]
           done
+          got=$(sudo podman run --rm --pull=never localhost/nvweaver-csi:dev --version)
+          echo "$got"
+          [ "$got" = "nvweaver-csi $VERSION" ]
       - name: Put Podman's volumes on XFS
         # The runner's ext4 has no reflink, so the pool, snapshot and clone tests would skip themselves.
         run: |
@@ -179,7 +184,8 @@ jobs:
         run: |
           sudo podman tag localhost/nvweaver:dev localhost/nvweaver:dev-arm64
           sudo podman tag localhost/nvweaver:spdk localhost/nvweaver:spdk-arm64
-          sudo podman save -m -o images-arm64.tar localhost/nvweaver:dev-arm64 localhost/nvweaver:spdk-arm64
+          sudo podman tag localhost/nvweaver-csi:dev localhost/nvweaver-csi:dev-arm64
+          sudo podman save -m -o images-arm64.tar localhost/nvweaver:dev-arm64 localhost/nvweaver:spdk-arm64 localhost/nvweaver-csi:dev-arm64
           sudo chown "$(id -u):$(id -g)" images-arm64.tar
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

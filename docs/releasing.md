@@ -17,15 +17,20 @@ including all end-to-end suites, and publishes only if they all pass:
 |---|---|
 | Kernel image, both architectures | `ghcr.io/xphyr/nvweaver:0.2.0`, and `:latest` |
 | SPDK image, both architectures | `ghcr.io/xphyr/nvweaver:0.2.0-spdk`, and `:latest-spdk` |
+| CSI driver image, both architectures, from v0.4.0 | `ghcr.io/xphyr/nvweaver-csi:0.4.0`, and `:latest` |
 | One architecture's image | The same tags, ending `-amd64` or `-arm64`, as with `:0.2.0-spdk-arm64`, but not for `latest` |
 | Binaries, unit, Quadlet, notices | `nvweaver-0.2.0-linux-amd64.tar.gz` and `-linux-arm64.tar.gz` on the GitHub release |
 | Command line utility alone | `nvweaver-cli-0.2.0-linux-amd64` and `-linux-arm64` on the GitHub release |
-| SBOMs, in SPDX JSON | On the GitHub release, one for each of those: `nvweaver-0.2.0-image-amd64.spdx.json`, `-spdk-image-`, `-linux-`, and `nvweaver-cli-0.2.0-linux-amd64.spdx.json` |
+| SBOMs, in SPDX JSON | On the GitHub release, one for each of those: `nvweaver-0.2.0-image-amd64.spdx.json`, `-spdk-image-`, `-linux-`, `nvweaver-cli-0.2.0-linux-amd64.spdx.json`, and `nvweaver-csi-0.4.0-image-amd64.spdx.json` |
 | Checksums | `SHA256SUMS` on the GitHub release, covering all of those files |
 | Provenance | Signed attestations for the multi-arch tags and all of those files |
 
 A tag with a suffix, like `v0.1.0-rc1`, makes a pre-release and leaves `latest` alone. Use one
 to try the pipeline.
+
+**Before a release, run `test/vm/k3s-csi.sh`** with the release's images, as CI doesn't: hosted runners are too small for the
+k3s lab. **The first release to publish a new image makes a new package,** as `nvweaver-csi` did in v0.4.0, and GitHub makes new
+packages private: make it public, under the package's settings, before people need to pull it.
 
 The images are the ones the suites just tested, not a rebuild, and each architecture's are built on that architecture. The
 publish job fails if an image doesn't report the tagged version or is the wrong architecture, if a tarball's binary is the wrong

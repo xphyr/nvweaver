@@ -3,10 +3,9 @@
 A Kubernetes CSI driver that provisions volumes from an nvweaver service's pools and connects nodes to them over NVMe/TCP,
 as an enterprise array's driver would. It talks to nvweaver only through its API.
 
-**Status:** new. It passes `csi-sanity`, the CSI conformance suite, and an end-to-end test in a k3s lab of three VMs, on both
+**Status:** new, from v0.4.0. It passes `csi-sanity`, the CSI conformance suite, and an end-to-end test in a k3s lab of three VMs, on both
 of nvweaver's targets (`test/vm/k3s-csi.sh`). On a compact OpenShift 4.22 cluster it passed the same checks as restricted pods,
-and ran and live-migrated a KubeVirt VM. It hasn't been tested at scale or on Arm yet, and its image isn't published, so it's
-built from source for now. See [What isn't done yet](#what-isnt-done-yet).
+and ran and live-migrated a KubeVirt VM. It hasn't been tested at scale or on Arm yet. See [What isn't done yet](#what-isnt-done-yet).
 
 ## What it does
 
@@ -97,7 +96,8 @@ Changing a node's host NQN once it has volumes cuts it off from them, as nvweave
 
 ## Installing
 
-Build the image, from the repository's root, and make it available to the nodes, by pushing it to a registry they can pull from:
+The image is published for amd64 and arm64 as `ghcr.io/xphyr/nvweaver-csi`, tagged with each release, such as `0.4.0`. To build
+your own instead, from the repository's root, push it to a registry the nodes can pull from:
 
 ```sh
 podman build -t registry.example/nvweaver-csi:dev csi
@@ -121,7 +121,7 @@ and dashes, that starts every volume, snapshot and subsystem name the driver mak
 Use the scoped token's name:
 
 ```sh
-sed -e 's#IMAGE#registry.example/nvweaver-csi:dev#' -e 's#CLUSTER#prod#' csi/deploy/nvweaver-csi.yaml | kubectl apply -f -
+sed -e 's#IMAGE#ghcr.io/xphyr/nvweaver-csi:0.4.0#' -e 's#CLUSTER#prod#' csi/deploy/nvweaver-csi.yaml | kubectl apply -f -
 kubectl -n nvweaver-csi rollout status deployment/nvweaver-csi-controller
 kubectl -n nvweaver-csi rollout status daemonset/nvweaver-csi-node
 ```
@@ -275,7 +275,6 @@ then disconnect each node with `nvme disconnect -n` and the same name.
 All tracked in `TODO.md`:
 
 - Tested on Arm, and at production-like scale
-- A published image, for amd64 and arm64
 - DH-HMAC-CHAP for nodes
 - Refusing to run when two nodes share a host NQN, rather than relying on the check above
 - Topology and capacity reporting

@@ -169,7 +169,7 @@ go run ./test/webui-demo     # then open http://127.0.0.1:8421/
 `csi/` is a CSI driver that provisions volumes from nvweaver's pools and connects nodes to them over NVMe/TCP: filesystems and
 raw block volumes, growing, snapshots and clones, and raw block volumes shared by several nodes. It's new: it passes
 `csi-sanity`, an end-to-end test in a k3s lab on both targets, and the same checks and a KubeVirt live migration on OpenShift,
-but hasn't been tested at scale, and its image isn't published yet.
+but hasn't been tested at scale. Its image is `ghcr.io/xphyr/nvweaver-csi`, for amd64 and arm64, from v0.4.0.
 
 **How to install it, and what it needs, are in [`csi/README.md`](csi/README.md).** Before installing, check that every node has
 its own NVMe host NQN: nodes made from one image can share one, and then nvweaver can't tell them apart. The guide says how.
