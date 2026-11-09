@@ -418,7 +418,8 @@ there, not as absolute numbers.
   | What changed | What's enough |
   |---|---|
   | `internal/webui`, or the demo | Unit tests and the browser test. `webui-real-e2e.sh` too if what the interface sends changed |
-  | `cmd/nvweaver`, `internal/client` | Unit tests and `e2e.sh` |
+  | `cmd/nvweaver`, `internal/client` | Unit tests and `e2e.sh`, and `k3s-csi.sh` for the client |
+  | `csi/` | Its unit tests and `k3s-csi.sh`, which `run-all.sh` doesn't run yet |
   | `internal/auth`, `internal/api` | Unit tests, both browser tests and `e2e.sh`, and `vm-e2e.sh` if storage handling changed |
   | `internal/storage`, `internal/target`, `internal/spdk` | Everything, as that's where data can be lost |
   | Docs only | Lint |
@@ -477,3 +478,37 @@ there, not as absolute numbers.
 - **Rejected: sending the requests without waiting for each answer.** It's in `TODO.md` for startup, and would shorten
   this, but not by enough at 5,000 subsystems to make an unbounded list safe to ask for.
 
+## 44. The CSI driver is a module of its own, with gRPC and the CSI spec vendored
+
+- **The problem:** a CSI driver speaks gRPC, with the CSI spec's protobuf types. Decision 40 keeps the service to the
+  standard library and bcrypt, and writing gRPC by hand isn't realistic.
+- **Chosen, by the user:** `csi/` is its own Go module, `nvweaver/csi`, with `google.golang.org/grpc`,
+  `google.golang.org/protobuf` and `github.com/container-storage-interface/spec` vendored in `csi/vendor`. The service
+  and the command line utility gain nothing. The driver uses `internal/client`, through `replace nvweaver => ../`, so it
+  can do nothing the API can't, as decision 35 meant. Go's `internal` rule goes by import path, which allows this.
+- **The client is vendored too,** as a copy in `csi/vendor/nvweaver/internal/client`. `make lint` fails if that copy
+  differs from `internal/client`, and says to run `go mod vendor` in `csi/`.
+- **Rejected: one module for both,** which would put gRPC in the service's module, and in its SBOM, for code it never
+  runs. **Rejected: a Go workspace,** whose shared vendor directory would do the same.
+
+## 45. How the CSI driver maps Kubernetes onto nvweaver
+
+- **Names are scoped by cluster:** `--cluster` starts every volume, snapshot and subsystem name, so that clusters can
+  share one nvweaver. Kubernetes's names, such as `pvc-<uuid>`, fit nvweaver's; any that don't are hashed, the same
+  way every time, so a retry finds the same volume. The volume's ID in Kubernetes is its nvweaver name.
+- **The node ID is the node's NVMe host NQN,** from `/etc/nvme/hostnqn`, as that's what nvweaver allows in. Nodes
+  that share one, as cloned images can, would get each other's volumes: detecting that is in `TODO.md`.
+- **Single-node volumes go into one subsystem per node,** named from a hash of the host NQN, as decision 24 planned.
+  Moving a pod to another node takes the namespace out of one and puts it in the other: a volume is only ever exported
+  once. The node keeps its connection to its subsystem when its last volume goes, ready for the next.
+- **Volumes several nodes use at once get a subsystem of their own,** which allows each node as it's published to, and
+  is deleted when the last leaves. A node disconnects from it when it unstages the volume, as the kernel would otherwise
+  keep trying to reconnect to a subsystem that's gone, for its ten minute loss timeout. Only raw block volumes may be
+  written from several nodes: a filesystem written that way would be corrupted, so a ReadWriteMany filesystem is refused. Anything sharing a raw device must use direct
+  I/O, as each node's page cache keeps what it read first.
+- **The driver's name is `nvweaver.xphyr.github.io`,** from the project's public GitHub namespace, which a CSI name
+  must look like a domain name to use.
+- **The node plugin connects with `nvme connect`,** finds the volume's device by its NGUID, or UUID, within its
+  subsystem, and makes ext4 or XFS on a blank volume. It never formats a device with something on it.
+- **Not yet:** listing volumes and snapshots, topology, capacity reporting, `csi-sanity`, DH-HMAC-CHAP for nodes, and
+  scale testing. They're in `TODO.md`.

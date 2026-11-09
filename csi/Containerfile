@@ -1,0 +1,24 @@
+# nvweaver's CSI driver: the controller and the node plugin are the same image.
+# Build from this directory, which has everything vendored, including the API client.
+FROM docker.io/library/golang:1.26-alpine AS build
+WORKDIR /src
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /nvweaver-csi ./cmd/nvweaver-csi \
+    && mkdir -p /licenses && cd vendor && find . -iname 'LICENSE*' -o -iname 'NOTICE*' -o -iname 'PATENTS*' | while read -r f; do \
+        mkdir -p "/licenses/$(dirname "$f")" && cp "$f" "/licenses/$f"; done
+
+FROM docker.io/library/alpine:3.22
+# What the node plugin runs: nvme-cli to connect, blkid, mount and blockdev from
+# util-linux, and the tools to make and grow ext4 and XFS. kmod loads nvme-tcp
+# from the host's /lib/modules if it isn't loaded already.
+RUN apk add --no-cache nvme-cli util-linux e2fsprogs e2fsprogs-extra xfsprogs xfsprogs-extra kmod
+COPY --from=build /nvweaver-csi /usr/local/bin/
+COPY --from=build /licenses /usr/share/licenses/nvweaver-csi/vendor/
+COPY --from=build /usr/local/go/LICENSE /usr/local/go/PATENTS /usr/share/licenses/nvweaver-csi/go/
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="nvweaver-csi" \
+      org.opencontainers.image.description="CSI driver for nvweaver, an NVMe over TCP target with a REST API" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="MIT"
+ENTRYPOINT ["/usr/local/bin/nvweaver-csi"]

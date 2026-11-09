@@ -1,0 +1,221 @@
+# nvweaver's CSI driver. Before applying this:
+#
+#   kubectl create namespace nvweaver-csi
+#   kubectl -n nvweaver-csi create secret generic nvweaver-api \
+#     --from-literal=url=https://storage.example:8420 --from-file=token=TOKEN_FILE --from-file=ca.crt=CA_FILE
+#
+# Snapshots also need the snapshot CRDs and snapshot-controller from
+# kubernetes-csi/external-snapshotter, which many clusters already have.
+#
+# IMAGE is replaced with the driver's image, and CLUSTER with a name for this cluster
+# that's unique among those sharing the nvweaver: see test/vm/k3s-csi.sh.
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: nvweaver.xphyr.github.io
+spec:
+  attachRequired: true          # ControllerPublish exports the volume to the node
+  podInfoOnMount: false
+  fsGroupPolicy: File
+  volumeLifecycleModes: [Persistent]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nvweaver-csi-controller
+  namespace: nvweaver-csi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nvweaver-csi-node
+  namespace: nvweaver-csi
+---
+# What the provisioner, attacher, resizer and snapshotter sidecars need, from their own RBAC files.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nvweaver-csi-controller
+rules:
+  - apiGroups: [""]
+    resources: [persistentvolumes]
+    verbs: [get, list, watch, create, delete, patch, update]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch, update]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims/status]
+    verbs: [patch, update]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [list, watch, create, update, patch]
+  - apiGroups: [""]
+    resources: [nodes, pods]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses, csinodes, volumeattributesclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [volumeattachments]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [storage.k8s.io]
+    resources: [volumeattachments/status]
+    verbs: [patch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshots]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotcontents]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotcontents/status]
+    verbs: [update, patch]
+  - apiGroups: [groupsnapshot.storage.k8s.io]
+    resources: [volumegroupsnapshotclasses, volumegroupsnapshotcontents]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nvweaver-csi-controller
+subjects:
+  - kind: ServiceAccount
+    name: nvweaver-csi-controller
+    namespace: nvweaver-csi
+roleRef:
+  kind: ClusterRole
+  name: nvweaver-csi-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+# Leader election, so that more than one replica can be run.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nvweaver-csi-controller
+  namespace: nvweaver-csi
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, watch, list, delete, update, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nvweaver-csi-controller
+  namespace: nvweaver-csi
+subjects:
+  - kind: ServiceAccount
+    name: nvweaver-csi-controller
+    namespace: nvweaver-csi
+roleRef:
+  kind: Role
+  name: nvweaver-csi-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nvweaver-csi-controller
+  namespace: nvweaver-csi
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: nvweaver-csi-controller}
+  template:
+    metadata:
+      labels: {app: nvweaver-csi-controller}
+    spec:
+      serviceAccountName: nvweaver-csi-controller
+      priorityClassName: system-cluster-critical
+      containers:
+        - name: driver
+          image: IMAGE
+          args: [--mode=controller, --endpoint=unix:///csi/csi.sock, --cluster=CLUSTER]
+          env:
+            - name: NVWEAVER_API_URL
+              valueFrom: {secretKeyRef: {name: nvweaver-api, key: url}}
+            - name: NVWEAVER_API_TOKEN_FILE
+              value: /etc/nvweaver/token
+            - name: NVWEAVER_CA
+              value: /etc/nvweaver/ca.crt
+          volumeMounts:
+            - {name: socket, mountPath: /csi}
+            - {name: api, mountPath: /etc/nvweaver, readOnly: true}
+        - name: provisioner
+          image: registry.k8s.io/sig-storage/csi-provisioner:v6.4.0
+          args: [--csi-address=/csi/csi.sock, --timeout=150s, --leader-election, --leader-election-namespace=nvweaver-csi, --extra-create-metadata]
+          volumeMounts: [{name: socket, mountPath: /csi}]
+        - name: attacher
+          image: registry.k8s.io/sig-storage/csi-attacher:v4.13.0
+          args: [--csi-address=/csi/csi.sock, --timeout=150s, --leader-election, --leader-election-namespace=nvweaver-csi]
+          volumeMounts: [{name: socket, mountPath: /csi}]
+        - name: resizer
+          image: registry.k8s.io/sig-storage/csi-resizer:v2.3.0
+          args: [--csi-address=/csi/csi.sock, --timeout=150s, --leader-election, --leader-election-namespace=nvweaver-csi]
+          volumeMounts: [{name: socket, mountPath: /csi}]
+        - name: snapshotter
+          image: registry.k8s.io/sig-storage/csi-snapshotter:v8.7.0
+          args: [--csi-address=/csi/csi.sock, --timeout=150s, --leader-election, --leader-election-namespace=nvweaver-csi]
+          volumeMounts: [{name: socket, mountPath: /csi}]
+        - name: liveness
+          image: registry.k8s.io/sig-storage/livenessprobe:v2.20.0
+          args: [--csi-address=/csi/csi.sock]
+          volumeMounts: [{name: socket, mountPath: /csi}]
+      volumes:
+        - {name: socket, emptyDir: {}}
+        - name: api
+          secret:
+            secretName: nvweaver-api
+            items: [{key: token, path: token}, {key: ca.crt, path: ca.crt}]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvweaver-csi-node
+  namespace: nvweaver-csi
+spec:
+  selector:
+    matchLabels: {app: nvweaver-csi-node}
+  template:
+    metadata:
+      labels: {app: nvweaver-csi-node}
+    spec:
+      serviceAccountName: nvweaver-csi-node
+      priorityClassName: system-node-critical
+      # The kernel makes NVMe/TCP connections, and the node's own network is the one that reaches nvweaver.
+      hostNetwork: true
+      tolerations: [{operator: Exists}]
+      containers:
+        - name: driver
+          image: IMAGE
+          args: [--mode=node, --endpoint=unix:///csi/csi.sock, --cluster=CLUSTER]
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - {name: plugin, mountPath: /csi}
+            - {name: kubelet, mountPath: /var/lib/kubelet, mountPropagation: Bidirectional}
+            - {name: dev, mountPath: /dev}
+            - {name: sys, mountPath: /sys}
+            - {name: nvme, mountPath: /etc/nvme, readOnly: true}
+            - {name: modules, mountPath: /lib/modules, readOnly: true}
+        - name: registrar
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.18.0
+          args: [--csi-address=/csi/csi.sock, --kubelet-registration-path=/var/lib/kubelet/plugins/nvweaver.xphyr.github.io/csi.sock]
+          volumeMounts:
+            - {name: plugin, mountPath: /csi}
+            - {name: registration, mountPath: /registration}
+        - name: liveness
+          image: registry.k8s.io/sig-storage/livenessprobe:v2.20.0
+          args: [--csi-address=/csi/csi.sock, --http-endpoint=:9899]
+          volumeMounts: [{name: plugin, mountPath: /csi}]
+      volumes:
+        - {name: plugin, hostPath: {path: /var/lib/kubelet/plugins/nvweaver.xphyr.github.io, type: DirectoryOrCreate}}
+        - {name: registration, hostPath: {path: /var/lib/kubelet/plugins_registry, type: Directory}}
+        - {name: kubelet, hostPath: {path: /var/lib/kubelet, type: Directory}}
+        - {name: dev, hostPath: {path: /dev, type: Directory}}
+        - {name: sys, hostPath: {path: /sys, type: Directory}}
+        - {name: nvme, hostPath: {path: /etc/nvme, type: Directory}}
+        - {name: modules, hostPath: {path: /lib/modules, type: Directory}}

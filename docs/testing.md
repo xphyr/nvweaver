@@ -10,6 +10,8 @@
 | `test/systemd-e2e.sh` | Same | `make install` in a disposable container, the unit, reboot, crash, retries, the Quadlet |
 | `test/vm/vm-e2e.sh` | QEMU with KVM, no root | Separate initiator, emulated NVMe, SATA and virtio disks, passthrough I/O, real install and reboot, Quadlet: see below |
 | `test/bench.sh` | Same, and `null_blk` | NVMe/TCP overhead, control plane and SPDK CPU use and memory |
+| `test/vm/k3s-lab.sh check` | QEMU with KVM, `python3`, no root | The Kubernetes lab for the CSI driver: pods on every node, and NVMe/TCP from every node to nvweaver. See below |
+| `test/vm/k3s-csi.sh deploy`, `test` | The k3s lab | The CSI driver in Kubernetes, end to end: see "The CSI driver" below |
 
 `test/e2e.sh` covers CRUD, discovery, access control, data integrity to each backing store,
 block sizes, live resize, IPv4 and IPv6, wildcard addresses, overlayfs, multi-target,
@@ -19,6 +21,18 @@ multi-host, multipath, DH-HMAC-CHAP, restarts and teardown.
 enforcing, linked to each other only. On both backends it exports each disk type by its
 `/dev/disk/by-id` path to the other VM, and checks the data on the target's disk. Then it installs
 for real as root, and reboots the VM for the native unit and for the Quadlet.
+
+`test/vm/k3s-lab.sh` is the Kubernetes lab for the CSI driver, from the same base image: a k3s
+server and two agents, and nvweaver on a fourth VM with an emulated NVMe disk and a virtio disk
+for LVM. QEMU's stream links join only two VMs, and multicast would need a loopback that allows
+it, so they share a link through `k3s-switch.py`, a small Ethernet switch on a Unix socket. k3s is
+a pinned release, checked against its checksum, and installed only in the VMs, with SELinux
+enforcing. `check` proves the lab works: a pod on each node, the system pods, a different
+`hostnqn` on each node, and each node connecting to nvweaver over NVMe/TCP and seeing the right
+size, with nothing left on either side. With the switch killed, it fails both pod checks on the
+agents and all three connections, so it does test the link. The lab uses about 10 GB: 3 GB for
+the server and nvweaver VMs, 2 GB per agent, 2 vCPUs each. It runs beside `lab.sh`'s VMs only if
+there's memory for both.
 
 `internal/api/openapi_test.go` compares `api/openapi.yaml` with the code, in both directions: every
 route, every response field, and every request field the spec lists. It doesn't check types or status
@@ -490,6 +504,29 @@ VMs: unit tests and lint, 243 in the browser, 311 on the kernel target, 327 on S
   walk on a real device skips there.
 - **`webui-e2e.sh` needs its tree on XFS or btrfs,** as the demo makes a reflink pool. Run from a tmpfs, it stops with "the
   demo didn't start".
+
+### The CSI driver
+
+`test/vm/k3s-csi.sh` deploys nvweaver on the k3s lab's fourth VM, serving its API over TLS with a token on the lab link, on an
+LVM thin pool, and the driver with the upstream sidecars and snapshot controller. Its `test` passed all 25 checks, against
+the kernel target: a filesystem volume written on one node and read on another, its move to that node's subsystem, growing
+the volume and then its filesystem, a snapshot and a clone with the snapshot's data, a raw block volume written on one node
+and read on another while both had it, and nothing left after everything was deleted, in nvweaver or on the nodes.
+
+- **The first runs failed on the tests, not the driver,** and each failure was traced before anything changed. `k3s-lab.sh
+  kubectl` passed its arguments through SSH, which split JSON and `sh -c` scripts on the server VM: a `kubectl exec` ran
+  most of its script on the server, as an ordinary user, which looked like the pod being refused its device. It quotes them now.
+- **A raw block volume shared by two nodes needs direct I/O.** Read through the page cache, the second node saw zeros that
+  udev had read when the device appeared, though the first node's write had reached the volume. Read with `iflag=direct`,
+  it saw the write. That's true of any shared block device, so it's in the README.
+- **The test found one real leftover:** both agents kept a device from the shared volume after it was deleted, as nothing
+  disconnected them from its subsystem, and the kernel was retrying it. A node now disconnects from a shared volume's
+  subsystem when it unstages it. The unit test failed first; then the lab passed all 25, and `remove` left no subsystem,
+  device or mount on any node.
+- **A claim's size changes only after its filesystem grows,** when a pod next mounts it. The test checks the volume, then the
+  filesystem, then the claim, in that order.
+- **Not tested yet:** SPDK as the target, `csi-sanity`, more than three nodes or a handful of volumes, OpenShift, KubeVirt
+  live migration, Arm, and a node rebooting or losing its connection while a volume is in use.
 
 ## Not tested
 

@@ -4,6 +4,13 @@ The major differences between versions. For every change, see the commit history
 
 ## Unreleased
 
+### Added
+
+- **A Kubernetes CSI driver,** in `csi/`: dynamic provisioning of filesystem and raw block volumes from nvweaver's pools, over NVMe/TCP,
+  with growing, snapshots and clones, and raw block volumes shared by several nodes. It's new, tested so far in a k3s lab of three VMs,
+  and its image isn't published yet: build it with `make images`. See "Kubernetes CSI driver" in the README.
+- **A Kubernetes lab for testing it,** `test/vm/k3s-lab.sh`: k3s on three VMs and nvweaver on a fourth, with no root.
+
 ### Changed
 
 - **On SPDK, `GET /v1/connections` needs `?subsystem=`,** and `nvweaver connection list` needs `--subsystem`. Listing every connection
