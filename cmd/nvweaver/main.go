@@ -572,7 +572,7 @@ func portRows(w io.Writer, ports []client.Port) {
 
 func (a *app) connectionList(args []string) error {
 	fs := a.flags("connection list")
-	subsystem := fs.String("subsystem", "", "only what could be using this subsystem")
+	subsystem := fs.String("subsystem", "", "only what could be using this subsystem; required on SPDK")
 	if _, err := a.parse(fs, args); err != nil {
 		return err
 	}

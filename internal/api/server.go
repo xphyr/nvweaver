@@ -314,6 +314,10 @@ func pathPort(r *http.Request) (uint16, error) {
 
 func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) error {
 	nqn := r.URL.Query().Get("subsystem")
+	if nqn == "" && !s.m.backend.Capabilities().ListsAllConnections {
+		// SPDK asks each subsystem in turn, on the connection that changes also use. See decision 43.
+		return target.Invalid("the %s target lists connections one subsystem at a time: pass ?subsystem=NQN", s.m.backend.Name())
+	}
 	return s.m.view(func(st *target.State) error {
 		if nqn != "" {
 			if _, ok := st.Subsystems[nqn]; !ok {
@@ -926,11 +930,18 @@ func (s *Server) createNamespace(w http.ResponseWriter, r *http.Request) error {
 		sub.Namespaces[ns.NSID] = ns
 		return nil
 	})
-	if err != nil && ns.ManagedFile {
-		os.Remove(ns.DevicePath)
-	}
 	if intent != "" {
-		s.m.endIntent(intent)
+		// A file that can't be removed keeps its intent, so that the next start tries again.
+		left := errors.Is(err, errFileLeft)
+		if err != nil && ns.ManagedFile {
+			if rerr := removeManagedFile(ns.DevicePath); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+				err = fmt.Errorf("%w; and %s couldn't be removed, which will be tried again at the next start: %v", err, ns.DevicePath, rerr)
+				left = true
+			}
+		}
+		if !left {
+			s.m.endIntent(intent)
+		}
 	}
 	if err != nil {
 		return err

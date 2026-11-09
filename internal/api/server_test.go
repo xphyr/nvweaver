@@ -642,3 +642,105 @@ func TestConnections(t *testing.T) {
 	e.do(http.MethodGet, "/v1/connections", nil, http.StatusOK)
 	e.do(http.MethodGet, "/v1/connections?subsystem=nqn.2026-11.net.example:none", nil, http.StatusNotFound)
 }
+
+// A failed create whose file can't be removed keeps its intent, so that the next start removes it.
+func TestAFileThatCantBeRemovedKeepsItsIntent(t *testing.T) {
+	ns := subNQN + "/namespaces"
+	failRemove := func(t *testing.T) {
+		real := removeManagedFile
+		removeManagedFile = func(string) error { return errors.New("injected") }
+		t.Cleanup(func() { removeManagedFile = real })
+	}
+	t.Run("the save fails", func(t *testing.T) {
+		e := newEnv(t)
+		e.do("POST", "/v1/subsystems", obj{"nqn": subNQN}, 201)
+		failRemove(t)
+		restore := e.breakSaving()
+		body := e.do("POST", "/v1/subsystems/"+ns, obj{"nsid": 1, "file": obj{"name": "vol", "size_bytes": 8192}}, 500)
+		restore()
+		if !strings.Contains(fmt.Sprint(body["error"]), "tried again") {
+			t.Errorf("the error doesn't say the file was left: %s", body)
+		}
+		if n := e.intents(); n != 1 {
+			t.Fatalf("%d intents, want the create's", n)
+		}
+		removeManagedFile = os.Remove
+		e.start()
+		if _, err := os.Stat(filepath.Join(e.dir, "volumes", "vol")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the next start left the file: %v", err)
+		}
+		if n := e.intents(); n != 0 {
+			t.Errorf("%d intents after the next start", n)
+		}
+	})
+	t.Run("sizing the file fails", func(t *testing.T) {
+		e := newEnv(t)
+		e.do("POST", "/v1/subsystems", obj{"nqn": subNQN}, 201)
+		failRemove(t)
+		real := sizeFile
+		sizeFile = func(*os.File, int64) error { return errors.New("injected") }
+		t.Cleanup(func() { sizeFile = real })
+		e.do("POST", "/v1/subsystems/"+ns, obj{"nsid": 1, "file": obj{"name": "vol", "size_bytes": 8192}}, 500)
+		if n := e.intents(); n != 1 {
+			t.Errorf("%d intents, want the create's", n)
+		}
+	})
+	t.Run("the file is removed", func(t *testing.T) {
+		e := newEnv(t)
+		e.do("POST", "/v1/subsystems", obj{"nqn": subNQN}, 201)
+		restore := e.breakSaving()
+		e.do("POST", "/v1/subsystems/"+ns, obj{"nsid": 1, "file": obj{"name": "vol", "size_bytes": 8192}}, 500)
+		restore()
+		if n := e.intents(); n != 0 {
+			t.Errorf("%d intents, with the file gone", n)
+		}
+	})
+}
+
+// oneSubsystemAtATime is the kernel target, but saying what SPDK says: that it
+// can't list every connection at once. It counts the lists it's asked for.
+type oneSubsystemAtATime struct {
+	*target.Target
+	asked int
+}
+
+func (b *oneSubsystemAtATime) Capabilities() target.Capabilities {
+	c := b.Target.Capabilities()
+	c.ListsAllConnections = false
+	return c
+}
+
+func (b *oneSubsystemAtATime) Connections(st *target.State, nqn string) ([]target.Connection, error) {
+	b.asked++
+	return b.Target.Connections(st, nqn)
+}
+
+func TestListingEveryConnectionNeedsATargetThatCan(t *testing.T) {
+	e := newEnv(t)
+	e.do(http.MethodGet, "/v1/connections", nil, http.StatusOK)
+
+	b := &oneSubsystemAtATime{Target: &target.Target{FS: e.fs, Root: "/nvmet"}}
+	m, err := NewManager(b, e.dir, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.newDriver = e.pools.driver
+	m.Recover()
+	e.m, e.http = m, fixtureServer(m).Handler()
+	e.do("POST", "/v1/subsystems", obj{"nqn": subNQN}, 201)
+	b.asked = 0
+	body := e.do(http.MethodGet, "/v1/connections", nil, http.StatusUnprocessableEntity)
+	if !strings.Contains(fmt.Sprint(body["error"]), "subsystem=") {
+		t.Errorf("the refusal doesn't say what to pass: %v", body["error"])
+	}
+	if b.asked != 0 {
+		t.Errorf("the target was asked for every connection, %d times", b.asked)
+	}
+	e.do(http.MethodGet, "/v1/connections?subsystem="+subNQN, nil, http.StatusOK)
+	if b.asked != 1 {
+		t.Errorf("one subsystem: asked %d times", b.asked)
+	}
+	if !(&target.Target{}).Capabilities().ListsAllConnections {
+		t.Error("the kernel target says it can't list every connection")
+	}
+}

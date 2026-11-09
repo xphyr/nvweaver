@@ -346,7 +346,10 @@ func controllerNamespaces(ctrl string) ([]string, error) {
 // updated, if any, and skipVolume the volume being mapped, whose own entry and
 // mappings don't count.
 func checkUnshared(s *target.State, path, skipNQN string, skipNSID uint32, skipVolume string) error {
-	want := newStore(path)
+	want, err := newStore(path)
+	if err != nil {
+		return err
+	}
 	for _, vol := range s.Volumes {
 		if vol.Name != skipVolume && want.same(vol.DevicePath) {
 			return target.NewConflict("%s belongs to volume %s: map the volume instead", path, vol.Name)
@@ -381,14 +384,34 @@ func checkUnshared(s *target.State, path, skipNQN string, skipNSID uint32, skipV
 
 // store is a backing path, and what it reaches if it can be found.
 type store struct {
-	path string
-	id   storeID
-	ok   bool
+	path  string
+	id    storeID
+	ok    bool
+	under []storeID // the devices a block device is built on, such as a logical volume's partition
 }
 
-func newStore(path string) store {
+// newStore finds what a path reaches, and for a block device, everything it's
+// built on. Opening with O_EXCL, in checkBacking, already refuses a device that
+// something is built on, but not one built on a device already exported, as
+// the target opens what it exports without claiming it. Only the new path is
+// walked, so that each request reads sysfs for one device, not for every
+// volume. A block device that sysfs can't describe is refused: the check would
+// otherwise pass a disk and its partition.
+func newStore(path string) (store, error) {
 	id, ok := identify(path)
-	return store{path: resolve(path), id: id, ok: ok}
+	s := store{path: resolve(path), id: id, ok: ok}
+	if !ok || !id.block {
+		return s, nil
+	}
+	if id.sysErr != nil {
+		return s, id.sysErr
+	}
+	under, err := underneath(id.rdev)
+	if err != nil {
+		return s, err
+	}
+	s.under = under
+	return s, nil
 }
 
 // same reports whether path reaches this store, or overlaps it.
@@ -400,7 +423,18 @@ func (s store) same(path string) bool {
 		return false
 	}
 	id, ok := identify(path)
-	return ok && s.id.overlaps(id)
+	if !ok {
+		return false
+	}
+	if s.id.overlaps(id) {
+		return true
+	}
+	for _, u := range s.under {
+		if u.overlaps(id) {
+			return true
+		}
+	}
+	return false
 }
 
 // storeID identifies a backing store, whatever path reaches it: a file by its
@@ -411,9 +445,11 @@ type storeID struct {
 	dev, ino uint64
 	rdev     string
 	whole    string
+	sysErr   error // sysfs couldn't say whether a block device is a partition
 }
 
-// overlaps reports whether writing to one could change the other.
+// overlaps reports whether writing to one could change the other. Two
+// partitions of one disk don't.
 func (a storeID) overlaps(b storeID) bool {
 	if a.block != b.block {
 		return false
@@ -441,15 +477,75 @@ var identify = func(path string) (storeID, bool) {
 	if info.Mode()&os.ModeDevice == 0 || info.Mode()&os.ModeCharDevice != 0 {
 		return storeID{}, false
 	}
-	id := storeID{block: true, rdev: majorMinor(uint64(st.Rdev))}
-	// A partition's directory in sysfs is inside its disk's, which has the disk's number.
-	sys := "/sys/dev/block/" + id.rdev
+	return blockID(majorMinor(uint64(st.Rdev))), true
+}
+
+// blockID describes a block device from sysfs, by its number.
+func blockID(rdev string) storeID {
+	id := storeID{block: true, rdev: rdev}
+	// Not filepath.Join, which would remove the "..": the kernel follows the symlink first.
+	sys := filepath.Join(sysRoot, "dev/block", rdev)
+	if _, err := os.Stat(sys); err != nil {
+		id.sysErr = target.Invalid("cannot read %s, which is needed to tell a disk from its partitions: %v", sys, err)
+		return id
+	}
 	if _, err := os.Stat(sys + "/partition"); err == nil {
-		if b, err := os.ReadFile(sys + "/../dev"); err == nil {
-			id.whole = strings.TrimSpace(string(b))
+		b, err := os.ReadFile(sys + "/../dev")
+		if err != nil {
+			id.sysErr = target.Invalid("%s is a partition, but its disk can't be read from sysfs, which is needed to tell a disk from its partitions: %v", rdev, err)
+			return id
+		}
+		id.whole = strings.TrimSpace(string(b))
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		id.sysErr = target.Invalid("cannot read %s/partition, which is needed to tell a disk from its partitions: %v", sys, err)
+	}
+	return id
+}
+
+// maxUnder bounds the walk down a stack of devices. Real stacks, such as a thin
+// volume on a pool on an encrypted partition, are a handful deep.
+const maxUnder = 32
+
+// underneath walks sysfs from a block device down through what it's built on,
+// its "slaves", to the disks at the bottom, each with the disk it's a partition
+// of. A stack too deep to walk is refused rather than passed unchecked.
+func underneath(rdev string) ([]storeID, error) {
+	seen := map[string]bool{rdev: true}
+	queue := []string{rdev}
+	var out []storeID
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		dir := filepath.Join(sysRoot, "dev/block", cur, "slaves")
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // Partitions have no slaves directory.
+		}
+		if err != nil {
+			return nil, target.Invalid("cannot read %s, which is needed to find what a device is built on: %v", dir, err)
+		}
+		for _, e := range entries {
+			b, err := os.ReadFile(filepath.Join(dir, e.Name(), "dev"))
+			if err != nil {
+				return nil, target.Invalid("cannot read the number of %s, under %s: %v", e.Name(), rdev, err)
+			}
+			num := strings.TrimSpace(string(b))
+			if seen[num] {
+				continue
+			}
+			if len(seen) > maxUnder {
+				return nil, target.Invalid("more than %d devices are under %s, too many to check that none of them is exported", maxUnder, rdev)
+			}
+			seen[num] = true
+			id := blockID(num)
+			if id.sysErr != nil {
+				return nil, id.sysErr
+			}
+			out = append(out, id)
+			queue = append(queue, num)
 		}
 	}
-	return id, true
+	return out, nil
 }
 
 // majorMinor splits a Linux device number, as the kernel's new_encode_dev does.
@@ -485,12 +581,23 @@ func (m *Manager) createVolume(name string, size int64) (string, error) {
 		return "", err
 	}
 	defer f.Close()
-	if err := f.Truncate(size); err != nil {
-		os.Remove(path)
+	if err := sizeFile(f, size); err != nil {
+		if rerr := removeManagedFile(path); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+			return "", fmt.Errorf("%w: %v, and %s couldn't be removed, which will be tried again at the next start: %v", errFileLeft, err, path, rerr)
+		}
 		return "", err
 	}
 	return path, nil
 }
+
+// errFileLeft is a failed create that left its file, which recovery removes.
+var errFileLeft = errors.New("the new file was left")
+
+// removeManagedFile and sizeFile are variables so that tests can make them fail.
+var (
+	removeManagedFile = os.Remove
+	sizeFile          = (*os.File).Truncate
+)
 
 // checkNewFile refuses a managed file's name that's invalid or already taken, before anything is recorded about it.
 func (m *Manager) checkNewFile(name string) error {

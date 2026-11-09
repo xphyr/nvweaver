@@ -19,6 +19,8 @@ type Capabilities struct {
 	WildcardListen bool `json:"wildcard_listen"`
 	// IdentifiesConnectedHosts can say which host is connected to which subsystem.
 	IdentifiesConnectedHosts bool `json:"identifies_connected_hosts"`
+	// ListsAllConnections can list every connection at once, rather than one subsystem's. See decision 43.
+	ListsAllConnections bool `json:"lists_all_connections"`
 	// Transports lists the NVMe transports a port can use.
 	Transports []string `json:"transports"`
 }
@@ -68,6 +70,7 @@ func (t *Target) Capabilities() Capabilities {
 		BufferedIO:          true,
 		PerHostDHCHAPParams: true,
 		WildcardListen:      true,
+		ListsAllConnections: true,
 		Transports:          []string{TransportTCP},
 	}
 }

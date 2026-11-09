@@ -138,7 +138,7 @@ await page.waitForSelector("dl.facts");
 const vol7 = await page.textContent("main");
 check("a volume with no snapshots says so", vol7.includes("No snapshots of this volume"));
 check("an empty thin volume shows as nearly empty", /of 8 GiB \((0|under 1)%\)/.test(vol7), vol7.slice(0, 160));
-// A volume and snapshot whose storage has lost, which the demo can't make, so the answers are changed on the way.
+// A volume and snapshot whose storage is gone, which the demo can't make, so the answers are changed on the way.
 const lost = await newPage();
 const markMissing = (body) => {
   for (const x of body.items || [body]) if (["vol-0007", "vol-0002-before-upgrade"].includes(x.name)) x.state = "missing";
@@ -153,6 +153,19 @@ await lost.waitForSelector("dl.facts");
 check("a volume whose storage is missing says so", (await lost.textContent("dl.facts")).includes("Storage missing"));
 check("and where it was", (await lost.textContent("#missing-hint")).includes("Its device can't be found"));
 await lost.screenshot({ path: `${shots}/volume-missing.png`, fullPage: true });
+
+// The key dialog on SPDK, which the demo isn't, so /v1/system is changed on the way.
+const onSpdk = await newPage();
+await onSpdk.route(/\/v1\/system$/, async (r) => {
+  const res = await r.fetch();
+  await r.fulfill({ response: res, json: { ...(await res.json()), backend: "spdk" } });
+});
+await visit(onSpdk, "#/hosts");
+await onSpdk.locator("main tbody tr").first().locator("button", { hasText: "Set keys" }).click();
+await onSpdk.waitForSelector("dialog[open]");
+const spdkIntro = await onSpdk.textContent("dialog[open] p");
+check("on SPDK, the key dialog says only this host is dropped", spdkIntro.includes("Only this host is dropped") && !spdkIntro.includes("other hosts"), spdkIntro);
+await onSpdk.close();
 await visit(lost, "#/volumes");
 await lost.waitForSelector("main tbody tr");
 check("as does the list of volumes, for that volume only", (await lost.locator("main tbody tr", { hasText: "Storage missing" }).count()) === 1);
@@ -639,6 +652,9 @@ await closed();
 check("a host can be added, with no keys", (await api(hostPath)).body.has_dhchap_key === false);
 await ed.locator("main tbody tr", { hasText: "ui-host" }).locator("button", { hasText: "Set keys" }).click();
 await ed.waitForSelector("dialog[open]");
+const keyIntro = await ed.textContent("dialog[open] p");
+check("the key dialog says to give the host its key first", keyIntro.includes("Put the new key on the host first") && keyIntro.includes("drops the sessions"), keyIntro);
+check("and, on the kernel target, that other hosts pause", keyIntro.includes("other hosts on each subsystem") && !keyIntro.includes("Only this host"), keyIntro);
 await submit();
 check("saving no key says so", (await alertInDialog()).includes("Enter a key"));
 await ed.fill("#field-key", secret);

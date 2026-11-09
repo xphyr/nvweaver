@@ -91,8 +91,17 @@ there, not as absolute numbers.
 - **"The same store" means what a path reaches, not its name:** a file by filesystem and inode, so a hard link or a bind
   mount counts, and a block device by its number, where a disk and any of its partitions overlap. Two partitions of one
   disk don't. This applies to mapping a volume too. The `O_EXCL` open stays, for what's mounted or held at that moment,
-  as it's released before `nvmet` opens the device. Not covered: a device-mapper device over a disk, which `O_EXCL`
-  refuses only while the mapping is active.
+  as it's released before `nvmet` opens the device.
+- **Stacked devices, from the second review:** `O_EXCL` already refuses a disk or partition that device-mapper holds,
+  and a disk one of whose partitions is held. What it can't see is the other order: a logical volume exported over a disk
+  that's exported already, as the target opens what it exports without claiming it. So a new block device's "slaves" in
+  sysfs are walked down to the disks, and each, with the disk it's a partition of, is compared with what's exported. Only
+  the new path is walked, so that a request reads sysfs for one device rather than for each of 5,000 volumes. Two thin
+  volumes in one pool are built on the same devices and don't overlap, nor does a volume on one partition with another
+  partition of the disk. A stack more than 32 devices deep is refused rather than passed unchecked.
+- **A block device that sysfs can't describe is refused,** with an error saying sysfs is needed to tell a disk from its
+  partitions, as passthrough already is. Skipping the check would pass a disk and its partition. A namespace already
+  exported that sysfs can't describe doesn't block other exports.
 - **Passthrough gets the same care, for every namespace of the controller,** found through sysfs. With native multipath,
   as on fabrics controllers and shared namespaces, the controller's directory lists only hidden path devices, such as
   `nvme2c2n1`, which have no device node. The namespace, `nvme2n1`, is in the NVMe subsystem's directory. Path devices
@@ -451,3 +460,20 @@ there, not as absolute numbers.
 - **Changing `device_path` on such a namespace is refused, decided by the user.** The review proposed deleting the old
   file once the change was saved. That destroys data on a `PATCH`, with no warning, and an orphan is the alternative.
   Deleting the namespace, with `delete_file=true` if wanted, says what happens to the file.
+
+## 43. Listing every connection is refused on a target that would ask each subsystem in turn
+
+- **The problem:** from the second review. `GET /v1/connections` with no `subsystem` costs one `nvmf_subsystem_get_qpairs`
+  per subsystem on SPDK, about 8 ms each, on the one RPC connection that changes also wait on: about 40 s at the 5,000
+  subsystems of decision 24. The web interface only ever asks about one, but the command line and other clients didn't.
+- **Chosen:** it's refused with `422` and an error saying to pass `subsystem`, before the target is asked, on a target
+  whose `lists_all_connections` under `capabilities` is false, which is SPDK. The kernel's target reads every
+  connection from `/proc/net/tcp` at once, so it still lists them all. `nvweaver connection list` with no `--subsystem`
+  passes on the server's error, rather than checking `/v1/system` first, so that the rule is only in one place.
+- **A capability of its own, not `identifies_connected_hosts`,** which the review proposed. That one says whether hosts
+  can be named, and would turn true on the kernel's target if debugfs is ever read, as `TODO.md` has it, which would
+  then refuse a list that costs nothing there.
+- **Decision 41 stands:** nobody listed still means nobody connected, for one subsystem and for the kernel's full list.
+- **Rejected: sending the requests without waiting for each answer.** It's in `TODO.md` for startup, and would shorten
+  this, but not by enough at 5,000 subsystems to make an unbounded list safe to ask for.
+
