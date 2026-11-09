@@ -562,6 +562,18 @@ and read on another while both had it, and nothing left after everything was del
   until it reconnected, 10 s later, its reconnect delay. The VM never saw an error, as nodes retry for ever. A shorter
   reconnect delay would shorten this, and hasn't been measured. Afterwards, nothing was left in nvweaver but the three nodes'
   subsystems, which are kept, and no node had a device left.
+- **On a dedicated storage network, from a multi-homed nvweaver.** The nvweaver VM then had two interfaces: the routed one at MTU
+  1500, carrying the API and port 1, and a non-routed storage VLAN at MTU 9000, carrying port 2, which only the OpenShift nodes
+  could reach, each through an extra interface at 9000. With the StorageClass on port 2, all 13 checks passed again, the VM
+  live-migrated in 3 s, and every NVMe connection ran between the two VLAN addresses, with a 9000-byte path MTU and 8948-byte
+  segments. 64 MiB of random data written with direct I/O on one node read back identically on another. Moving the cluster to
+  port 2 meant recreating the StorageClass, which reset CDI's StorageProfile, and clearing the nodes' old subsystems, as a node
+  keeps using a live connection: both are in `csi/README.md`.
+- **nvweaver installed as a service, and its host rebooted.** In a container started with `podman run --restart=always`, nvweaver
+  didn't come back when its VM rebooted: Podman doesn't restart those at boot without its own restart service. Installed from
+  `make package` with the systemd unit, it did: rebooted with a KubeVirt VM running on one of its volumes, it was back in 22 s
+  with both ports and every volume, the node reconnected over the storage VLAN on its second attempt, and the VM stayed Running,
+  never paused.
 - **Found on the way, outside nvweaver:** the nvweaver VM's interface was set to an MTU of 9000 on a network that passes only
   1500. NVMe/TCP to the cluster worked, as TCP settled on the nodes' 1500, but pulling an image from the lab registry stalled,
   as its storage host also used 9000.

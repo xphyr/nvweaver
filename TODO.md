@@ -201,6 +201,9 @@ are in `CLAUDE.review.md`, which isn't in the repository.
         stalls the destination for about 10 s: see decision 30. Measured on OpenShift: the new node's I/O queued for 10 s, 10 s after
         the migration, with no error. A shorter reconnect delay may help, and hasn't been measured
   - [ ] Decide the node's reconnect delay (`nvme connect --reconnect-delay`), which sets how long that stall lasts, and measure it
+  - [ ] Moving a cluster to another port, such as a storage network: today its StorageClass is recreated and each node's subsystem
+        cleared by hand, as nodes keep their live connection. The driver could offer each node's subsystem on the new port, and
+        have nodes connect to it, as a second path
   - [x] Scope names per cluster, so that several clusters can share one target: `--cluster`, decision 45
   - [ ] Detect nodes sharing a `hostnqn`, common on cloned images, which breaks access
         control

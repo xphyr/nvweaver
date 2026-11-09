@@ -150,6 +150,8 @@ oc apply -f csi/deploy/openshift/storageprofile.yaml
 oc get storageprofile nvweaver -o yaml      # status: should show the claim property sets and csi-clone
 ```
 
+Apply it again whenever the StorageClass is recreated: CDI resets it.
+
 `oc apply` warns that the StorageProfile has no `last-applied-configuration`, as CDI made it: that's expected.
 
 - **Disks are raw block, ReadWriteMany by preference,** as live migration needs a disk that both nodes can use at once. The
@@ -170,6 +172,27 @@ its reconnect delay before carrying on. The VM sees no error. A DataImportCron h
 | `port` | The ID of the nvweaver port to offer volumes on. 1 by default, or what the driver's `--port` says. |
 
 Filesystems are ext4 unless the StorageClass's `csi.storage.k8s.io/fstype` says `xfs`.
+
+### A dedicated storage network
+
+nvweaver can serve several networks at once, with one port on each address, and each StorageClass chooses its port. So a
+cluster with a dedicated storage network, often with jumbo frames, can use it, while other clients use the routed network, and
+nvweaver's API stays on the routed network either way:
+
+```sh
+nvweaver port create --id 2 --address 172.16.20.60      # nvweaver's address on the storage network
+```
+
+Then set `port: "2"` in the StorageClass. Nodes connect from whichever of their interfaces reaches that address, so each needs an
+address on that network. Jumbo frames are optional: TCP settles on the smaller MTU of the two ends. Every device on the path has to
+pass them, though: if the nodes and nvweaver use 9000 but a switch passes only 1500, connections stall. Check from a node with
+`ping -M do -s 8972 <nvweaver's address>`.
+
+**Moving a cluster from one port to another:** a StorageClass's parameters can't be changed, so delete and recreate it, with no
+volumes using it. Then remove each node's connection to its old subsystem, `nvme disconnect -n <prefix>:<cluster>:node-…` on the
+node, and delete those subsystems in nvweaver, as nodes keep using a connection that's still up rather than adding a new path. The
+driver makes them again, on the new port, for each node's next volume. On OpenShift, apply the StorageProfile again too, as
+recreating the class resets it. A way to do this without the manual steps is in `TODO.md`.
 
 ### Driver flags
 
