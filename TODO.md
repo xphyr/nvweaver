@@ -201,17 +201,17 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [ ] Detect nodes sharing a `hostnqn`, common on cloned images, which breaks access
         control
   - [ ] Limit queue counts per connection, based on the phase 5 measurements
-  - [ ] Run `k3s-csi.sh` against the SPDK target. It has only run against the kernel's
-  - [ ] Survive outages: the node connects with `nvme connect`'s default 10-minute controller-loss timeout, after which a node
-        drops its controllers and mounted volumes fail for good. Decide the timeout, as other NVMe CSI drivers use none, then
-        test nvweaver restarting, and a node rebooting, with volumes mounted
-  - [ ] Report `MaxVolumesPerNode`, from the 1024 namespaces a subsystem can hold on both targets, so the scheduler knows
-  - [ ] Pass the `csi-sanity` conformance suite
+  - [x] Run `k3s-csi.sh` against the SPDK target: all 25 passed
+  - [x] Survive outages: nodes retry for ever by default (`--ctrl-loss-tmo=-1`), decision 45. Tested with nvweaver stopped for
+        90 s, and a node rebooting, with a pod writing
+  - [ ] Run the outage test on SPDK, and for longer than the kernel's default 10 minutes, with the default once to show the difference
+  - [x] Report `MaxVolumesPerNode`, from the 1024 namespaces a subsystem can hold on both targets, so the scheduler knows
+  - [x] Pass the `csi-sanity` conformance suite: 75 of 75, v5.6.0, by `k3s-csi.sh sanity`
   - [ ] Publish the driver's image in releases, for amd64 and arm64, with its third-party notices, and run `k3s-csi.sh` in CI or before each release
   - [ ] DH-HMAC-CHAP for nodes: a key per node, from a Secret, set on its host
   - [ ] Delete a node's subsystem and host when the node leaves the cluster. They stay while the driver runs, for its next volume
   - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver
-  - [ ] `ListVolumes` and `ListSnapshots`, which `csi-sanity` and some backup tools use
+  - [x] `ListVolumes` and `ListSnapshots`, which `csi-sanity` and some backup tools use
   - [ ] Test at production-like volume and node counts
   - [ ] Document that there is a single target, with no failover
   - [ ] Document what can never change once volumes exist: `--cluster`, the NQN prefix and the driver's name, as changing them

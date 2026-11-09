@@ -2,8 +2,10 @@ package driver
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -205,6 +207,44 @@ func (f *fakeAPI) DeleteVolume(_ context.Context, name string) error {
 	delete(f.volumes, name)
 	return nil
 }
+
+// page returns names after the cursor, in order, as the API does.
+func page[T any](items map[string]*T, keep func(*T) bool, limit int, after string) ([]T, string) {
+	var names []string
+	for n, it := range items {
+		if n > after && keep(it) {
+			names = append(names, n)
+		}
+	}
+	slices.Sort(names)
+	next := ""
+	if limit > 0 && len(names) > limit {
+		names, next = names[:limit], names[limit-1]
+	}
+	out := make([]T, 0, len(names))
+	for _, n := range names {
+		out = append(out, *items[n])
+	}
+	return out, next
+}
+
+func (f *fakeAPI) VolumesPage(_ context.Context, pool string, limit int, after string) (*client.VolumePage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	items, next := page(f.volumes, func(v *client.Volume) bool { return pool == "" || v.Pool == pool }, limit, after)
+	return &client.VolumePage{Items: items, NextAfter: next}, nil
+}
+
+func (f *fakeAPI) SnapshotsPage(_ context.Context, volume string, limit int, after string) (*client.SnapshotPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.volumes[volume]; volume != "" && !ok {
+		return nil, apiErr(http.StatusNotFound, "no volume")
+	}
+	items, next := page(f.snapshots, func(s *client.Snapshot) bool { return volume == "" || s.Volume == volume }, limit, after)
+	return &client.SnapshotPage{Items: items, NextAfter: next}, nil
+}
+
 func (f *fakeAPI) GetSnapshot(_ context.Context, name string) (*client.Snapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -465,5 +505,78 @@ func TestLongNamesAreHashedStably(t *testing.T) {
 	}
 	if scopedName("lab", "pvc 1") == scopedName("lab", "pvc 2") {
 		t.Error("two names hashed the same")
+	}
+}
+
+func TestListingIsPagedAndOnlyThisClustersOwn(t *testing.T) {
+	api := newFakeAPI()
+	c := NewController(testCfg, api)
+	for i := range 5 {
+		create(t, c, fmt.Sprintf("pvc-%d", i), 1<<20)
+	}
+	other := NewController(Config{Name: DefaultName, Cluster: "other", NQNPrefix: testCfg.NQNPrefix, Port: 1}, api)
+	create(t, other, "pvc-x", 1<<20)
+
+	var got []string
+	token := ""
+	for range 10 {
+		r, err := c.ListVolumes(context.Background(), &csi.ListVolumesRequest{MaxEntries: 2, StartingToken: token})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range r.Entries {
+			got = append(got, e.Volume.VolumeId)
+		}
+		if token = r.NextToken; token == "" {
+			break
+		}
+	}
+	if strings.Join(got, " ") != "lab-pvc-0 lab-pvc-1 lab-pvc-2 lab-pvc-3 lab-pvc-4" {
+		t.Errorf("listed %v", got)
+	}
+	if _, err := c.ListVolumes(context.Background(), &csi.ListVolumesRequest{StartingToken: "other-pvc-x"}); code(err) != codes.Aborted {
+		t.Errorf("another cluster's name as a token: %v", err)
+	}
+
+	for _, v := range []string{"lab-pvc-0", "lab-pvc-0", "lab-pvc-1"} {
+		n := len(api.snapshots)
+		if _, err := c.CreateSnapshot(context.Background(), &csi.CreateSnapshotRequest{Name: fmt.Sprintf("snap-%d", n), SourceVolumeId: v}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := c.ListSnapshots(context.Background(), &csi.ListSnapshotsRequest{SourceVolumeId: "lab-pvc-0"})
+	if err != nil || len(r.Entries) != 2 {
+		t.Errorf("one volume's snapshots: %v, %v", r, err)
+	}
+	r, err = c.ListSnapshots(context.Background(), &csi.ListSnapshotsRequest{SnapshotId: "lab-snap-2"})
+	if err != nil || len(r.Entries) != 1 || r.Entries[0].Snapshot.SourceVolumeId != "lab-pvc-1" {
+		t.Errorf("one snapshot: %v, %v", r, err)
+	}
+	r, err = c.ListSnapshots(context.Background(), &csi.ListSnapshotsRequest{SnapshotId: "lab-nothing"})
+	if err != nil || len(r.Entries) != 0 {
+		t.Errorf("a snapshot that isn't there: %v, %v", r, err)
+	}
+	r, err = c.ListSnapshots(context.Background(), &csi.ListSnapshotsRequest{MaxEntries: 2})
+	if err != nil || len(r.Entries) != 2 || r.NextToken == "" {
+		t.Errorf("a first page: %v, %v", r, err)
+	}
+}
+
+// A node ID is the node's host NQN, so one that isn't an NQN is no node of ours.
+func TestPublishingToSomethingThatIsntANodeIsNotFound(t *testing.T) {
+	c := NewController(testCfg, newFakeAPI())
+	v := create(t, c, "pvc-n", 1<<20).VolumeId
+	if _, err := publish(c, v, "some-fake-node-id", rwo); code(err) != codes.NotFound {
+		t.Errorf("%v", err)
+	}
+	// What's wrong with the request comes first.
+	if _, err := publish(c, v, "some-fake-node-id", nil); code(err) != codes.InvalidArgument {
+		t.Errorf("no capability either: %v", err)
+	}
+	r, _ := c.ControllerGetCapabilities(context.Background(), &csi.ControllerGetCapabilitiesRequest{})
+	for _, cap := range r.Capabilities {
+		if cap.GetRpc().GetType() == csi.ControllerServiceCapability_RPC_PUBLISH_READONLY {
+			t.Error("PUBLISH_READONLY is claimed, but nvweaver can't export a namespace read-only to one host")
+		}
 	}
 }

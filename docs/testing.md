@@ -525,8 +525,18 @@ and read on another while both had it, and nothing left after everything was del
   device or mount on any node.
 - **A claim's size changes only after its filesystem grows,** when a pod next mounts it. The test checks the volume, then the
   filesystem, then the claim, in that order.
-- **Not tested yet:** SPDK as the target, `csi-sanity`, more than three nodes or a handful of volumes, OpenShift, KubeVirt
-  live migration, Arm, and a node rebooting or losing its connection while a volume is in use.
+- **On SPDK too:** with `BACKEND=spdk` and the SPDK image, all 25 passed, against SPDK v26.09 in interrupt mode.
+- **An outage, and a node rebooting:** a pod writing a line a second kept going after nvweaver stopped for 90 s, which is
+  longer than several reconnect attempts. Its writes waited, then carried on, with no restart and its filesystem still
+  writable. Then agent1 rebooted: the pod came back on its volume, carrying on from where it was, with every earlier line.
+  The suite has 30 checks now, and passed them all on the kernel target.
+- **`csi-sanity` v5.6.0 passes, 75 of 75,** with 27 skipped for capabilities the driver doesn't claim. `k3s-csi.sh sanity`
+  builds it at that tag and runs it against the driver on agent1, as a cluster of its own. Its first run failed 97, all from
+  one leftover mount: the driver let a SINGLE_NODE_SINGLE_WRITER volume be published at a second path, which CSI forbids,
+  and the test never cleaned up after a publish it expected to fail. Then two more: a node ID that isn't an NQN has to be
+  not found, and the driver claimed `PUBLISH_READONLY`, which nvweaver can't do. Each was fixed, with a unit test first.
+- **Not tested yet:** more than three nodes or a handful of volumes, OpenShift, KubeVirt live migration, Arm, and the
+  outage test against SPDK, or for longer than the kernel's default 10-minute timeout.
 
 ## Not tested
 

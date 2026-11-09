@@ -510,5 +510,14 @@ there, not as absolute numbers.
   must look like a domain name to use.
 - **The node plugin connects with `nvme connect`,** finds the volume's device by its NGUID, or UUID, within its
   subsystem, and makes ext4 or XFS on a blank volume. It never formats a device with something on it.
-- **Not yet:** listing volumes and snapshots, topology, capacity reporting, `csi-sanity`, DH-HMAC-CHAP for nodes, and
-  scale testing. They're in `TODO.md`.
+- **Nodes never give up on nvweaver by default:** they connect with `--ctrl-loss-tmo=-1`, so an outage pauses I/O until
+  nvweaver is back. The kernel's default of 10 minutes would then drop the controller, and mounted volumes would fail for
+  good. That's the right trade-off with a single target and no failover. `--ctrl-loss-tmo` on the node plugin changes it.
+- **A node reports 1024 volumes at most,** the namespaces its subsystem can hold on either target. `--max-volumes-per-node`
+  lowers it.
+- **A node ID that isn't an NQN is refused as not found,** as no node of ours can have one.
+- **`PUBLISH_READONLY` isn't claimed:** nvweaver can't export a namespace read-only to one host. Read-only volumes are
+  still read-only, enforced where the node mounts them.
+- **A SINGLE_NODE_SINGLE_WRITER volume is published at one target path only;** a second is refused.
+- **Listing returns this cluster's names only,** paged by name, with a token that must be one of them.
+- **Not yet:** topology, capacity reporting, DH-HMAC-CHAP for nodes, and scale testing. They're in `TODO.md`.

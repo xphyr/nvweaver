@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"google.golang.org/grpc/codes"
 )
 
 // fakeNode is a node plugin over a fake sysfs and mountinfo, recording the commands it would run.
@@ -26,7 +27,7 @@ func newFakeNode(t *testing.T) *fakeNode {
 	if err := os.WriteFile(f.mnts, []byte("22 1 0:21 / / rw - xfs /dev/vda1 rw\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f.Node = &Node{cfg: testCfg, hostNQN: nodeA, sys: f.sys, mountinfo: f.mnts, findWait: time.Second}
+	f.Node = &Node{cfg: testNodeCfg(), hostNQN: nodeA, sys: f.sys, mountinfo: f.mnts, findWait: time.Second}
 	f.run = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		f.ran = append(f.ran, name+" "+strings.Join(args, " "))
 		if name == "blkid" {
@@ -35,6 +36,12 @@ func newFakeNode(t *testing.T) *fakeNode {
 		return nil, nil
 	}
 	return f
+}
+
+func testNodeCfg() Config {
+	c := testCfg
+	c.CtrlLossTmo, c.MaxVolumesPerNode = -1, 1024
+	return c
 }
 
 type exitErr struct{}
@@ -81,7 +88,7 @@ func TestStagingConnectsFormatsAndMounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"nvme connect -t tcp -a 10.98.0.1 -s 4420 -n " + sub + " -q " + nodeA,
+		"nvme connect -t tcp -a 10.98.0.1 -s 4420 -n " + sub + " -q " + nodeA + " --ctrl-loss-tmo=-1",
 		"blkid -p -o value -s TYPE /dev/nvme1n1",
 		"mkfs.ext4 -q -F /dev/nvme1n1",
 		"mount -t ext4 /dev/nvme1n1 " + stage,
@@ -151,5 +158,47 @@ func TestUnstagingASharedVolumeDisconnects(t *testing.T) {
 	f.ran = nil
 	if _, err := f.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{VolumeId: "lab-pvc-other", StagingTargetPath: "/staging"}); err != nil || len(f.ran) != 0 {
 		t.Errorf("a volume with no subsystem of its own ran %v: %v", f.ran, err)
+	}
+}
+
+// With no failover, an outage should pause I/O until nvweaver is back, not fail it for good after the kernel's default 10 minutes.
+func TestTheNodeKeepsRetryingAndSaysHowManyVolumesFit(t *testing.T) {
+	f := newFakeNode(t)
+	info, err := f.NodeGetInfo(context.Background(), &csi.NodeGetInfoRequest{})
+	if err != nil || info.NodeId != nodeA || info.MaxVolumesPerNode != 1024 {
+		t.Errorf("%+v, %v", info, err)
+	}
+	f.cfg.CtrlLossTmo = 600
+	f.cfg.MaxVolumesPerNode = 100
+	if info, _ := f.NodeGetInfo(context.Background(), &csi.NodeGetInfoRequest{}); info.MaxVolumesPerNode != 100 {
+		t.Errorf("configured: %d", info.MaxVolumesPerNode)
+	}
+	if err := f.connect(context.Background(), map[string]string{ctxNQN: "nqn.x", ctxAddress: "a", ctxService: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.ran[len(f.ran)-1]; !strings.HasSuffix(got, " --ctrl-loss-tmo=600") {
+		t.Errorf("ran %s", got)
+	}
+}
+
+// SINGLE_NODE_SINGLE_WRITER means one pod: a second target path for a volume already published must be refused.
+func TestASingleWriterVolumeIsPublishedOnce(t *testing.T) {
+	f := newFakeNode(t)
+	sub := testCfg.nodeSubsystem(nodeA)
+	f.subsystem(t, sub, "nvme1n1", nguid)
+	pc := map[string]string{ctxNQN: sub, ctxNGUID: nguid}
+	one := capOf(csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER, false)
+	write(t, f.mnts, "22 1 0:21 / / rw - xfs /dev/vda1 rw\n"+
+		"90 22 259:1 / /staging rw - ext4 /dev/nvme1n1 rw\n"+
+		"91 22 259:1 / /pods/a rw - ext4 /dev/nvme1n1 rw")
+	target := filepath.Join(t.TempDir(), "b")
+	_, err := f.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{VolumeId: "v", StagingTargetPath: "/staging", TargetPath: target, VolumeCapability: one, PublishContext: pc})
+	if code(err) != codes.FailedPrecondition || len(f.ran) != 0 {
+		t.Errorf("a second target: %v, ran %v", err, f.ran)
+	}
+	// Several writers on one node may share it.
+	many := capOf(csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER, false)
+	if _, err := f.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{VolumeId: "v", StagingTargetPath: "/staging", TargetPath: target, VolumeCapability: many, PublishContext: pc}); err != nil {
+		t.Errorf("multi-writer: %v", err)
 	}
 }

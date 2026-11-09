@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -57,7 +58,7 @@ func NewNode(cfg Config, hostNQNFile string) (*Node, error) {
 }
 
 func (n *Node) NodeGetInfo(context.Context, *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
-	return &csi.NodeGetInfoResponse{NodeId: n.hostNQN}, nil
+	return &csi.NodeGetInfoResponse{NodeId: n.hostNQN, MaxVolumesPerNode: n.cfg.MaxVolumesPerNode}, nil
 }
 
 func (n *Node) NodeGetCapabilities(context.Context, *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
@@ -178,6 +179,31 @@ func (n *Node) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolume
 		return nil, status.Error(codes.Internal, err.Error())
 	} else if ok {
 		return &csi.NodePublishVolumeResponse{}, nil
+	}
+	// One writer on one node means one target path: a second publish is refused, as CSI says.
+	if req.GetVolumeCapability().GetAccessMode().GetMode() == csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER {
+		dev := ""
+		if req.GetVolumeCapability().GetBlock() != nil {
+			pc := req.GetPublishContext()
+			d, err := n.findDevice(pc[ctxNGUID], pc[ctxUUID], pc[ctxNQN])
+			if err != nil {
+				return nil, status.Error(codes.Internal, err.Error())
+			}
+			dev = d
+		} else if d, ok, err := n.mountedAt(req.GetStagingTargetPath()); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		} else if ok {
+			dev = d
+		}
+		if dev != "" {
+			others, err := n.usedElsewhere(dev, filepath.Clean(req.GetStagingTargetPath()), filepath.Clean(target))
+			if err != nil {
+				return nil, status.Error(codes.Internal, err.Error())
+			}
+			if len(others) > 0 {
+				return nil, status.Errorf(codes.FailedPrecondition, "volume %s is single-writer, and already published at %s", req.GetVolumeId(), others[0])
+			}
+		}
 	}
 	var src string
 	if req.GetVolumeCapability().GetBlock() != nil {
@@ -316,7 +342,10 @@ func (n *Node) connect(ctx context.Context, pc map[string]string) error {
 	if live {
 		return nil
 	}
-	out, err := n.run(ctx, "nvme", "connect", "-t", transport, "-a", addr, "-s", svc, "-n", nqn, "-q", n.hostNQN)
+	// There's one target and no failover, so by default a node never gives up: an outage pauses I/O until nvweaver is back,
+	// rather than failing it for good after the kernel's default of 10 minutes.
+	out, err := n.run(ctx, "nvme", "connect", "-t", transport, "-a", addr, "-s", svc, "-n", nqn, "-q", n.hostNQN,
+		fmt.Sprintf("--ctrl-loss-tmo=%d", n.cfg.CtrlLossTmo))
 	if err != nil && !strings.Contains(string(out), "already connected") {
 		return status.Errorf(codes.Unavailable, "connecting to %s at %s:%s: %v", nqn, addr, svc, err)
 	}
@@ -456,34 +485,66 @@ func (n *Node) unmount(ctx context.Context, path string) error {
 	return nil
 }
 
-// mountedAt reports whether something is mounted at path, and what: the device,
-// or for a bind mount of a device, the device it was bound from.
-func (n *Node) mountedAt(path string) (string, bool, error) {
+// mount is one line of mountinfo: where, and what's there, as a device for a device or a bind mount of one.
+type mount struct{ point, src string }
+
+func (n *Node) mounts() ([]mount, error) {
 	b, err := os.ReadFile(n.mountinfo)
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
-	clean := filepath.Clean(path)
-	found, src := false, ""
+	var out []mount
 	for _, line := range strings.Split(string(b), "\n") {
 		pre, post, ok := strings.Cut(line, " - ")
 		if !ok {
 			continue
 		}
 		f := strings.Fields(pre)
-		if len(f) < 5 || unescapeMount(f[4]) != clean {
+		if len(f) < 5 {
 			continue
 		}
-		// The last mount at a path is the one in use.
-		found, src = true, ""
+		m := mount{point: unescapeMount(f[4])}
 		if g := strings.Fields(post); len(g) >= 2 {
-			src = unescapeMount(g[1])
-			if strings.HasPrefix(src, "devtmpfs") || g[0] == "devtmpfs" {
-				src = "/dev" + unescapeMount(f[3])
+			m.src = unescapeMount(g[1])
+			if g[0] == "devtmpfs" {
+				m.src = "/dev" + unescapeMount(f[3])
 			}
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// mountedAt reports whether something is mounted at path, and what: the device,
+// or for a bind mount of a device, the device it was bound from. The last mount at a path is the one in use.
+func (n *Node) mountedAt(path string) (string, bool, error) {
+	ms, err := n.mounts()
+	if err != nil {
+		return "", false, err
+	}
+	clean := filepath.Clean(path)
+	found, src := false, ""
+	for _, m := range ms {
+		if m.point == clean {
+			found, src = true, m.src
 		}
 	}
 	return src, found, nil
+}
+
+// usedElsewhere lists where a device is mounted, other than at the paths given.
+func (n *Node) usedElsewhere(dev string, except ...string) ([]string, error) {
+	ms, err := n.mounts()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, m := range ms {
+		if m.src == dev && !slices.Contains(except, m.point) {
+			out = append(out, m.point)
+		}
+	}
+	return out, nil
 }
 
 // unescapeMount undoes mountinfo's octal escapes, such as \040 for a space.

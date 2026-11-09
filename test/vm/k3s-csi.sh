@@ -5,6 +5,7 @@
 #            driver's image and load it into the nodes, and install it with the snapshot controller
 #   test     volumes through the driver: filesystem and block, data kept across pods and nodes,
 #            growing, snapshots and clones, a volume shared by two nodes, and nothing left after
+#   sanity   run csi-sanity, the CSI conformance suite, against the driver on agent1, as cluster "sanity"
 #   remove   take the driver, and everything it made, back out
 #
 # Settings: IMAGE, nvweaver's image (localhost/nvweaver:dev), CSI_IMAGE (localhost/nvweaver-csi:dev),
@@ -17,6 +18,7 @@ LAB=$HERE/k3s-lab.sh
 IMAGE=${IMAGE:-localhost/nvweaver:dev}
 CSI_IMAGE=${CSI_IMAGE:-localhost/nvweaver-csi:dev}
 SNAPSHOTTER=v8.7.0
+CSI_TEST=v5.6.0
 SNAP_URL=https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/$SNAPSHOTTER
 NVW_IP=10.98.0.1
 API=https://$NVW_IP:8420
@@ -117,7 +119,7 @@ ${5:-}
 EOF
 }
 
-# pod NAME PVC NODE COMMAND [block]: a pod on that node, with the volume at /data, or at /dev/xvda for a block volume.
+# pod NAME PVC NODE COMMAND [block|fs] [RESTART]: a pod on that node, with the volume at /data, or at /dev/xvda for a block volume.
 pod() {
 	local vol="volumeMounts: [{name: v, mountPath: /data}]"
 	[ "${5:-}" = block ] && vol="volumeDevices: [{name: v, devicePath: /dev/xvda}]"
@@ -127,7 +129,7 @@ kind: Pod
 metadata: {name: $1}
 spec:
   nodeSelector: {kubernetes.io/hostname: $3}
-  restartPolicy: Never
+  restartPolicy: ${6:-Never}
   terminationGracePeriodSeconds: 1
   containers:
     - name: c
@@ -235,9 +237,54 @@ EOF
 	expect_eq "both nodes are allowed on its own subsystem" 2 "$(bodyq '.allowed_hosts | length')"
 	gone b1 b2
 
+	echo "== nvweaver stopping for a while, then a node rebooting, while a pod writes"
+	# Longer than a reconnect attempt, which comes every 10 s. Nodes retry for ever by default (--ctrl-loss-tmo), so a pod's
+	# writes wait for nvweaver rather than failing.
+	local outage=${OUTAGE:-90} before after
+	pvc out 64Mi ReadWriteOnce
+	pod o1 out agent1 'i=$(tail -1 /data/log 2>/dev/null || echo 0); while true; do i=$((i+1)); echo $i >> /data/log; sync; sleep 1; done' fs Always
+	k wait --for=condition=Ready pod/o1 --timeout=180s >/dev/null 2>&1
+	sleep 5
+	before=$(k exec o1 -- tail -1 /data/log 2>/dev/null)
+	nvw 'sudo podman stop -t 30 nvweaver-csi-lab >/dev/null'
+	echo "      nvweaver stopped for ${outage}s"
+	sleep "$outage"
+	nvw 'sudo podman start nvweaver-csi-lab >/dev/null'
+	for _ in $(seq 1 60); do [ "$(api GET /healthz)" = 200 ] && break; sleep 1; done
+	local now=
+	for _ in $(seq 1 60); do
+		now=$(k exec o1 -- tail -1 /data/log 2>/dev/null)
+		[ "${now:-0}" -gt "$((before + 5))" ] && break
+		sleep 2
+	done
+	if [ "${now:-0}" -gt "$((before + 5))" ]; then ok "the pod carries on writing when nvweaver is back ($before, then $now)"; else bad "the pod carries on writing when nvweaver is back" "$before, then $now"; fi
+	expect_eq "it never restarted" 0 "$(k get pod o1 -o jsonpath='{.status.containerStatuses[0].restartCount}')"
+	expect_eq "and its filesystem is still writable" ok "$(k exec o1 -- sh -c 'echo x > /data/probe && echo ok' 2>&1)"
+
+	before=$(k exec o1 -- tail -1 /data/log 2>/dev/null)
+	"$LAB" ssh agent1 'sudo systemctl reboot' >/dev/null 2>&1
+	echo "      agent1 rebooting"
+	sleep 20
+	local ready=
+	for _ in $(seq 1 90); do
+		ready=$(k get node agent1 -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+		[ "$ready" = True ] && [ "$(k get pod o1 -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null)" = true ] && break
+		sleep 4
+	done
+	expect_eq "agent1 is back" True "$ready"
+	after=
+	for _ in $(seq 1 60); do
+		after=$(k exec o1 -- tail -1 /data/log 2>/dev/null)
+		[ "${after:-0}" -gt "${before:-0}" ] && break
+		sleep 2
+	done
+	if [ "${after:-0}" -gt "${before:-0}" ]; then ok "the pod runs again on its volume, carrying on from $before to $after"; else bad "the pod runs again on its volume" "$before, then $after"; fi
+	expect_eq "with every earlier line still there" 1 "$(k exec o1 -- head -1 /data/log 2>/dev/null)"
+	gone o1
+
 	echo "== taking everything away"
 	k delete volumesnapshot snap --wait=true --timeout=120s >/dev/null
-	k delete pvc fs clone shared --wait=true --timeout=120s >/dev/null
+	k delete pvc fs clone shared out --wait=true --timeout=120s >/dev/null
 	local left=
 	for _ in $(seq 1 60); do
 		api GET /v1/volumes >/dev/null
@@ -257,6 +304,53 @@ EOF
 	done
 	echo "$fails failed"
 	[ "$fails" -eq 0 ]
+}
+
+# csi-sanity calls every CSI method directly, with awkward arguments, against a driver it starts itself. That's a copy of
+# the driver's binary from its image, in "all" mode on agent1, with a cluster name of its own, so it can't touch the lab's.
+cmd_sanity() {
+	local bin=$WORK/bin
+	mkdir -p "$bin"
+	echo "Building csi-sanity $CSI_TEST"
+	podman run --rm -v "$bin:/out:Z" -e GOBIN=/out -e CGO_ENABLED=0 docker.io/library/golang:1.26-alpine \
+		go install "github.com/kubernetes-csi/csi-test/v5/cmd/csi-sanity@$CSI_TEST" >/dev/null 2>&1 || die "cannot build csi-sanity"
+	local c
+	c=$(podman create "$CSI_IMAGE") || die "no $CSI_IMAGE"
+	podman cp "$c:/usr/local/bin/nvweaver-csi" "$bin/" && podman rm "$c" >/dev/null || die "cannot copy the driver"
+	nvw 'sudo cat /etc/nvweaver-lab/token' >"$bin/token" && nvw 'sudo cat /etc/nvweaver-lab/tls.crt' >"$bin/ca.crt" || die "no token"
+	local f
+	for f in csi-sanity nvweaver-csi token ca.crt; do
+		"$LAB" ssh agent1 "cat > /tmp/$f" <"$bin/$f" || die "cannot copy $f"
+	done
+	"$LAB" ssh agent1 "sudo bash -s" <<EOF
+set -u
+d=/var/lib/csi-sanity
+# A run that failed can leave its mounts behind, which would fail every test in the next.
+for m in \$(findmnt -rn -o TARGET | grep "^\$d/" | sort -r); do umount "\$m"; done
+rm -rf \$d && mkdir -p \$d
+install -m 0755 /tmp/csi-sanity /tmp/nvweaver-csi \$d/
+install -m 0600 /tmp/token /tmp/ca.crt \$d/
+rm -f /tmp/csi-sanity /tmp/nvweaver-csi /tmp/token /tmp/ca.crt
+NVWEAVER_API_URL=$API NVWEAVER_API_TOKEN_FILE=\$d/token NVWEAVER_CA=\$d/ca.crt \\
+	\$d/nvweaver-csi --mode=all --cluster=sanity --endpoint=unix://\$d/csi.sock >\$d/driver.log 2>&1 &
+pid=\$!
+for _ in \$(seq 1 50); do [ -S \$d/csi.sock ] && break; sleep 0.1; done
+\$d/csi-sanity --csi.endpoint=\$d/csi.sock --csi.stagingdir=\$d/staging --csi.mountdir=\$d/mount \\
+	--csi.testvolumesize=$((64 << 20)) --csi.testvolumeexpandsize=$((128 << 20)) --ginkgo.no-color 2>&1 | tail -40
+rc=\${PIPESTATUS[0]}
+kill \$pid
+echo "csi-sanity exit \$rc"
+[ \$rc -eq 0 ] || tail -30 \$d/driver.log
+exit \$rc
+EOF
+	local rc=$? sub
+	# The node's subsystem for the "sanity" cluster stays, as it would for a running driver; this one has stopped.
+	"$LAB" ssh agent1 "sudo nvme disconnect -n nqn.2026-11.io.github.xphyr.nvweaver:csi:sanity:node-\$(printf %s \"\$(cat /etc/nvme/hostnqn)\" | sha256sum | cut -c1-16) >/dev/null 2>&1; true"
+	api GET /v1/subsystems >/dev/null
+	for sub in $(bodyq '.[].nqn | select(startswith("nqn.2026-11.io.github.xphyr.nvweaver:csi:sanity:"))'); do
+		api DELETE "/v1/subsystems/$sub" >/dev/null
+	done
+	return $rc
 }
 
 cmd_remove() {
@@ -283,6 +377,7 @@ trap 'rm -rf "$WORK"' EXIT
 case "${1:-}" in
 deploy) cmd_deploy ;;
 test) cmd_test ;;
+sanity) cmd_sanity ;;
 remove) cmd_remove ;;
 *)
 	sed -n '2,/^set -u/p' "$0" | sed -n 's/^# \{0,1\}//p'

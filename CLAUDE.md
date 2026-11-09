@@ -24,7 +24,7 @@ BACKEND=spdk ./test/e2e.sh        # SPDK target, end to end
 ./test/systemd-e2e.sh             # make install, the unit and the Quadlet, under systemd
 ./test/vm/vm-e2e.sh               # separate initiator, emulated disks, passthrough, real reboot
 ./test/vm/k3s-lab.sh up|check|down  # k3s on three VMs and nvweaver on a fourth, for the CSI driver
-./test/vm/k3s-csi.sh deploy|test|remove  # the CSI driver in that lab, end to end
+./test/vm/k3s-csi.sh deploy|test|sanity|remove  # the CSI driver in that lab, end to end, and csi-sanity
 ./test/bench.sh                   # NVMe/TCP overhead against null_blk; also BACKEND=spdk
 ./test/webui-e2e.sh [DIR]         # the web interface in a real browser, with no root. DIR keeps its screenshots. Look at them
 ./test/webui-real-e2e.sh [DIR]    # a browser driving both real targets in VMs, with a real host. DIR keeps screenshots of failures

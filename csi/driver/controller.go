@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -57,8 +58,9 @@ func (c *Controller) ControllerGetCapabilities(context.Context, *csi.ControllerG
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
 		csi.ControllerServiceCapability_RPC_CLONE_VOLUME,
 		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
-		csi.ControllerServiceCapability_RPC_PUBLISH_READONLY,
 		csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
+		csi.ControllerServiceCapability_RPC_LIST_VOLUMES,
+		csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
 	} {
 		caps = append(caps, &csi.ControllerServiceCapability{Type: &csi.ControllerServiceCapability_Rpc{Rpc: &csi.ControllerServiceCapability_RPC{Type: t}}})
 	}
@@ -230,6 +232,9 @@ func (c *Controller) ControllerPublishVolume(ctx context.Context, req *csi.Contr
 	}
 	if err := checkCapability(req.GetVolumeCapability()); err != nil {
 		return nil, err
+	}
+	if !strings.HasPrefix(node, "nqn.") {
+		return nil, status.Errorf(codes.NotFound, "node %q: a node's ID is its NVMe host NQN, and this isn't one", node)
 	}
 	port, err := c.port(req.GetVolumeContext())
 	if err != nil {
@@ -433,4 +438,97 @@ func (c *Controller) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshot
 		return nil, apiError(err, "deleting snapshot "+req.GetSnapshotId())
 	}
 	return &csi.DeleteSnapshotResponse{}, nil
+}
+
+// listPageSize is how many the API is asked for at a time, while looking for this cluster's own.
+const listPageSize = 500
+
+// pageStart checks a CSI starting token, which is the last name of the page before, and so one of this cluster's names.
+func (c *Controller) pageStart(token string) (string, error) {
+	if token != "" && !strings.HasPrefix(token, c.cfg.Cluster+"-") {
+		return "", status.Errorf(codes.Aborted, "starting token %q isn't one this driver gave", token)
+	}
+	return token, nil
+}
+
+// ListVolumes lists this cluster's volumes, in name order, a page at a time.
+func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
+	if req.GetMaxEntries() < 0 {
+		return nil, status.Error(codes.InvalidArgument, "max_entries is negative")
+	}
+	after, err := c.pageStart(req.GetStartingToken())
+	if err != nil {
+		return nil, err
+	}
+	max := int(req.GetMaxEntries())
+	out := &csi.ListVolumesResponse{}
+	for {
+		page, err := c.api.VolumesPage(ctx, "", listPageSize, after)
+		if err != nil {
+			return nil, apiError(err, "listing volumes")
+		}
+		for _, v := range page.Items {
+			if !strings.HasPrefix(v.Name, c.cfg.Cluster+"-") {
+				continue
+			}
+			if max > 0 && len(out.Entries) == max {
+				out.NextToken = out.Entries[max-1].Volume.VolumeId
+				return out, nil
+			}
+			out.Entries = append(out.Entries, &csi.ListVolumesResponse_Entry{Volume: &csi.Volume{VolumeId: v.Name, CapacityBytes: v.SizeBytes}})
+		}
+		if page.NextAfter == "" {
+			return out, nil
+		}
+		after = page.NextAfter
+	}
+}
+
+// ListSnapshots lists this cluster's snapshots, in name order, a page at a time, or one snapshot, or one volume's.
+func (c *Controller) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
+	if req.GetMaxEntries() < 0 {
+		return nil, status.Error(codes.InvalidArgument, "max_entries is negative")
+	}
+	mine := func(name string) bool { return strings.HasPrefix(name, c.cfg.Cluster+"-") }
+	if id := req.GetSnapshotId(); id != "" {
+		s, err := c.api.GetSnapshot(ctx, id)
+		if client.IsNotFound(err) || err == nil && !mine(s.Name) ||
+			err == nil && req.GetSourceVolumeId() != "" && s.Volume != req.GetSourceVolumeId() {
+			return &csi.ListSnapshotsResponse{}, nil
+		}
+		if err != nil {
+			return nil, apiError(err, "snapshot "+id)
+		}
+		return &csi.ListSnapshotsResponse{Entries: []*csi.ListSnapshotsResponse_Entry{{Snapshot: csiSnapshot(s)}}}, nil
+	}
+	after, err := c.pageStart(req.GetStartingToken())
+	if err != nil {
+		return nil, err
+	}
+	max := int(req.GetMaxEntries())
+	out := &csi.ListSnapshotsResponse{}
+	for {
+		page, err := c.api.SnapshotsPage(ctx, req.GetSourceVolumeId(), listPageSize, after)
+		if client.IsNotFound(err) {
+			return out, nil // A volume that isn't there has no snapshots.
+		}
+		if err != nil {
+			return nil, apiError(err, "listing snapshots")
+		}
+		for i := range page.Items {
+			s := &page.Items[i]
+			if !mine(s.Name) {
+				continue
+			}
+			if max > 0 && len(out.Entries) == max {
+				out.NextToken = out.Entries[max-1].Snapshot.SnapshotId
+				return out, nil
+			}
+			out.Entries = append(out.Entries, &csi.ListSnapshotsResponse_Entry{Snapshot: csiSnapshot(s)})
+		}
+		if page.NextAfter == "" {
+			return out, nil
+		}
+		after = page.NextAfter
+	}
 }

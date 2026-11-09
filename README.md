@@ -182,7 +182,8 @@ kubectl apply -f csi/deploy/classes.yaml     # edit the pool first
 - **Each node gets one subsystem** for its volumes, which it stays connected to. A volume that several nodes use at once, ReadWriteMany or ReadOnlyMany, gets a subsystem of its own.
 - **ReadWriteMany is for raw block volumes only,** as a filesystem written from two nodes would be corrupted. Whatever shares one must use direct I/O, as each node's page cache keeps what it read.
 - **`--cluster`** starts every name the driver makes, so several clusters can share one nvweaver. Give each its own.
-- **Not yet:** `csi-sanity`, DH-HMAC-CHAP for nodes, topology, capacity reporting, published release images, and testing at scale or on OpenShift. See `TODO.md`.
+- **Nodes keep retrying if nvweaver goes away,** for ever by default (`--ctrl-loss-tmo=-1`), so I/O waits for it rather than failing. Each node takes up to 1024 volumes (`--max-volumes-per-node`).
+- **It passes `csi-sanity`,** the CSI conformance suite. **Not yet:** DH-HMAC-CHAP for nodes, topology, capacity reporting, published release images, and testing at scale or on OpenShift. See `TODO.md`.
 
 ## What can back a namespace
 
