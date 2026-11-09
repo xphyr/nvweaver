@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -35,6 +36,8 @@ type Server struct {
 	patterns []string
 	// Auth signs people in with a password, if there's a users file.
 	Auth *auth.Authenticator
+	// Tokens are the scoped tokens, if there's a tokens file: each may only change what it owns. See decision 46.
+	Tokens *auth.Tokens
 	// AllowInsecureLogin lets passwords cross the network in clear text.
 	AllowInsecureLogin bool
 	// anyHost skips checking the Host header with no token. Only tests set it, whose requests have made-up names.
@@ -56,6 +59,87 @@ func (e *statusError) Error() string { return e.msg }
 
 func notFound(format string, a ...any) error {
 	return &statusError{http.StatusNotFound, fmt.Sprintf(format, a...)}
+}
+
+func forbidden(format string, a ...any) error {
+	return &statusError{http.StatusForbidden, fmt.Sprintf(format, a...)}
+}
+
+type scopeKey struct{}
+
+// scopeOf is the scoped token that a request came with, or "" for an admin: the API token, someone signed in, or anyone
+// where nothing is asked for, which is only ever on loopback. See decision 46.
+func scopeOf(r *http.Request) string {
+	scope, _ := r.Context().Value(scopeKey{}).(string)
+	return scope
+}
+
+// mayChange refuses a scoped token anything it doesn't own. Admins may change anything.
+func mayChange(scope, owner, what string) error {
+	switch {
+	case scope == "" || owner == scope:
+		return nil
+	case owner == "":
+		return forbidden("%s belongs to no scoped token, so only an admin may change it", what)
+	}
+	return forbidden("%s belongs to %s, not %s", what, owner, scope)
+}
+
+// ownerFor is the owner of something new: a scoped token's own name, or for an admin, whatever it asked for.
+func ownerFor(scope, asked string) (string, error) {
+	if scope != "" {
+		if asked != "" && asked != scope {
+			return "", forbidden("a scoped token owns what it creates, so it can't give it to %s", asked)
+		}
+		return scope, nil
+	}
+	if asked != "" && !auth.OwnerRE.MatchString(asked) {
+		return "", target.Invalid("owner %q isn't a scoped token's name: lowercase letters, digits and dashes", asked)
+	}
+	return asked, nil
+}
+
+// newOwner checks an admin's change of owner. A scoped token can't give away what it owns.
+func newOwner(scope string, asked *string) error {
+	if asked == nil {
+		return nil
+	}
+	if scope != "" {
+		return forbidden("only an admin may change what something's owner is")
+	}
+	if *asked != "" && !auth.OwnerRE.MatchString(*asked) {
+		return target.Invalid("owner %q isn't a scoped token's name: lowercase letters, digits and dashes", *asked)
+	}
+	return nil
+}
+
+// scopedMay lists what changes a scoped token may ask for at all. The handlers check that it owns what it changes.
+// Every other change is for admins only, so that a new route is refused to scoped tokens until it's thought about.
+var scopedMay = map[string]bool{
+	"POST /v1/hosts":                                true,
+	"POST /v1/subsystems":                           true,
+	"PATCH /v1/subsystems/{nqn}":                    true,
+	"DELETE /v1/subsystems/{nqn}":                   true,
+	"PUT /v1/subsystems/{nqn}/ports/{id}":           true,
+	"DELETE /v1/subsystems/{nqn}/ports/{id}":        true,
+	"PUT /v1/subsystems/{nqn}/hosts/{host}":         true,
+	"DELETE /v1/subsystems/{nqn}/hosts/{host}":      true,
+	"POST /v1/subsystems/{nqn}/namespaces":          true,
+	"DELETE /v1/subsystems/{nqn}/namespaces/{nsid}": true,
+	"POST /v1/volumes":                              true,
+	"PATCH /v1/volumes/{volume}":                    true,
+	"DELETE /v1/volumes/{volume}":                   true,
+	"POST /v1/snapshots":                            true,
+	"DELETE /v1/snapshots/{snapshot}":               true,
+}
+
+func adminOnly(h handler) handler {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		if scope := scopeOf(r); scope != "" {
+			return forbidden("only an admin may do this, and %s is a scoped token", scope)
+		}
+		return h(w, r)
+	}
 }
 
 func errorStatus(err error) int {
@@ -120,6 +204,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	route := func(pattern string, h handler) {
 		s.patterns = append(s.patterns, pattern)
+		if !strings.HasPrefix(pattern, "GET ") && !scopedMay[pattern] {
+			h = adminOnly(h)
+		}
 		mux.HandleFunc(pattern, s.wrap(h))
 	}
 
@@ -230,28 +317,44 @@ func isLoopbackHost(hostport string) bool {
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
-	if s.token == "" && s.Auth == nil {
+	if s.token == "" && s.Auth == nil && s.Tokens == nil {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.signedIn(r) {
+		scope, ok := s.whoIs(r)
+		if !ok {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid bearer token or session"})
 			return
+		}
+		if scope != "" {
+			r = r.WithContext(context.WithValue(r.Context(), scopeKey{}, scope))
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// signedIn reports whether a request may use the API, by token or session.
-func (s *Server) signedIn(r *http.Request) bool {
-	if s.token != "" {
-		want := []byte("Bearer " + s.token)
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) == 1 {
-			return true
+// whoIs reports whether a request may use the API, by token or session, and if it came with a scoped token, whose.
+func (s *Server) whoIs(r *http.Request) (string, bool) {
+	header := r.Header.Get("Authorization")
+	if s.token != "" && subtle.ConstantTimeCompare([]byte(header), []byte("Bearer "+s.token)) == 1 {
+		return "", true
+	}
+	if token, ok := strings.CutPrefix(header, "Bearer "); ok {
+		if name, ok := s.Tokens.Check(token); ok {
+			return name, true
 		}
 	}
-	_, ok := s.sessionUser(r)
+	if _, ok := s.sessionUser(r); ok {
+		return "", true
+	}
+	// With neither an API token nor a users file, the API is only on loopback, where anyone is an admin, as before.
+	return "", s.token == "" && s.Auth == nil
+}
+
+// signedIn reports whether a request may use the API, by token or session.
+func (s *Server) signedIn(r *http.Request) bool {
+	_, ok := s.whoIs(r)
 	return ok
 }
 
@@ -501,6 +604,9 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) error {
 	if err := target.ValidateNQN(req.NQN); err != nil {
 		return err
 	}
+	if scopeOf(r) != "" && (req.DHCHAPKey != "" || req.DHCHAPCtrlKey != "" || req.DHCHAPHash != "" || req.DHCHAPDHGroup != "") {
+		return forbidden("a scoped token may create hosts, but only an admin may set their DH-HMAC-CHAP keys")
+	}
 	err := s.m.mutate(func(st *target.State) error {
 		if st.Hosts[req.NQN] != nil {
 			return target.NewConflict("host %s already exists", req.NQN)
@@ -650,9 +756,18 @@ func (s *Server) createSubsystem(w http.ResponseWriter, r *http.Request) error {
 		AllowedHosts   []string `json:"allowed_hosts"`
 		Ports          []uint16 `json:"ports"`
 		PassthruDevice string   `json:"passthru_device"`
+		Owner          string   `json:"owner"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		return err
+	}
+	scope := scopeOf(r)
+	owner, err := ownerFor(scope, req.Owner)
+	if err != nil {
+		return err
+	}
+	if scope != "" && (req.AllowAnyHost || req.PassthruDevice != "") {
+		return forbidden("only an admin may let any host connect, or pass a controller through")
 	}
 	if req.Serial == "" {
 		req.Serial = target.NewSerial()
@@ -674,8 +789,9 @@ func (s *Server) createSubsystem(w http.ResponseWriter, r *http.Request) error {
 		Ports:        append([]uint16{}, req.Ports...),
 		Namespaces:   map[uint32]*target.Namespace{},
 		Passthru:     req.PassthruDevice,
+		Owner:        owner,
 	}
-	err := s.m.mutate(func(st *target.State) error {
+	err = s.m.mutate(func(st *target.State) error {
 		if st.Subsystems[req.NQN] != nil {
 			return target.NewConflict("subsystem %s already exists", req.NQN)
 		}
@@ -711,10 +827,18 @@ func (s *Server) getSubsystem(w http.ResponseWriter, r *http.Request) error {
 func (s *Server) updateSubsystem(w http.ResponseWriter, r *http.Request) error {
 	nqn := r.PathValue("nqn")
 	var req struct {
-		AllowAnyHost *bool `json:"allow_any_host"`
+		AllowAnyHost *bool   `json:"allow_any_host"`
+		Owner        *string `json:"owner"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		return err
+	}
+	scope := scopeOf(r)
+	if err := newOwner(scope, req.Owner); err != nil {
+		return err
+	}
+	if scope != "" && req.AllowAnyHost != nil && *req.AllowAnyHost {
+		return forbidden("only an admin may let any host connect")
 	}
 	var updated *target.Subsystem
 	err := s.m.mutate(func(st *target.State) error {
@@ -722,8 +846,14 @@ func (s *Server) updateSubsystem(w http.ResponseWriter, r *http.Request) error {
 		if sub == nil {
 			return notFound("no such subsystem %s", nqn)
 		}
+		if err := mayChange(scope, sub.Owner, "subsystem "+nqn); err != nil {
+			return err
+		}
 		if req.AllowAnyHost != nil {
 			sub.AllowAnyHost = *req.AllowAnyHost
+		}
+		if req.Owner != nil {
+			sub.Owner = *req.Owner
 		}
 		updated = sub
 		return nil
@@ -737,9 +867,13 @@ func (s *Server) updateSubsystem(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Server) deleteSubsystem(w http.ResponseWriter, r *http.Request) error {
 	nqn := r.PathValue("nqn")
+	scope := scopeOf(r)
 	err := s.m.mutate(func(st *target.State) error {
 		if st.Subsystems[nqn] == nil {
 			return notFound("no such subsystem %s", nqn)
+		}
+		if err := mayChange(scope, st.Subsystems[nqn].Owner, "subsystem "+nqn); err != nil {
+			return err
 		}
 		delete(st.Subsystems, nqn)
 		return nil
@@ -755,11 +889,15 @@ func (s *Server) deleteSubsystem(w http.ResponseWriter, r *http.Request) error {
 
 // link adds or removes value in the list that pick selects. PUT and DELETE are
 // both idempotent, which suits automation that retries.
-func link[T comparable](s *Server, w http.ResponseWriter, nqn string, value T, add bool, pick func(*target.Subsystem) *[]T) error {
+func link[T comparable](s *Server, w http.ResponseWriter, r *http.Request, value T, add bool, pick func(*target.Subsystem) *[]T) error {
+	nqn, scope := r.PathValue("nqn"), scopeOf(r)
 	err := s.m.mutate(func(st *target.State) error {
 		sub := st.Subsystems[nqn]
 		if sub == nil {
 			return notFound("no such subsystem %s", nqn)
+		}
+		if err := mayChange(scope, sub.Owner, "subsystem "+nqn); err != nil {
+			return err
 		}
 		list := pick(sub)
 		i := slices.Index(*list, value)
@@ -786,7 +924,7 @@ func (s *Server) attachPort(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return link(s, w, r.PathValue("nqn"), id, true, subsysPorts)
+	return link(s, w, r, id, true, subsysPorts)
 }
 
 func (s *Server) detachPort(w http.ResponseWriter, r *http.Request) error {
@@ -794,15 +932,15 @@ func (s *Server) detachPort(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return link(s, w, r.PathValue("nqn"), id, false, subsysPorts)
+	return link(s, w, r, id, false, subsysPorts)
 }
 
 func (s *Server) allowHost(w http.ResponseWriter, r *http.Request) error {
-	return link(s, w, r.PathValue("nqn"), r.PathValue("host"), true, subsysHosts)
+	return link(s, w, r, r.PathValue("host"), true, subsysHosts)
 }
 
 func (s *Server) denyHost(w http.ResponseWriter, r *http.Request) error {
-	return link(s, w, r.PathValue("nqn"), r.PathValue("host"), false, subsysHosts)
+	return link(s, w, r, r.PathValue("host"), false, subsysHosts)
 }
 
 // --- namespaces ---
@@ -854,6 +992,10 @@ func (s *Server) createNamespace(w http.ResponseWriter, r *http.Request) error {
 	if backings != 1 {
 		return target.Invalid("specify exactly one of device_path, file or volume")
 	}
+	scope := scopeOf(r)
+	if scope != "" && req.Volume == "" {
+		return forbidden("a scoped token may only export its own volumes: devices and files are for admins")
+	}
 	if req.Volume != "" && (req.UUID != "" || req.NGUID != "") {
 		return target.Invalid("a volume brings its own uuid and nguid, so they can't be given here")
 	}
@@ -880,6 +1022,9 @@ func (s *Server) createNamespace(w http.ResponseWriter, r *http.Request) error {
 		if sub == nil {
 			return notFound("no such subsystem %s", nqn)
 		}
+		if err := mayChange(scope, sub.Owner, "subsystem "+nqn); err != nil {
+			return err
+		}
 		if sub.Passthru != "" {
 			return target.NewConflict("subsystem %s is a passthrough subsystem", nqn)
 		}
@@ -898,6 +1043,9 @@ func (s *Server) createNamespace(w http.ResponseWriter, r *http.Request) error {
 			vol := st.Volumes[req.Volume]
 			if vol == nil {
 				return target.Invalid("no such volume %s", req.Volume)
+			}
+			if err := mayChange(scope, vol.Owner, "volume "+req.Volume); err != nil {
+				return err
 			}
 			// Its file, reached by another name, may already be exported.
 			if err := checkUnshared(st, vol.DevicePath, "", 0, vol.Name); err != nil {
@@ -1054,12 +1202,16 @@ func (s *Server) deleteNamespace(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	removeFile := r.URL.Query().Get("delete_file") == "true"
+	scope := scopeOf(r)
 	var path string
 	var managed, began bool
 	err = s.m.mutate(func(st *target.State) error {
 		sub := st.Subsystems[nqn]
 		if sub == nil || sub.Namespaces[nsid] == nil {
 			return notFound("no such namespace %d on %s", nsid, nqn)
+		}
+		if err := mayChange(scope, sub.Owner, "subsystem "+nqn); err != nil {
+			return err
 		}
 		path, managed = sub.Namespaces[nsid].DevicePath, sub.Namespaces[nsid].ManagedFile
 		if removeFile && !managed {

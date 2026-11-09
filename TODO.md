@@ -222,9 +222,11 @@ are in `CLAUDE.review.md`, which isn't in the repository.
         out what happens to pods on both volumes, then either document it or have the node plugin handle it, as with `vgimportclone`
 ## Security
 
-- [ ] Scoped API tokens: a token that may only touch names with a given prefix, such as one CSI cluster's, so that clusters sharing
-      one nvweaver can't delete each other's volumes. Today every token, and everyone signed in, can do everything. Decide how this
-      relates to roles for people in the web interface, which decision 40 left out
+- [x] Scoped API tokens, so that clusters sharing one nvweaver can't delete each other's volumes: by ownership, not name prefixes,
+      decision 46. Tested in the k3s lab, with the driver on a scoped token
+- [ ] Roles for people in the web interface, which decision 40 left out: everyone signed in is still an admin
+- [ ] A way to hand a cluster's existing volumes, snapshots and subsystems to its scoped token in one go, rather than one at a time
+- [ ] Hosts owned by a token, when nodes get DH-HMAC-CHAP keys, which only admins may set now
 - [ ] Document backing up nvweaver's data directory, and recovering from losing it: it's a single target, and the state is what
       says which volume is which
 

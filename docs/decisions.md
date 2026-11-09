@@ -521,3 +521,34 @@ there, not as absolute numbers.
 - **A SINGLE_NODE_SINGLE_WRITER volume is published at one target path only;** a second is refused.
 - **Listing returns this cluster's names only,** paged by name, with a token that must be one of them.
 - **Not yet:** topology, capacity reporting, DH-HMAC-CHAP for nodes, and scale testing. They're in `TODO.md`.
+
+## 46. Scoped tokens own what they create
+
+- **The problem:** every token and everyone signed in could do everything. Several Kubernetes clusters sharing one
+  nvweaver, each with its CSI driver, could delete each other's volumes, by mistake or otherwise.
+- **Chosen, with the user:** scoped tokens, listed in a file, `NVWEAVER_TOKENS_FILE`, as `name:sha256:<hex>` lines.
+  What a scoped token creates is owned by it: volumes, snapshots and subsystems carry its name as `owner`, set by the
+  server, which the token can't choose. It may change or delete only what it owns, and use only what it owns: it can't
+  snapshot, clone or export another's volume, or add a namespace to another's subsystem.
+- **Ownership, not name prefixes,** which were the first plan. A prefix is a naming convention that a mistake breaks; an
+  owner is who made it. It also gives the interface and the CLI an Owner column, which shows each cluster's volumes,
+  snapshots and subsystems directly. Labels were considered, but anyone who can change a volume can change its labels.
+- **Reads are for everyone,** chosen by the user, so the driver and CLI work unchanged, and clusters can see each
+  other's names. Filtering every list, page and count by owner is more work for little gain.
+- **Admin-only, refused with `403` before anything is looked at:** pools, ports, changing or deleting hosts, setting
+  DH-HMAC-CHAP keys, passthrough, letting any host connect, changing a namespace, and namespaces on devices or files.
+  A scoped token may create hosts without keys, as nodes need them, and allow and deny hosts on its own subsystems.
+  Every change that isn't listed as open to scoped tokens is admin-only, so a new route is refused to them until it's
+  thought about.
+- **Admins** are the token in `NVWEAVER_API_TOKEN` and everyone in the users file, as before. They may set an owner when
+  creating something, and give a volume or subsystem to another token, or to no one, with `owner` on `PATCH`. What has
+  no owner, including everything made before this, is for admins only. **So a cluster moving from the admin token to a
+  scoped one needs its existing volumes and subsystems given to that token first,** with `--owner`.
+- **The file holds SHA-256 hashes, not bcrypt,** as tokens are long and random: there's nothing to guess that a slow
+  hash would protect. It's refused if others can read it, as the users file is, and read again when it changes, so a
+  token can be added or revoked with no restart. `nvweaver token new NAME` makes a token and its line.
+- **A tokens file doesn't count as protecting the API** off loopback: with only scoped tokens, nothing could manage it.
+  An admin token or users file is still needed there.
+- **Rejected: tokens made through the API,** chosen by the user: the API could then mint credentials, and the state file
+  would hold them. **Rejected: hosts owned by a token.** Hosts are a node's identity, and a node could be shared; when
+  nodes get DH-HMAC-CHAP keys, which only admins may set now, this needs another look.

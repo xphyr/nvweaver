@@ -535,8 +535,16 @@ and read on another while both had it, and nothing left after everything was del
   one leftover mount: the driver let a SINGLE_NODE_SINGLE_WRITER volume be published at a second path, which CSI forbids,
   and the test never cleaned up after a publish it expected to fail. Then two more: a node ID that isn't an NQN has to be
   not found, and the driver claimed `PUBLISH_READONLY`, which nvweaver can't do. Each was fixed, with a unit test first.
+- **Scoped tokens, decision 46:** the lab's driver now uses a scoped token, `lab`, made by `nvweaver token new` in the image,
+  and the service has a second, `other`. All 32 checks passed: every volume the driver made is owned by `lab`, and `other` is
+  refused with `403` when it tries to delete one. `csi-sanity` still passes, 75 of 75. In the unit tests, every rule failed
+  its test when turned off: without the ownership check, one cluster could delete another's subsystem; with every route open,
+  a scoped token could adopt a pool; without the forced owner, what a token made had none. The browser test checks the Owner
+  column and filtering by it, 245 of 245. Scoped by decision 39, `e2e.sh` passed on both targets, 311 and 327, and the
+  browser against real targets 93 of 93, unchanged by the new checks on every request.
 - **Not tested yet:** more than three nodes or a handful of volumes, OpenShift, KubeVirt live migration, Arm, and the
-  outage test against SPDK, or for longer than the kernel's default 10-minute timeout.
+  outage test against SPDK, or for longer than the kernel's default 10-minute timeout. `e2e.sh` doesn't run with a tokens
+  file: the k3s lab is the only real service that has.
 
 ## Not tested
 

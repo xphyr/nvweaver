@@ -161,7 +161,7 @@ func seedArchive(ctx context.Context, c *client.Client, dir, prefix, host string
 	}
 	for i, size := range []int64{20, 50, 100} {
 		name := fmt.Sprintf("backup-%02d", i+1)
-		vol, err := c.CreateVolume(ctx, client.VolumeCreate{Name: name, Pool: "archive", SizeBytes: size << 30, Labels: map[string]string{"app": "backups"}})
+		vol, err := c.CreateVolume(ctx, client.VolumeCreate{Name: name, Pool: "archive", SizeBytes: size << 30, Labels: map[string]string{"app": "backups"}, Owner: "cluster-a"})
 		if err != nil {
 			return err
 		}
@@ -169,11 +169,11 @@ func seedArchive(ctx context.Context, c *client.Client, dir, prefix, host string
 			return err
 		}
 	}
-	if _, err := c.CreateSnapshot(ctx, client.SnapshotCreate{Name: "backup-01-monthly", Volume: "backup-01"}); err != nil {
+	if _, err := c.CreateSnapshot(ctx, client.SnapshotCreate{Name: "backup-01-monthly", Volume: "backup-01", Owner: "cluster-a"}); err != nil {
 		return err
 	}
 	nqn := prefix + "backups"
-	if _, err := c.CreateSubsystem(ctx, client.SubsystemCreate{NQN: nqn, AllowedHosts: []string{host}, Ports: []int{2}}); err != nil {
+	if _, err := c.CreateSubsystem(ctx, client.SubsystemCreate{NQN: nqn, AllowedHosts: []string{host}, Ports: []int{2}, Owner: "cluster-a"}); err != nil {
 		return err
 	}
 	_, err := c.CreateNamespace(ctx, nqn, client.NamespaceCreate{Volume: "backup-01"})

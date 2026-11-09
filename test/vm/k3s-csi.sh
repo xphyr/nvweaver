@@ -50,9 +50,21 @@ if ! vgs csivg >/dev/null 2>&1; then
 fi
 EOF
 	"$LAB" load nvweaver "$IMAGE" >/dev/null || die "cannot load $IMAGE"
+	# A scoped token for the lab's cluster, which the driver uses, and one for another, to show they can't touch each
+	# other's volumes. Made by the real command line utility, in the image. The admin token is for the test's own checks.
+	nvw "sudo bash -s" <<EOF || die "cannot make the scoped tokens"
+set -e
+cd /etc/nvweaver-lab
+if [ ! -f tokens ]; then
+	for name in lab other; do
+		podman run --rm --pull=never -v /etc/nvweaver-lab:/out:Z --entrypoint nvweaver $IMAGE token new \$name --token-file /out/\$name.token
+	done > tokens
+	chmod 600 tokens lab.token other.token
+fi
+EOF
 	nvw "sudo podman rm -f nvweaver-csi-lab >/dev/null 2>&1; sudo podman run -d --pull=never --name nvweaver-csi-lab --privileged --network host --pid=host \
 		-v /lib/modules:/lib/modules:ro -v /dev:/dev -v nvweaver-csi-lab:/var/lib/nvweaver -v /etc/nvweaver-lab:/etc/nvweaver-lab:ro \
-		-e NVWEAVER_BACKEND=${BACKEND:-nvmet} -e NVWEAVER_LISTEN=$NVW_IP:8420 -e NVWEAVER_API_TOKEN=\$(sudo cat /etc/nvweaver-lab/token) \
+		-e NVWEAVER_BACKEND=${BACKEND:-nvmet} -e NVWEAVER_LISTEN=$NVW_IP:8420 -e NVWEAVER_API_TOKEN=\$(sudo cat /etc/nvweaver-lab/token) -e NVWEAVER_TOKENS_FILE=/etc/nvweaver-lab/tokens \
 		-e NVWEAVER_TLS_CERT=/etc/nvweaver-lab/tls.crt -e NVWEAVER_TLS_KEY=/etc/nvweaver-lab/tls.key $IMAGE >/dev/null" || die "cannot start nvweaver"
 
 	for _ in $(seq 1 60); do [ "$(api GET /healthz)" = 200 ] && break; sleep 1; done
@@ -79,7 +91,7 @@ EOF
 
 	echo "The driver"
 	k create namespace $NS --dry-run=client -o yaml | k apply -f - >/dev/null
-	nvw 'sudo cat /etc/nvweaver-lab/token' >"$WORK/token" && nvw 'sudo cat /etc/nvweaver-lab/tls.crt' >"$WORK/ca.crt" || die "cannot read the token"
+	nvw 'sudo cat /etc/nvweaver-lab/lab.token' >"$WORK/token" && nvw 'sudo cat /etc/nvweaver-lab/tls.crt' >"$WORK/ca.crt" || die "cannot read the token"
 	"$LAB" ssh server "sudo k3s kubectl -n $NS delete secret nvweaver-api --ignore-not-found >/dev/null; cat > /tmp/token; " <"$WORK/token"
 	"$LAB" ssh server "cat > /tmp/ca.crt" <"$WORK/ca.crt"
 	"$LAB" ssh server "sudo k3s kubectl -n $NS create secret generic nvweaver-api --from-literal=url=$API --from-file=token=/tmp/token --from-file=ca.crt=/tmp/ca.crt >/dev/null; rm -f /tmp/token /tmp/ca.crt" ||
@@ -162,6 +174,8 @@ cmd_test() {
 	local vol
 	vol=$(k get pvc fs -o jsonpath='{.spec.volumeName}')
 	expect_eq "nvweaver has the volume, named for the cluster" 200 "$(api GET "/v1/volumes/lab-$vol")"
+	expect_eq "owned by the cluster's scoped token" lab "$(bodyq .owner)"
+	expect_eq "which another cluster's token can't delete" 403 "$(nvw "curl -s -m 30 -o /dev/null -w '%{http_code}' --cacert /etc/nvweaver-lab/tls.crt -H \"Authorization: Bearer \$(sudo cat /etc/nvweaver-lab/other.token)\" -X DELETE $API/v1/volumes/lab-$vol")"
 	gone w1
 	pod r1 fs agent2 'cat /data/f'
 	expect_eq "a pod on another node reads it" Succeeded "$(finished r1)"

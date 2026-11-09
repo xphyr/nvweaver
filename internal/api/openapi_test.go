@@ -137,13 +137,13 @@ func TestSpecDescribesResponses(t *testing.T) {
 	const host = "nqn.2026-11.net.example:h"
 	send("POST", "/v1/hosts", `{"nqn":"`+host+`","dhchap_key":"k","dhchap_ctrl_key":"c","dhchap_hash":"hmac(sha256)","dhchap_dhgroup":"null"}`, 201)
 	send("POST", "/v1/ports", `{"id":1,"address":"127.0.0.1","inline_data_size":8192}`, 201)
-	send("POST", "/v1/subsystems", `{"nqn":"`+sub+`","allowed_hosts":["`+host+`"],"ports":[1]}`, 201)
+	send("POST", "/v1/subsystems", `{"nqn":"`+sub+`","allowed_hosts":["`+host+`"],"ports":[1],"owner":"lab"}`, 201)
 	send("POST", "/v1/subsystems/"+sub+"/namespaces", `{"file":{"name":"a","size_bytes":4096}}`, 201)
 	send("POST", "/v1/pools", `{"name":"p","type":"reflink","path":"/fake","labels":{"a":"b"}}`, 201)
-	send("POST", "/v1/volumes", `{"name":"v","size_bytes":4096,"labels":{"a":"b"}}`, 201)
+	send("POST", "/v1/volumes", `{"name":"v","size_bytes":4096,"labels":{"a":"b"},"owner":"lab"}`, 201)
 	send("POST", "/v1/volumes", `{"name":"w","size_bytes":4096}`, 201)
 	send("POST", "/v1/subsystems/"+sub+"/namespaces", `{"nsid":2,"volume":"v"}`, 201)
-	send("POST", "/v1/snapshots", `{"name":"s","volume":"w"}`, 201)
+	send("POST", "/v1/snapshots", `{"name":"s","volume":"w","owner":"lab"}`, 201)
 	send("POST", "/v1/snapshots", `{"name":"t","volume":"w"}`, 201)
 
 	// A passthrough subsystem is the only way to get passthru_device, which needs a real

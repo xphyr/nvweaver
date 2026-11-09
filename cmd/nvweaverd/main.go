@@ -61,6 +61,11 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Scoped tokens don't count as protecting the API: they can't be admins, so with only those, nothing could manage it.
+	tokens, err := auth.NewTokens(env("NVWEAVER_TOKENS_FILE", ""), log)
+	if err != nil {
+		return err
+	}
 	if err := checkExposure(listen, token, users != nil); err != nil {
 		return err
 	}
@@ -104,6 +109,7 @@ func run(log *slog.Logger) error {
 	apiServer := api.NewServer(mgr, token)
 	apiServer.Version = version
 	apiServer.Auth = users
+	apiServer.Tokens = tokens
 	apiServer.AllowInsecureLogin = allowInsecureLogin
 	srv := &http.Server{
 		Addr:              listen,
