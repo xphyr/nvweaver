@@ -96,6 +96,10 @@ Changing a node's host NQN once it has volumes cuts it off from them, as nvweave
 
 ## Installing
 
+There are two ways, which install the same things: the manifests in [`deploy/`](deploy/), step by step as below, or the Helm
+chart in [`deploy/helm/nvweaver-csi`](deploy/helm/nvweaver-csi), which does those steps in one, from values: see
+[Installing with Helm](#installing-with-helm). Use one or the other on a cluster, not both.
+
 The image is published for amd64 and arm64 as `ghcr.io/xphyr/nvweaver-csi`, tagged with each release, such as `0.4.0`. To build
 your own instead, from the repository's root, push it to a registry the nodes can pull from:
 
@@ -137,6 +141,45 @@ Last, a StorageClass and a VolumeSnapshotClass. Edit `pool` in [`deploy/classes.
 ```sh
 kubectl apply -f csi/deploy/classes.yaml
 ```
+
+### Installing with Helm
+
+The chart installs the driver, its RBAC, a StorageClass and, where the snapshot CRDs are installed, a VolumeSnapshotClass. On
+OpenShift it also grants the node plugin the privileged SCC by itself. It needs the same things first: [Before you
+start](#before-you-start), including every node's own host NQN, and the snapshot CRDs and controller if you want snapshots.
+
+```sh
+kubectl create namespace nvweaver-csi
+kubectl -n nvweaver-csi create secret generic nvweaver-api \
+  --from-literal=url=https://storage.example:8420 --from-file=token=prod.token --from-file=ca.crt=ca.crt
+
+helm install nvweaver-csi csi/deploy/helm/nvweaver-csi -n nvweaver-csi \
+  --set cluster=prod --set nvweaver.existingSecret=nvweaver-api \
+  --set 'storageClasses[0].name=nvweaver' --set 'storageClasses[0].pool=fast'
+```
+
+Or let the chart make the secret, with `--set nvweaver.url=...` and `--set-file nvweaver.token=prod.token --set-file
+nvweaver.ca=ca.crt` in place of `nvweaver.existingSecret`. It refuses to install without `cluster`, or without a way to reach
+nvweaver.
+
+The values, all in [`values.yaml`](deploy/helm/nvweaver-csi/values.yaml) with what each does:
+
+| Value | Default | Meaning |
+|---|---|---|
+| `cluster` | none, required | As `--cluster`: the scoped token's name. Can't change once there are volumes. |
+| `nvweaver.existingSecret`, or `.url`, `.token`, `.ca` | none | How to reach nvweaver's API. |
+| `image.repository`, `.tag` | `ghcr.io/xphyr/nvweaver-csi`, the chart's version | The driver's image. |
+| `storageClasses` | one, `nvweaver` | A list: each with `name`, `pool`, `port`, `fsType`, `reclaimPolicy`, `volumeBindingMode`, `allowVolumeExpansion`, `default`, and `defaultVirt` for KubeVirt's default class. |
+| `volumeSnapshotClass.create` | `true` | Made only where the snapshot CRDs are. |
+| `controller.port` | `1` | The nvweaver port, unless a StorageClass says otherwise. |
+| `node.ctrlLossTmo`, `.reconnectDelay`, `.maxVolumesPerNode` | `-1`, `2`, `1024` | As the driver's flags below. |
+| `node.kubeletDir` | `/var/lib/kubelet` | Where the nodes' kubelet keeps its files, if a distribution moves it. |
+| `openshift.privilegedSCC` | `auto` | Grant the node plugin the privileged SCC: `auto` does when the cluster has OpenShift's security API. |
+| `driverName`, `nqnPrefix` | as the flags | Can't change once there are volumes. |
+| `sidecars.*.image`, `sidecars.timeout` | the tested sidecar releases, `150s` | The CSI sidecars. |
+
+`helm upgrade` changes any of them, except those that can't change once there are volumes. The CDI StorageProfile isn't in the
+chart, as CDI makes and owns it: apply it as below.
 
 ### With KubeVirt or OpenShift Virtualization
 
@@ -253,6 +296,9 @@ kubectl delete -f csi/deploy/classes.yaml
 sed -e 's#IMAGE#x#' -e 's#CLUSTER#prod#' csi/deploy/nvweaver-csi.yaml | kubectl delete -f -
 kubectl delete namespace nvweaver-csi
 ```
+
+Installed with Helm, `helm uninstall nvweaver-csi -n nvweaver-csi`, then delete the namespace, take the place of the first two
+lines.
 
 Each node's subsystem and host stay in nvweaver, as the driver keeps them for the node's next volume, and each node stays
 connected to its subsystem. Delete the subsystems, named `<nqn-prefix>:<cluster>:node-…`, with `nvweaver subsystem delete`,

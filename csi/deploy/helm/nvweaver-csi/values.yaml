@@ -1,0 +1,90 @@
+# A name for this cluster: 1 to 40 lowercase letters, digits and dashes. It starts every volume, snapshot and subsystem name the
+# driver makes, so that several clusters can share one nvweaver. Required. It can't change once there are volumes.
+cluster: ""
+
+# How the driver reaches nvweaver's API. Either name a secret with keys url, token and ca.crt, or give them here and the chart
+# makes one. Use a scoped token for this cluster, named as the cluster is: see "Scoped tokens" in nvweaver's README.
+nvweaver:
+  existingSecret: ""
+  url: ""          # such as https://storage.example:8420
+  token: ""
+  ca: ""           # the PEM CA certificate for the API's TLS, if it isn't publicly trusted
+
+image:
+  repository: ghcr.io/xphyr/nvweaver-csi
+  tag: ""          # the chart's appVersion when empty
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# The driver's name in Kubernetes. It can't change once there are volumes.
+driverName: nvweaver.xphyr.github.io
+# How the NQN of each subsystem the driver makes starts. It can't change once there are volumes.
+nqnPrefix: nqn.2026-11.io.github.xphyr.nvweaver:csi
+
+controller:
+  replicas: 1
+  # The nvweaver port volumes are offered on, unless a StorageClass sets port.
+  port: 1
+  priorityClassName: system-cluster-critical
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+node:
+  # Seconds a node keeps reconnecting before giving its volumes up. -1 is for ever, as there's no failover.
+  ctrlLossTmo: -1
+  # Seconds between a node's attempts to reconnect, which is how long I/O stalls when a connection drops.
+  reconnectDelay: 2
+  # What each node tells Kubernetes it can take: at most 1024, the namespaces a subsystem holds.
+  maxVolumesPerNode: 1024
+  # The kubelet's directory on the nodes.
+  kubeletDir: /var/lib/kubelet
+  priorityClassName: system-node-critical
+  resources: {}
+  nodeSelector: {}
+  # On every node by default, control plane nodes included, as they may run workloads.
+  tolerations:
+    - operator: Exists
+
+# On OpenShift, the node plugin needs the privileged SCC. auto grants it when the cluster has OpenShift's security API.
+openshift:
+  privilegedSCC: auto   # auto, true or false
+
+sidecars:
+  provisioner:
+    image: registry.k8s.io/sig-storage/csi-provisioner:v6.4.0
+  attacher:
+    image: registry.k8s.io/sig-storage/csi-attacher:v4.13.0
+  resizer:
+    image: registry.k8s.io/sig-storage/csi-resizer:v2.3.0
+  snapshotter:
+    image: registry.k8s.io/sig-storage/csi-snapshotter:v8.7.0
+  nodeDriverRegistrar:
+    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.18.0
+  livenessProbe:
+    image: registry.k8s.io/sig-storage/livenessprobe:v2.20.0
+  # How long the sidecars wait for the driver, which waits for nvweaver: a full clone can take a while.
+  timeout: 150s
+
+storageClasses:
+  - name: nvweaver
+    # The nvweaver pool. It can be left out if nvweaver has only one.
+    pool: ""
+    # The nvweaver port to offer volumes on, such as one on a storage network. Empty uses controller.port.
+    port: ""
+    fsType: ""         # ext4 unless this says xfs
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+    # The cluster's default class.
+    default: false
+    # KubeVirt's default class for VM disks. On a running cluster, CDI then imports its golden images again: see the README.
+    defaultVirt: false
+
+# Needs the VolumeSnapshot CRDs and controller, which OpenShift has, and many clusters do. Left out when the CRDs aren't there.
+volumeSnapshotClass:
+  create: true
+  name: nvweaver
+  deletionPolicy: Delete

@@ -1,0 +1,11 @@
+apiVersion: v2
+name: nvweaver-csi
+description: The CSI driver for nvweaver, an NVMe over TCP target with a REST API
+type: application
+version: 0.4.0
+appVersion: "0.4.0"
+kubeVersion: ">=1.30.0-0"
+home: https://github.com/xphyr/nvweaver
+sources:
+  - https://github.com/xphyr/nvweaver/tree/main/csi
+keywords: [csi, nvme, nvme-tcp, storage, kubevirt]

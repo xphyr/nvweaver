@@ -31,6 +31,7 @@ test:
 SHELLCHECK_IMAGE = docker.io/koalaman/shellcheck:v0.10.0
 ACTIONLINT_IMAGE = docker.io/rhysd/actionlint:1.7.7
 REDOCLY_IMAGE = docker.io/redocly/cli:2.8.0
+HELM_IMAGE = docker.io/alpine/helm:4.2.2
 
 # Formatting, then shell scripts and workflows, using pinned tools in rootless Podman.
 lint:
@@ -43,6 +44,12 @@ lint:
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(ACTIONLINT_IMAGE)
 	podman run --rm --pull=missing -v "$$PWD:/spec:ro,Z" --workdir /spec $(REDOCLY_IMAGE) \
 		lint --skip-rule operation-4xx-response api/openapi.yaml
+	@# The CSI driver's chart, rendered as on plain Kubernetes and as on OpenShift with snapshots, so every branch is checked.
+	podman run --rm --pull=missing -v "$$PWD/csi/deploy/helm:/charts:ro,Z" --workdir /charts $(HELM_IMAGE) \
+		lint nvweaver-csi --strict --set cluster=lint --set nvweaver.existingSecret=api
+	podman run --rm --pull=missing -v "$$PWD/csi/deploy/helm:/charts:ro,Z" --workdir /charts $(HELM_IMAGE) \
+		template t nvweaver-csi --set cluster=lint --set nvweaver.existingSecret=api \
+		--api-versions security.openshift.io/v1 --api-versions snapshot.storage.k8s.io/v1/VolumeSnapshotClass >/dev/null
 
 # BUILD_FLAGS can add layer caching, as CI does, or a platform such as --platform linux/arm64.
 images:

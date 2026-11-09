@@ -1,0 +1,43 @@
+{{- range .Values.storageClasses }}
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ required "each storage class needs a name" .name }}
+  labels: {{- include "nvweaver-csi.labels" $ | nindent 4 }}
+  {{- if or .default .defaultVirt }}
+  annotations:
+    {{- if .default }}
+    storageclass.kubernetes.io/is-default-class: "true"
+    {{- end }}
+    {{- if .defaultVirt }}
+    storageclass.kubevirt.io/is-default-virt-class: "true"
+    {{- end }}
+  {{- end }}
+provisioner: {{ $.Values.driverName }}
+{{- if or .pool .port .fsType }}
+parameters:
+  {{- with .pool }}
+  pool: {{ . | quote }}
+  {{- end }}
+  {{- with .port }}
+  port: {{ . | quote }}
+  {{- end }}
+  {{- with .fsType }}
+  csi.storage.k8s.io/fstype: {{ . | quote }}
+  {{- end }}
+{{- end }}
+reclaimPolicy: {{ .reclaimPolicy | default "Delete" }}
+allowVolumeExpansion: {{ ne .allowVolumeExpansion false }}
+volumeBindingMode: {{ .volumeBindingMode | default "WaitForFirstConsumer" }}
+{{- end }}
+{{- if and .Values.volumeSnapshotClass.create (.Capabilities.APIVersions.Has "snapshot.storage.k8s.io/v1/VolumeSnapshotClass") }}
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: {{ .Values.volumeSnapshotClass.name }}
+  labels: {{- include "nvweaver-csi.labels" . | nindent 4 }}
+driver: {{ .Values.driverName }}
+deletionPolicy: {{ .Values.volumeSnapshotClass.deletionPolicy }}
+{{- end }}

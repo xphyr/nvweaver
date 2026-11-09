@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "nvweaver-csi.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nvweaver-csi
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nvweaver-csi
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: controller
+      annotations:
+        # A changed secret restarts the controller, which reads it at startup.
+        checksum/api: {{ printf "%s%s%s%s" .Values.nvweaver.existingSecret .Values.nvweaver.url .Values.nvweaver.token .Values.nvweaver.ca | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-controller
+      priorityClassName: {{ .Values.controller.priorityClassName }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: driver
+          image: {{ include "nvweaver-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --mode=controller
+            {{- include "nvweaver-csi.driverArgs" . | nindent 12 }}
+            - --port={{ .Values.controller.port }}
+          env:
+            - name: NVWEAVER_API_URL
+              valueFrom: {secretKeyRef: {name: {{ include "nvweaver-csi.secretName" . }}, key: url}}
+            - name: NVWEAVER_API_TOKEN_FILE
+              value: /etc/nvweaver/token
+            - name: NVWEAVER_CA
+              value: /etc/nvweaver/ca.crt
+          {{- with .Values.controller.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - {name: socket, mountPath: /csi}
+            - {name: api, mountPath: /etc/nvweaver, readOnly: true}
+        {{- $sidecar := dict "provisioner" .Values.sidecars.provisioner "attacher" .Values.sidecars.attacher "resizer" .Values.sidecars.resizer "snapshotter" .Values.sidecars.snapshotter }}
+        {{- range $name := list "provisioner" "attacher" "resizer" "snapshotter" }}
+        - name: {{ $name }}
+          image: {{ (get $sidecar $name).image }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --timeout={{ $.Values.sidecars.timeout }}
+            - --leader-election
+            - --leader-election-namespace={{ $.Release.Namespace }}
+            {{- if eq $name "provisioner" }}
+            - --extra-create-metadata
+            {{- end }}
+          volumeMounts: [{name: socket, mountPath: /csi}]
+        {{- end }}
+        - name: liveness
+          image: {{ .Values.sidecars.livenessProbe.image }}
+          args: [--csi-address=/csi/csi.sock]
+          volumeMounts: [{name: socket, mountPath: /csi}]
+      volumes:
+        - {name: socket, emptyDir: {}}
+        - name: api
+          secret:
+            secretName: {{ include "nvweaver-csi.secretName" . }}
+            items: [{key: token, path: token}, {key: ca.crt, path: ca.crt}]
