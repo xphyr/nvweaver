@@ -79,6 +79,9 @@ jobs:
           [ "$got" = "nvweaverd $VERSION" ]
           got=$(podman run --rm --pull=never localhost/nvweaver:spdk --version)
           [ "$got" = "nvweaverd $VERSION" ]
+          got=$(podman run --rm --pull=never localhost/nvweaver-csi:dev --version)
+          echo "$got"
+          [ "$got" = "nvweaver-csi $VERSION" ]
       - name: Collect the tarballs and their checksums
         run: |
           # A tarball of the wrong architecture would otherwise publish without complaint.
@@ -120,6 +123,13 @@ jobs:
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.push.outputs.spdk }}
+          push-to-registry: true
+          # Storage records are an organization feature.
+          create-storage-record: false
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}-csi
+          subject-digest: ${{ steps.push.outputs.csi }}
           push-to-registry: true
           # Storage records are an organization feature.
           create-storage-record: false

@@ -2,7 +2,10 @@
 
 The major differences between versions. For every change, see the commit history.
 
-## Unreleased
+## v0.4.0
+
+The CSI driver, scoped tokens and metrics. The driver's image is published for the first time, as
+`ghcr.io/xphyr/nvweaver-csi`, for amd64 and arm64.
 
 ### Added
 
@@ -11,7 +14,7 @@ The major differences between versions. For every change, see the commit history
   scrape configs and example alerts are in `docs/monitoring.md`.
 - **A Kubernetes CSI driver,** in `csi/`: dynamic provisioning of filesystem and raw block volumes from nvweaver's pools, over NVMe/TCP,
   with growing, snapshots and clones, and raw block volumes shared by several nodes. It's new, tested so far in a k3s lab of three VMs,
-  and its image isn't published yet: build it with `make images`. See "Kubernetes CSI driver" in the README.
+  and on a compact OpenShift 4.22 cluster, with KubeVirt live migration. Its image is `ghcr.io/xphyr/nvweaver-csi`. See `csi/README.md`.
 - **Scoped API tokens,** from a file in `NVWEAVER_TOKENS_FILE`, made with `nvweaver token new`. A scoped token may read everything,
   but only change the volumes, snapshots and subsystems it created, which show it as their owner in the API, the CLI and the web
   interface. One for each Kubernetes cluster keeps clusters sharing an nvweaver from touching each other's volumes.

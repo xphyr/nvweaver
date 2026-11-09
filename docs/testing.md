@@ -598,6 +598,15 @@ and read on another while both had it, and nothing left after everything was del
   outage test against SPDK, or for longer than the kernel's default 10-minute timeout. `e2e.sh` doesn't run with a tokens
   file: the k3s lab is the only real service that has.
 
+### Before v0.4.0
+
+Every suite on x86-64 VMs, with images built from the release branch: unit 347, browser 245, kernel `e2e.sh` 311, SPDK `e2e.sh`
+327, systemd 76, `vm-e2e.sh` 915, and the browser against real targets 93, all passing. Then the driver in the k3s lab with those
+images, 32 of 32 including the outage and reboot, and `csi-sanity`, 75 of 75. `make-sboms.sh` made the driver image's SBOM for the
+first time and found every module the notices list for it, and the Go runtime. Its last check, that everything was built with one
+Go, failed there, as the tarball was built with Fedora's Go, which reports `go1.26.10-X:nodwarf5`, while the images used the Go
+container's `go1.26.10`. That's the check doing its job: the release builds the tarball with `setup-go` in CI, as for v0.3.0.
+
 ## Not tested
 
 Deferred until hardware is available, as tracked in `TODO.md`:

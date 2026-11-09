@@ -216,7 +216,9 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [ ] Run the outage test on SPDK, and for longer than the kernel's default 10 minutes, with the default once to show the difference
   - [x] Report `MaxVolumesPerNode`, from the 1024 namespaces a subsystem can hold on both targets, so the scheduler knows
   - [x] Pass the `csi-sanity` conformance suite: 75 of 75, v5.6.0, by `k3s-csi.sh sanity`
-  - [ ] Publish the driver's image in releases, for amd64 and arm64, with its third-party notices, and run `k3s-csi.sh` in CI or before each release
+  - [x] Publish the driver's image in releases, for amd64 and arm64, with its third-party notices, and run `k3s-csi.sh` in CI or before each release:
+        from v0.4.0, with its SBOM; `k3s-csi.sh` runs before each release, as `docs/releasing.md` says, as CI's runners are too small
+  - [ ] Run `k3s-csi.sh` in CI, on a larger runner, or self-hosted
   - [ ] DH-HMAC-CHAP for nodes: a key per node, from a Secret, set on its host
   - [ ] Delete a node's subsystem and host when the node leaves the cluster. They stay while the driver runs, for its next volume
   - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver
