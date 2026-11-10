@@ -68,6 +68,7 @@ share a host NQN; a guest writing while it live-migrates; publishing the Helm ch
 - [ ] Test that a new version reads the previous release's saved state, before each release. Nothing does yet
 - [x] Add a `LICENSE` (MIT)
 - [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)
+- [ ] Add container image scanning prior to image publication
 
 ## 2. Storage layer, spec first
 
@@ -117,6 +118,8 @@ and CLI once, against the result.
 
 ## Test suite
 
+- [ ] `vm-e2e.sh`'s power-loss tests leave their background `lab.sh ssh` loops running on the build host after the VM is reset,
+      on dead connections, until killed. Kill them when the test ends
 - [ ] Add path filters to pull requests, using the table in decision 39, keeping the full run on `main` and releases
 - [x] Audit the suites with deliberately introduced bugs, timing each section. Every suite caught something no other did, so none was removed. Results in `docs/testing.md`
 - [ ] Decide whether `vm-e2e.sh` runs its storage-only LVM sections on one backend: about 3 minutes, as bugs in shared code were caught by both copies. Host-visible checks stay on both
