@@ -49,10 +49,15 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | Suite | Path | Result |
 |---|---|---|
 | Unit tests | | Pass |
-| `e2e.sh`, kernel target | Loopback in one VM | 291 of 291 |
-| `e2e.sh`, SPDK target | Loopback in one VM | 305 of 305 |
+| `e2e.sh`, kernel target | Loopback in one VM | 311 of 311 |
+| `e2e.sh`, SPDK target | Loopback in one VM | 327 of 327 |
 | `systemd-e2e.sh` | Loopback in one VM | 76 of 76 |
-| `vm/vm-e2e.sh` | Between two VMs | 906 of 906 |
+| `vm/vm-e2e.sh` | Between two VMs | 915 of 915 |
+| `webui-real-e2e.sh` | A browser, both targets in VMs | 93 of 93 |
+| `webui-e2e.sh` | A browser, no root | 245 of 245 |
+| `vm/k3s-csi.sh` `test`, `sanity` | k3s on three VMs | 34 of 34, 75 of 75 |
+
+All of these ran on 2026-11-09, on the working tree with decisions 48 and 49, by `run-all.sh` and then the last three.
 
 `go test -race` also passes. Earlier, smaller versions of these suites passed on GitHub's hosted runners, in
 CI run 41887410583 on commit `391e438`, with 2-vCPU VMs and Ubuntu's QEMU 8.2.
@@ -513,6 +518,13 @@ the kernel target: a filesystem volume written on one node and read on another, 
 the volume and then its filesystem, a snapshot and a clone with the snapshot's data, a raw block volume written on one node
 and read on another while both had it, and nothing left after everything was deleted, in nvweaver or on the nodes.
 
+**After the third review (decision 48) and the scale fixes (decision 49):** `test` passed all 34 checks, and `sanity` 75 of 75,
+in the lab on the build host on 2026-11-09. A new check restores the snapshot as a ReadOnlyMany filesystem and mounts it on two nodes at
+once: each pod reads the snapshot's data, sees `ro` though it didn't ask, and can't write. Before the fix, the staging mount
+was read-write, so a pod could. Its first run failed on the test itself: the pod's command had double quotes, which `pod`
+puts inside a double-quoted YAML string, so neither pod was made, and the pending restore then held the snapshot, so
+"nor snapshots" failed too. Not run for these changes: `e2e.sh`, `vm-e2e.sh` and the browser suites, which they don't touch.
+
 - **The first runs failed on the tests, not the driver,** and each failure was traced before anything changed. `k3s-lab.sh
   kubectl` passed its arguments through SSH, which split JSON and `sh -c` scripts on the server VM: a `kubectl exec` ran
   most of its script on the server, as an ordinary user, which looked like the pod being refused its device. It quotes them now.
@@ -608,6 +620,66 @@ ReadWriteMany raw block disk. `helm upgrade` changed the reconnect delay on ever
 or badly formed `cluster`, and a missing API, with messages saying which. `make lint` lints it with `--strict` and renders it as
 on plain Kubernetes and as on OpenShift. Not tested yet: the chart on k3s, and installing it on a cluster that never had the
 driver.
+
+### The CSI driver at scale
+
+`csi/test/scale` drives the driver's controller, the code Kubernetes calls, against a real nvweaver, with 16 calls at once
+as the sidecars' workers make them: 5,000 volumes of 1 GiB, published 50 each to 100 simulated nodes (their host NQNs; no
+node connects), listed, 500 of them snapshotted, then all of it taken away. It ran from a separate VM, over TLS with a scoped
+token, against a lab server: a 4-vCPU, 7 GB Fedora 44 VM with kernel 7.2.15 and SELinux enforcing, on the kernel target,
+with an LVM thin pool on a virtual disk that's an iSCSI LUN, made as `docs/pools.md` says (16 MB metadata area, 1 GB pool
+metadata). Every call in every run succeeded.
+
+| Phase, 5,000 volumes | v0.4.0 | Decision 49 | And the driver reading first |
+|---|---|---|---|
+| Create | 1,069 s, 15 a second at first, 2.5 at the end | 1,080 s | 1,084 s |
+| Publish | 1,225 s, 3.3 a second at the end | 291 s | **236 s** |
+| List, 500 a page | 0.66 s | 0.67 s | 0.63 s |
+| 500 snapshots, then deleting them | 215 s, 204 s | 216 s, 203 s | 216 s, 205 s |
+| Unpublish | 278 s | 279 s | 279 s |
+| Delete | 953 s | 956 s | 961 s |
+| All of it | 3,944 s | 3,026 s | 2,984 s |
+
+- **Exporting a volume looked up every other one.** The API's `checkUnshared` resolved and looked up each volume, snapshot
+  and namespace's path on every export, under the lock: on LVM, a symlink walk, a `stat` and sysfs reads apiece. `strace`
+  counted 313,000 `stat` calls in 10 seconds, and the service used a whole CPU while publishing. The earlier scale runs used
+  sparse files, where this is cheap, so it didn't show. Decision 49 compares a volume only with what was exported by path.
+- **Every publish made two creates that changed nothing.** The driver created the node's host and subsystem on every publish,
+  and took the 409. Each still waited for the lock, about 200 ms at 16 at once. It reads first now. That gained less than
+  expected, because the namespace's own change is now nearly all of a publish.
+- **Each change costs about 50 ms at 5,000 volumes,** mostly rewriting the whole state with an fsync (`TestWhereTimeGoes`:
+  clone 10 ms, validate 5, save 51). That's now the floor: about 15 to 20 changes a second. In `TODO.md`.
+- **Creating, snapshotting and deleting are LVM's time.** A bare `lvcreate` took 0.7 to 0.8 s with 5,000 LVs in the volume
+  group, and `lvs` of one LV 0.46 s; each waits for the volume group's lock, so throughput falls as the group grows.
+- **Resources stayed small:** the service's memory between 30 and 62 MB, 5,000 LVs used about 1.6 MB of the 16 MB metadata
+  area, and the thin pool's metadata reached 3.6% of 1 GB with the volumes empty.
+- **A scoped token can't delete hosts,** which have no owner, so the harness leaves its 100 simulated hosts for an admin.
+  The driver would have the same problem removing a node that's gone.
+
+**Not measured:** real nodes connecting at this count, I/O, the sidecars and the API server themselves, SPDK, or a real disk.
+
+### Many connections to one target
+
+The same lab server, as its own initiator over its real address, with 4 vCPUs shared by both sides: 1,000 controllers to one
+subsystem on the kernel target, each as a host of its own (its own host NQN and host ID) with 4 I/O queues, so about 5,000
+TCP connections. Every connect succeeded.
+
+| Controllers | `nvme connect`, median | Memory available | Slab | Service's memory | `GET /v1/connections` |
+|---|---|---|---|---|---|
+| 25 | 19 ms | 5.3 GB | 406 MB | 24 MB | 6 ms |
+| 200 | 106 ms | 5.0 GB | 622 MB | 22 MB | 18 ms |
+| 500 | 271 ms | 4.3 GB | 996 MB | 25 MB | 27 ms |
+| 1,000 | 516 ms | 3.3 GB | 1.6 GB | 28 MB | 53 ms |
+
+- **About 2 MB of memory per controller,** both sides together, 1.25 MB of it kernel slab, all given back after disconnecting.
+  The target's own share can't be told apart here, as the initiator is on the same machine.
+- **The growing connect time is nvme-cli's, not the target's.** At 310 controllers, writing the connect straight to
+  `/dev/nvme-fabrics` took 8 to 10 ms, and `nvme connect` 180 to 270 ms: it reads every controller already on the host
+  first. A real node has a few controllers, not hundreds.
+- **Disconnecting 1,000 took 27.5 s,** by `nvme disconnect -n`, one at a time.
+- **The service doesn't notice:** its memory stayed under 30 MB, and listing every connection took 53 ms at 1,000.
+
+**Not measured:** connections from many machines, I/O on them, SPDK, or what a target with less memory does when it runs out.
 
 ### v0.4.0-rc1, as published
 

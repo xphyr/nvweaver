@@ -26,12 +26,14 @@ type fakeAPI struct {
 	snapshots  map[string]*client.Snapshot
 	ports      map[int]*client.Port
 	n          int
+	creates    map[string]int // create calls by kind, conflicts included
 }
 
 func newFakeAPI() *fakeAPI {
 	return &fakeAPI{
 		hosts: map[string]bool{}, subsystems: map[string]*client.Subsystem{}, volumes: map[string]*client.Volume{},
 		snapshots: map[string]*client.Snapshot{}, ports: map[int]*client.Port{1: {ID: 1, Transport: "tcp", Address: "10.98.0.1", Service: 4420}},
+		creates: map[string]int{},
 	}
 }
 
@@ -57,6 +59,7 @@ func (f *fakeAPI) GetHost(_ context.Context, nqn string) (*client.Host, error) {
 func (f *fakeAPI) CreateHost(_ context.Context, in client.HostCreate) (*client.Host, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.creates["host"]++
 	if f.hosts[in.NQN] {
 		return nil, apiErr(http.StatusConflict, "host exists")
 	}
@@ -76,6 +79,7 @@ func (f *fakeAPI) GetSubsystem(_ context.Context, nqn string) (*client.Subsystem
 func (f *fakeAPI) CreateSubsystem(_ context.Context, in client.SubsystemCreate) (*client.Subsystem, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.creates["subsystem"]++
 	if _, ok := f.subsystems[in.NQN]; ok {
 		return nil, apiErr(http.StatusConflict, "subsystem exists")
 	}
@@ -563,6 +567,80 @@ func TestListingIsPagedAndOnlyThisClustersOwn(t *testing.T) {
 }
 
 // A node ID is the node's host NQN, so one that isn't an NQN is no node of ours.
+// A port listening on a wildcard address has no address to give a node: told 0.0.0.0, a node connects to itself.
+// A create that changes nothing still takes nvweaver's lock, and at 5,000 volumes three such calls per publish made
+// publishing slow: a node's host and subsystem are made once, and read after that.
+func TestANodesHostAndSubsystemAreMadeOnce(t *testing.T) {
+	api := newFakeAPI()
+	c := NewController(testCfg, api)
+	for i := range 3 {
+		if _, err := publish(c, create(t, c, fmt.Sprintf("pvc-%d", i), 1<<20).VolumeId, nodeA, rwo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if api.creates["host"] != 1 || api.creates["subsystem"] != 1 {
+		t.Errorf("three publishes to one node made %v", api.creates)
+	}
+	// Another controller made them between the read and the create: that's still a success.
+	r := &racingAPI{fakeAPI: newFakeAPI()}
+	c = NewController(testCfg, r)
+	v := create(t, c, "pvc-r", 1<<20).VolumeId
+	r.hosts[nodeA] = true
+	r.subsystems[testCfg.nodeSubsystem(nodeA)] = &client.Subsystem{NQN: testCfg.nodeSubsystem(nodeA)}
+	r.hide = true
+	if _, err := publish(c, v, nodeA, rwo); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.subsystems[testCfg.nodeSubsystem(nodeA)]; !slices.Contains(s.AllowedHosts, nodeA) || !slices.Contains(s.Ports, 1) {
+		t.Errorf("after losing the race: %+v", s)
+	}
+}
+
+// racingAPI hides hosts and subsystems from the first read of each, as if they were made just after it.
+type racingAPI struct {
+	*fakeAPI
+	hide             bool
+	sawHost, sawSubs bool
+}
+
+func (r *racingAPI) GetHost(ctx context.Context, nqn string) (*client.Host, error) {
+	if r.hide && !r.sawHost {
+		r.sawHost = true
+		return nil, apiErr(http.StatusNotFound, "no host")
+	}
+	return r.fakeAPI.GetHost(ctx, nqn)
+}
+
+func (r *racingAPI) GetSubsystem(ctx context.Context, nqn string) (*client.Subsystem, error) {
+	if r.hide && !r.sawSubs {
+		r.sawSubs = true
+		return nil, apiErr(http.StatusNotFound, "no subsystem")
+	}
+	return r.fakeAPI.GetSubsystem(ctx, nqn)
+}
+
+func TestAWildcardPortIsntHandedToNodes(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0", "::", ""} {
+		api := newFakeAPI()
+		api.ports[1].Address = addr
+		c := NewController(testCfg, api)
+		v := create(t, c, "pvc-w", 1<<20).VolumeId
+		_, err := publish(c, v, nodeA, rwo)
+		if code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "port 1") {
+			t.Errorf("address %q: %v", addr, err)
+		}
+		if len(api.hosts) != 0 || len(api.subsystems) != 0 || api.volumes[v].MappedTo != nil {
+			t.Errorf("address %q: made hosts %v, subsystems %v", addr, api.hosts, api.subsystems)
+		}
+	}
+	api := newFakeAPI()
+	c := NewController(testCfg, api)
+	r, err := publish(c, create(t, c, "pvc-w", 1<<20).VolumeId, nodeA, rwo)
+	if err != nil || r.PublishContext[ctxAddress] != "10.98.0.1" {
+		t.Errorf("a specific address: %v, %v", r, err)
+	}
+}
+
 func TestPublishingToSomethingThatIsntANodeIsNotFound(t *testing.T) {
 	c := NewController(testCfg, newFakeAPI())
 	v := create(t, c, "pvc-n", 1<<20).VolumeId

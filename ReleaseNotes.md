@@ -2,6 +2,21 @@
 
 The major differences between versions. For every change, see the commit history.
 
+## Unreleased
+
+### Fixed
+
+- **The CSI driver mounts ReadOnlyMany filesystems read-only** on every node. Before, each node mounted them read-write,
+  and only the pod's view was read-only, which can corrupt a filesystem mounted on several nodes. See decision 48.
+- **The CSI driver refuses a port listening on `0.0.0.0` or `::`,** with an error naming the port, rather than telling nodes
+  to connect there, which connected them to themselves.
+
+### Changed
+
+- **Publishing CSI volumes is four to five times faster at scale.** At 5,000 LVM volumes, exporting one looked up every other
+  volume, and the driver made two creates on every publish that changed nothing. 5,000 publishes took 20 minutes, and now
+  take 4. See decision 49 and "The CSI driver at scale" in `docs/testing.md`.
+
 ## v0.4.0
 
 The CSI driver, scoped tokens and metrics. The driver's image is published for the first time, as

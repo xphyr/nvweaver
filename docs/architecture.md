@@ -123,5 +123,8 @@ the `PATH`.
 
 Each change still copies the state and rewrites the state file, so the kernel target's time for a change grows slowly: 8 ms at
 1,000 volumes and 20 ms at 5,000. On SPDK it's nearly flat, because each RPC takes about 8 ms, and a change makes the same few of them at any size.
+On LVM, measured through the CSI driver, a change took about 50 ms at 5,000 volumes, most of it the save, and LVM's own
+commands are slower still: each `lvcreate` waits for the volume group's lock, at about 0.4 s apiece with 5,000 LVs. Exporting a
+volume compares it only with what was exported by path (decision 49), so it doesn't grow with the number of volumes.
 Changes are applied one at a time, which limits them to about 50 a second on the kernel target at 5,000 volumes, and about 17 on SPDK. See
 `docs/testing.md` for the numbers and decision 29 for why they aren't batched.

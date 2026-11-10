@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"regexp"
 	"sync"
 
@@ -144,6 +145,16 @@ func (c Config) sharedSubsystem(volume string) string {
 }
 
 // shared reports whether a capability lets several nodes use a volume at once.
+// routable reports whether a node can connect to a port's address. A target may listen on 0.0.0.0 or ::, for clients
+// that know its real address, but a node told to connect there reaches itself, and its volume never appears.
+func routable(addr string) bool {
+	if addr == "" {
+		return false
+	}
+	ip := net.ParseIP(addr)
+	return ip == nil || !ip.IsUnspecified()
+}
+
 func shared(cap *csi.VolumeCapability) bool {
 	switch cap.GetAccessMode().GetMode() {
 	case csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,

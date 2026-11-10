@@ -86,6 +86,48 @@ func TestBlockDevicesOverlap(t *testing.T) {
 	}
 }
 
+// Mapping a volume compares it only with what an admin exported by path: volumes, snapshots and their mappings are
+// devices the pools made, one each, and looking up thousands of them made every publish slow.
+func TestMappingAVolumeLooksUpOnlyWhatWasExportedByPath(t *testing.T) {
+	dir := t.TempDir()
+	file, link := filepath.Join(dir, "vol"), filepath.Join(dir, "link")
+	if err := os.WriteFile(file, make([]byte, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(file, link); err != nil {
+		t.Fatal(err)
+	}
+	st := target.NewState()
+	st.Volumes["v"] = &target.Volume{Name: "v", DevicePath: file}
+	ns := map[uint32]*target.Namespace{}
+	for i := range 1000 {
+		name := fmt.Sprintf("other-%d", i)
+		path := filepath.Join(dir, name)
+		st.Volumes[name] = &target.Volume{Name: name, DevicePath: path}
+		st.Snapshots[name] = &target.Snapshot{Name: name, DevicePath: path + "-snap"}
+		ns[uint32(i+1)] = &target.Namespace{NSID: uint32(i + 1), Volume: name, DevicePath: path}
+	}
+	st.Subsystems[subNQN] = &target.Subsystem{NQN: subNQN, Namespaces: ns}
+	looked := 0
+	real := identify
+	identify = func(path string) (storeID, bool) {
+		looked++
+		return real(path)
+	}
+	t.Cleanup(func() { identify = real })
+	if err := checkUnshared(st, file, "", 0, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if looked > 1 {
+		t.Errorf("mapping a volume looked up %d paths, not just its own", looked)
+	}
+	// What an admin exported by path is still compared, by what it reaches.
+	ns[2000] = &target.Namespace{NSID: 2000, DevicePath: link}
+	if err := checkUnshared(st, file, "", 0, "v"); !isConflict(err) {
+		t.Errorf("a hard link of the volume's file, exported by path: %v", err)
+	}
+}
+
 // Through the API, with the identities a disk and its partition would have.
 func TestADiskAndItsPartitionAreTheSameStore(t *testing.T) {
 	e := newEnv(t)

@@ -105,6 +105,59 @@ func TestStagingConnectsFormatsAndMounts(t *testing.T) {
 	}
 }
 
+// Several nodes mount a ReadOnlyMany filesystem at once, so each must mount it read-only, or their journals corrupt it.
+func TestReadOnlyManyIsStagedReadOnly(t *testing.T) {
+	f := newFakeNode(t)
+	sub := testCfg.sharedSubsystem("lab-pvc-r")
+	pc := map[string]string{ctxNQN: sub, ctxTransport: "tcp", ctxAddress: "10.98.0.1", ctxService: "4420", ctxNGUID: nguid}
+	f.subsystem(t, sub, "nvme1n1", nguid)
+	stage := filepath.Join(t.TempDir(), "staging")
+	rox := capOf(csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY, false)
+	rox.GetMount().MountFlags = []string{"rw", "noatime"}
+	req := &csi.NodeStageVolumeRequest{VolumeId: "lab-pvc-r", StagingTargetPath: stage, PublishContext: pc, VolumeCapability: rox}
+	if _, err := f.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	// An empty device is still formatted, by the first node, then mounted read-only: ro wins over the class's rw.
+	want := []string{
+		"blkid -p -o value -s TYPE /dev/nvme1n1",
+		"mkfs.ext4 -q -F /dev/nvme1n1",
+		"mount -t ext4 -o noatime,ro /dev/nvme1n1 " + stage,
+	}
+	if strings.Join(f.ran, "\n") != strings.Join(want, "\n") {
+		t.Errorf("ran:\n%s\nwant:\n%s", strings.Join(f.ran, "\n"), strings.Join(want, "\n"))
+	}
+
+	// Already mounted read-only: nothing to do.
+	f.ran = nil
+	write(t, f.mnts, "22 1 0:21 / / rw - xfs /dev/vda1 rw\n90 22 259:1 / "+stage+" ro,noatime - ext4 /dev/nvme1n1 ro")
+	if _, err := f.NodeStageVolume(context.Background(), req); err != nil || len(f.ran) != 0 {
+		t.Errorf("staging again ran %v: %v", f.ran, err)
+	}
+	// Mounted read-write, by something else: that's not this volume staged safely.
+	write(t, f.mnts, "22 1 0:21 / / rw - xfs /dev/vda1 rw\n90 22 259:1 / "+stage+" rw,noatime - ext4 /dev/nvme1n1 rw")
+	if _, err := f.NodeStageVolume(context.Background(), req); code(err) != codes.FailedPrecondition {
+		t.Errorf("a read-write mount at the staging path: %v", err)
+	}
+	// ReadWriteOnce is unchanged: no ro, and a read-write mount is its own.
+	if _, err := f.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{VolumeId: "lab-pvc-r", StagingTargetPath: stage,
+		PublishContext: pc, VolumeCapability: rwo}); err != nil {
+		t.Errorf("ReadWriteOnce, mounted read-write: %v", err)
+	}
+}
+
+func TestAWildcardAddressIsntConnectedTo(t *testing.T) {
+	f := newFakeNode(t)
+	for _, addr := range []string{"0.0.0.0", "::"} {
+		pc := map[string]string{ctxNQN: testCfg.nodeSubsystem(nodeA), ctxTransport: "tcp", ctxAddress: addr, ctxService: "4420", ctxNGUID: nguid}
+		_, err := f.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{VolumeId: "lab-pvc-w", StagingTargetPath: t.TempDir(),
+			PublishContext: pc, VolumeCapability: rwo})
+		if code(err) != codes.FailedPrecondition || len(f.ran) != 0 {
+			t.Errorf("address %q: ran %v: %v", addr, f.ran, err)
+		}
+	}
+}
+
 func TestADeviceIsFoundOnlyInItsSubsystem(t *testing.T) {
 	f := newFakeNode(t)
 	f.subsystem(t, "nqn.other", "nvme1n1", nguid)
