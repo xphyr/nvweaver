@@ -611,3 +611,31 @@ there, not as absolute numbers.
   another. Exporting by path still compares with everything, by what it reaches, as before.
 - **Kept:** a volume's file hard-linked, or its device's disk or partition, exported by path, is still a conflict, in
   either order.
+
+## 50. Changed blocks come from the storage's own mappings, checked against the data first
+
+- **The problem:** CSI's `SnapshotMetadata` service lets backup tools read only what changed between two snapshots, or what a
+  snapshot holds. A missed block makes every incremental backup built on it silently wrong, so the method has to be proven
+  before anything is built on it.
+- **Chosen: on LVM thin, `thin_delta` and `thin_dump`,** reading a metadata snapshot reserved on the live pool
+  (`reserve_metadata_snap`), as the pool can't be taken offline. Only one can be reserved at a time, so one request at a time
+  per pool. Ranges come in the pool's chunk size. They're in `device-mapper-persistent-data`, which hosts already need for
+  `thin_check`, so nothing new is required.
+- **Chosen: on reflink, FIEMAP** of the two snapshot files: a different physical extent, or written on one side only, is a
+  change. Unwritten extents count as holes, as they read as zeros. Allocated ranges are the written extents.
+- **Checked against the data:** `test/vm/cbt-check.sh` compares every byte of the snapshots with what's reported, on LVM at
+  four chunk sizes and on XFS, with negative controls so that it can't pass by mistake. Nothing was missed.
+- **Accepted: over-reporting.** LVM reports whole chunks, so scattered small writes on a pool with large chunks report nearly
+  everything. That's correct, only slower to back up; `docs/pools.md` should say so.
+- **Rejected: tracking writes in nvweaver,** as it isn't in the data path, and **comparing data,** which reads both snapshots
+  in full, the cost CBT exists to avoid.
+- **The API:** `GET /v1/snapshots/{snapshot}/allocated`, and `/changes?base=` for two snapshots of the same volume, in either
+  order. Both are read-only, so open to scoped tokens, as all reads are (decision 46). Ranges are bytes, in whole blocks of
+  `block_size`, merged where they touch, cut at the snapshot's size, and paged by `offset`, as CSI's `starting_offset` is.
+  Each page asks the storage again: simple, and a backup reads the ranges once.
+- **Refused: snapshots of different volumes.** A pool's mappings could compare any two devices, but only snapshots of one
+  volume share a history, and a delta between unrelated volumes would be nearly everything.
+- **A metadata snapshot left reserved,** by a service that stopped in the middle, is released and taken again, as nothing
+  else should hold one on nvweaver's pools. Another tool that does would have it taken away.
+- **Where FIEMAP can't say where data is,** for delayed allocation, inline or encoded data, including btrfs's compressed
+  extents, that range counts as changed: never under-reporting matters more than reporting little.

@@ -291,6 +291,21 @@ func TestListsFilterAndFollowPages(t *testing.T) {
 	}
 }
 
+func TestSnapshotRangesFollowPages(t *testing.T) {
+	x, requests := recordingAPI(t, `{"block_size":65536,"size_bytes":1048576,"ranges":[{"offset":0,"length":65536}]}`)
+	out := x.ok("snapshot", "changes", "s2", "--base", "s1")
+	if (*requests)[0] != "GET /v1/snapshots/s2/changes?base=s1" || !strings.Contains(out, "1 ranges, 64K of 1M, in blocks of 64K") {
+		t.Errorf("sent %q, showed %s", *requests, out)
+	}
+	x.ok("snapshot", "allocated", "s1", "-o", "json")
+	if (*requests)[1] != "GET /v1/snapshots/s1/allocated" {
+		t.Errorf("sent %q", *requests)
+	}
+	if r := x.run("snapshot", "changes", "s2"); r.code == 0 {
+		t.Error("changes with no --base succeeded")
+	}
+}
+
 func TestWarningsAreShown(t *testing.T) {
 	x, _ := recordingAPI(t, `{"backend":"nvmet","warnings":["LVM can read this"]}`)
 	if out := x.ok("system"); !strings.Contains(out, "Warning: LVM can read this") {

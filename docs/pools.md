@@ -105,6 +105,9 @@ group not named `nvw-...` is ignored, so it can be shared with other uses.
 - **Boot takes longer with many volumes.** Activating 5,000 volumes took 55 seconds, and deactivating
   them 28, in a VM. Creating a volume went from 0.11 seconds at 500 volumes to 0.45 at 5,000.
 - **Stop this machine's LVM reading clients' data.** See "Clients' LVM", below.
+- **The chunk size sets how finely changes are tracked.** A snapshot's changed blocks, for incremental backups, come in
+  whole chunks: 1,000 scattered 512-byte writes reported 55 MB at 64 KiB chunks, and nearly the whole volume at 1 MiB. LVM
+  picks the chunk size from the pool's size unless `-c` says; for backups, keep it at 64 to 256 KiB. See decision 50.
 - **Containers:** the service uses the host's own `lvm`, so the host needs `lvm2`, and `thin_check`: see [Tools](../README.md#tools). In a container, run it with
   `--privileged --pid=host -v /dev:/dev`, and it goes through `nsenter`. Under the systemd unit, it just runs `lvm`. The SPDK
   Quadlet has no capabilities, so it can't use this pool type.
@@ -172,6 +175,9 @@ mount the pool's directory into it, and use the path as it appears there.
 
 - **The same space warning applies.** Sparse files and shared data mean the volumes can promise more
   than the filesystem has. Hosts get I/O errors when it fills, so watch `df`.
+- **btrfs compression makes incremental backups larger.** Changed blocks come from where each file's data is on disk, and a
+  compressed extent can't be compared byte by byte, so every one is reported as changed. That's never wrong, only more to
+  read. XFS doesn't compress. See decision 50.
 - **With SPDK and no capabilities,** mount the directory into the container as a volume. Each volume
   counts towards `fs.aio-max-nr`, as the [README](../README.md#known-limits) explains.
 

@@ -4,6 +4,13 @@ The major differences between versions. For every change, see the commit history
 
 ## Unreleased
 
+### Added
+
+- **Changed block tracking,** for backups: `GET /v1/snapshots/{snapshot}/changes?base=` reports what changed between two
+  snapshots of a volume, and `/allocated` where a snapshot holds data, from the storage's own mappings, on both pool types
+  and both targets. Also `nvweaver snapshot changes` and `snapshot allocated`. On LVM it needs `thin_delta` and `thin_dump`,
+  from the package that already provides `thin_check`. See decision 50.
+
 ### Fixed
 
 - **The CSI driver mounts ReadOnlyMany filesystems read-only** on every node. Before, each node mounted them read-write,

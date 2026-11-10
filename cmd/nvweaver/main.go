@@ -55,6 +55,7 @@ Commands:
   pool      list | get NAME | create NAME | update NAME | delete NAME
   volume    list | get NAME | usage NAME | create NAME | update NAME | delete NAME
   snapshot  list | get NAME | create NAME | delete NAME
+            allocated NAME | changes NAME --base NAME
 
 Run "nvweaver <command> <action> --help" for an action's flags.
 
@@ -400,7 +401,8 @@ func (a *app) dispatch(args []string) error {
 		"namespace": {"list": a.namespaceList, "get": a.namespaceGet, "create": a.namespaceCreate, "update": a.namespaceUpdate, "delete": a.namespaceDelete},
 		"pool":      {"list": a.poolList, "get": a.poolGet, "create": a.poolCreate, "update": a.poolUpdate, "delete": a.poolDelete},
 		"volume":    {"list": a.volumeList, "get": a.volumeGet, "usage": a.volumeUsage, "create": a.volumeCreate, "update": a.volumeUpdate, "delete": a.volumeDelete},
-		"snapshot":  {"list": a.snapshotList, "get": a.snapshotGet, "create": a.snapshotCreate, "delete": a.snapshotDelete},
+		"snapshot": {"list": a.snapshotList, "get": a.snapshotGet, "create": a.snapshotCreate, "delete": a.snapshotDelete,
+			"allocated": a.snapshotAllocated, "changes": a.snapshotChanges},
 	}[noun]
 	if !ok {
 		return usagef("unknown command %q", noun)
@@ -1435,6 +1437,58 @@ func (a *app) snapshotCreate(args []string) error {
 		return usagef("snapshot create needs --volume")
 	}
 	return a.showSnapshot(a.client.CreateSnapshot(a.ctx, client.SnapshotCreate{Name: pos[0], Volume: *volume, Owner: *owner}))
+}
+
+func (a *app) snapshotAllocated(args []string) error {
+	pos, err := a.parse(a.flags("snapshot allocated"), args, "NAME")
+	if err != nil {
+		return err
+	}
+	return a.blockRanges(func(offset int64) (*client.BlockRanges, error) {
+		return a.client.SnapshotAllocated(a.ctx, pos[0], offset, 0)
+	})
+}
+
+func (a *app) snapshotChanges(args []string) error {
+	fs := a.flags("snapshot changes")
+	base := fs.String("base", "", "the snapshot of the same volume to compare with (required)")
+	pos, err := a.parse(fs, args, "NAME")
+	if err != nil {
+		return err
+	}
+	if *base == "" {
+		return usagef("snapshot changes needs --base")
+	}
+	return a.blockRanges(func(offset int64) (*client.BlockRanges, error) {
+		return a.client.SnapshotChanges(a.ctx, *base, pos[0], offset, 0)
+	})
+}
+
+// blockRanges follows every page of ranges, and shows them all, with a total.
+func (a *app) blockRanges(page func(offset int64) (*client.BlockRanges, error)) error {
+	all := client.BlockRanges{Ranges: []client.BlockRange{}}
+	offset := int64(0)
+	for {
+		p, err := page(offset)
+		if err != nil {
+			return err
+		}
+		all.BlockSize, all.SizeBytes = p.BlockSize, p.SizeBytes
+		all.Ranges = append(all.Ranges, p.Ranges...)
+		if p.NextOffset == nil {
+			break
+		}
+		offset = *p.NextOffset
+	}
+	return a.emit(all, func(w io.Writer) {
+		var total int64
+		row(w, "OFFSET", "LENGTH")
+		for _, r := range all.Ranges {
+			row(w, strconv.FormatInt(r.Offset, 10), strconv.FormatInt(r.Length, 10))
+			total += r.Length
+		}
+		_, _ = fmt.Fprintf(w, "%d ranges, %s of %s, in blocks of %s\n", len(all.Ranges), humanSize(total), humanSize(all.SizeBytes), humanSize(all.BlockSize))
+	})
 }
 
 func (a *app) snapshotDelete(args []string) error {

@@ -3,6 +3,9 @@
 package storage
 
 import (
+	"cmp"
+	"slices"
+
 	"nvweaver/internal/target"
 )
 
@@ -49,6 +52,46 @@ type Driver interface {
 	Used(internal string) (int64, error)
 	// List returns the internal names of volumes and snapshots on disk, to find any that nothing refers to.
 	List() ([]string, error)
+	// Allocated reports where a snapshot holds data: everything outside the ranges reads as zeros. It may report more,
+	// never less, as a full backup built on it would miss data. See decision 50.
+	Allocated(internal string) (Blocks, error)
+	// Changed reports where two snapshots of one volume differ: everything outside the ranges is the same in both. It
+	// may report more, never less, as an incremental backup built on it would be silently wrong.
+	Changed(base, internal string) (Blocks, error)
+}
+
+// Blocks are byte ranges of a volume, in whole blocks of the pool's unit of tracking.
+type Blocks struct {
+	BlockSize int64
+	Ranges    []Range // In order, apart and not touching.
+}
+
+// Range is a part of a volume, in bytes.
+type Range struct{ Offset, Length int64 }
+
+// End is where the range stops, exclusive.
+func (r Range) End() int64 { return r.Offset + r.Length }
+
+// mergeRanges sorts ranges and joins those that overlap or touch, dropping empty ones.
+func mergeRanges(in []Range) []Range {
+	rs := make([]Range, 0, len(in))
+	for _, r := range in {
+		if r.Length > 0 {
+			rs = append(rs, r)
+		}
+	}
+	slices.SortFunc(rs, func(a, b Range) int { return cmp.Compare(a.Offset, b.Offset) })
+	out := rs[:0]
+	for _, r := range rs {
+		if n := len(out); n > 0 && r.Offset <= out[n-1].End() {
+			if r.End() > out[n-1].End() {
+				out[n-1].Length = r.End() - out[n-1].Offset
+			}
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // New returns the driver for a pool's type.

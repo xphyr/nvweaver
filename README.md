@@ -40,7 +40,7 @@ The images and the release tarball's binary are self-contained, apart from what'
 |---|---|---|
 | Kernel target | Kernel modules `nvmet` and `nvmet-tcp`, and configfs. `modprobe` (`kmod`) loads them, if they aren't already | The image has `modprobe`, and needs the host's `/lib/modules` |
 | SPDK target | `nvmf_tgt` on the `PATH`. Building SPDK isn't covered here, so use the image | In the SPDK image |
-| LVM thin pools | `lvm2`, and `thin_check` from `device-mapper-persistent-data` on Fedora and RHEL, or `thin-provisioning-tools` on Debian and Ubuntu. There, it's only a recommended package, so `--no-install-recommends` leaves it out. Without it, LVM still activates thin pools, but skips checking their metadata. Also the kernel's `dm_thin_pool` module | Uses the host's, through `nsenter`, which the images have. Run it privileged with `--pid=host` |
+| LVM thin pools | `lvm2`, and `thin_check` from `device-mapper-persistent-data` on Fedora and RHEL, or `thin-provisioning-tools` on Debian and Ubuntu. There, it's only a recommended package, so `--no-install-recommends` leaves it out. Without it, LVM still activates thin pools, but skips checking their metadata. The same package's `thin_delta` and `thin_dump` will report snapshots' changed blocks. Also the kernel's `dm_thin_pool` module | Uses the host's, through `nsenter`, which the images have. Run it privileged with `--pid=host` |
 | Checking whether LVM can read what's exported | `lvmdiskscan`, from `lvm2`. With no LVM on the machine, there's nothing to check | As above. Without `--pid=host`, `warnings` says that it couldn't check |
 | Reflink pools | XFS or btrfs, for the directory | The same, on the volume it's given |
 
@@ -126,6 +126,7 @@ nvweaver namespace create nqn.2026-11.lab.example:vol1 --volume vol1
 
 nvweaver snapshot create snap1 --volume vol1
 nvweaver volume create clone1 --from-snapshot snap1
+nvweaver snapshot changes snap2 --base snap1  # what changed between them, for an incremental backup
 nvweaver volume list -o json                  # JSON, for scripts
 ```
 

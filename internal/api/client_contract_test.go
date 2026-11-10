@@ -25,6 +25,7 @@ func TestClientTypesMatchTheSpec(t *testing.T) {
 		"VolumeSource": client.VolumeSource{}, "VolumeMapping": client.VolumeMapping{}, "Volume": client.Volume{},
 		"VolumeUsage": client.VolumeUsage{}, "VolumePage": client.VolumePage{}, "VolumeCreate": client.VolumeCreate{}, "VolumeUpdate": client.VolumeUpdate{},
 		"Snapshot": client.Snapshot{}, "SnapshotPage": client.SnapshotPage{}, "SnapshotCreate": client.SnapshotCreate{},
+		"BlockRanges": client.BlockRanges{}, "BlockRange": client.BlockRange{},
 	}
 	for schema, props := range s.schemas {
 		if len(props) == 0 {
@@ -239,6 +240,13 @@ func TestClientReachesEveryOperation(t *testing.T) {
 	}
 	_, err = c.GetSnapshot(ctx, "s")
 	must("get snapshot", err)
+	alloc, err := c.SnapshotAllocated(ctx, "s", 0, 10)
+	must("snapshot allocated", err)
+	if alloc.Ranges == nil {
+		t.Errorf("allocated came back as %+v", alloc)
+	}
+	_, err = c.SnapshotChanges(ctx, "s", "s", 4096, 0)
+	must("snapshot changes", err)
 	clone, err := c.CreateVolume(ctx, client.VolumeCreate{Name: "c", Source: &client.VolumeSource{Snapshot: "s"}})
 	must("clone", err)
 	if clone.Source == nil || clone.Source.Snapshot != "s" {

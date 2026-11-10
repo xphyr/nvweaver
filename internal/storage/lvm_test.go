@@ -35,7 +35,9 @@ func (f *fakeLVM) run(args ...string) (string, error) {
 
 func lvmDriver(vg string) (*lvmThinDriver, *fakeLVM) {
 	f := &fakeLVM{replies: map[string]string{}, fail: map[string]error{}}
-	return &lvmThinDriver{vg: vg, pool: "pool0", run: f.run}, f
+	return &lvmThinDriver{vg: vg, pool: "pool0", run: f.run, tool: func(prog string, args ...string) (string, error) {
+		return f.run(append([]string{prog}, args...)...)
+	}}, f
 }
 
 func lvsJSON(fields string) string {

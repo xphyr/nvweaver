@@ -206,6 +206,23 @@ backend_tests() { # BACKEND IMAGE [run args]
 our_lvs() { t "sudo lvs --noheadings -o lv_name $VG | grep -c nvw-"; }
 pool_data_percent() { t "sudo sync; sudo lvs --noheadings -o data_percent $VG/pool0 | tr -d ' '"; }
 
+# extents FILE...: where files' data is on the volume, as "offset length" in bytes, from the host's filesystem.
+extents() {
+	i "for f in $*; do sudo filefrag -e -b512 \$f; done | awk '/^ *[0-9]+:/ { gsub(/\\.\\./, \" \"); gsub(/:/, \" \"); print \$4 * 512, \$6 * 512 }'"
+}
+
+# block_ranges PATH: a snapshot's allocated or changed ranges from the API, as "offset length", following every page.
+block_ranges() {
+	t "o=0; while [ -n \"\$o\" ]; do curl -s \"$API$1&offset=\$o\" > /tmp/r; jq -r '.ranges[] | \"\\(.offset) \\(.length)\"' /tmp/r; o=\$(jq -r '.next_offset // empty' /tmp/r); done"
+}
+
+# uncovered RANGES EXTENTS: the extents that no range holds, which must be none, as a missed block corrupts a backup.
+uncovered() {
+	awk 'BEGIN { n = 0 } NR == FNR { if (!NF) next; if (n && $1 <= e[n - 1]) { if ($1 + $2 > e[n - 1]) e[n - 1] = $1 + $2; next } s[n] = $1; e[n] = $1 + $2; n++; next } NF { m++; for (j = 0; j < n; j++) if (s[j] <= $1 && $1 + $2 <= e[j]) next; print }
+		END { if (!m) print "no extents to check" }' \
+		<(printf '%s\n' "$1") <(printf '%s\n' "$2")
+}
+
 # What a client relies on a snapshot for: real files on a real filesystem, including one taken while
 # they're being written. A file whose fsync finished before the snapshot was asked for must be in it.
 snapshot_tests() { # BACKEND POOL-TYPE
@@ -295,6 +312,7 @@ snapshot_tests() { # BACKEND POOL-TYPE
 	out=$(i 'cd /mnt/snap && md5sum -c --quiet /tmp/snap.manifest 2>/dev/null | wc -l')
 	expect_eq "the original has really changed" 1 "$out"
 
+
 	# XFS refuses a second filesystem with the same UUID on a host without nouuid, as a clone has.
 	api "map the first clone" 201 POST "/v1/subsystems/$sub_a/namespaces" '{"volume":"clone-a"}'
 	out=$(connect "$sub_a") && ok "host connects to the first clone" || bad "host connects to the first clone" "$out"
@@ -310,6 +328,23 @@ snapshot_tests() { # BACKEND POOL-TYPE
 	expect_eq "the files from before it are intact" "rc=0" "$(i 'cd /mnt/snap-b && md5sum -c --quiet /tmp/snap.manifest >/dev/null 2>&1; echo rc=$?')"
 	expect_eq "and so is every file finished before it was asked for ($committed)" "rc=0" \
 		"$(i "cd /mnt/snap-b && head -n $committed /tmp/snap.journal | md5sum -c --quiet >/dev/null 2>&1; echo rc=\$?")"
+	# Changed block tracking (decision 50): what the API reports must hold every block the host's filesystem put new data in,
+	# and not everything. The original hasn't changed since base1 was rewritten, and the second clone shows what snap-b holds.
+	api "snapshot the changed original" 201 POST /v1/snapshots '{"name":"snap-c","volume":"fs"}'
+	local ranges ext n
+	ranges=$(block_ranges "/v1/snapshots/snap-c/changes?base=snap-b&limit=500")
+	ext=$(extents /mnt/snap/base1 /mnt/snap/only-in-original "$(i 'cd /mnt/snap && for f in w*; do [ -e /mnt/snap-b/$f ] || printf "/mnt/snap/%s " $f; done')")
+	expect_eq "changes since the last snapshot hold the rewritten file, and every file written after that snapshot" "" "$(uncovered "$ranges" "$ext")"
+	ext=$(extents "$(i 'ls -d /mnt/snap/base* | grep -vx /mnt/snap/base1 | tr "\n" " "')")
+	n=$(printf '%s\n' "$ext" | grep -c .)
+	expect_eq "and none of the $n unchanged files' extents" "$n" "$(uncovered "$ranges" "$ext" | grep -c .)"
+	ranges=$(block_ranges "/v1/snapshots/snap-b/changes?base=snap-a&limit=500")
+	ext=$(extents "$(i "head -n $committed /tmp/snap.journal | awk '{ print \"/mnt/snap/\" \$2 }' | tr '\\n' ' '")")
+	expect_eq "changes across the snapshot taken under load hold every file finished before it" "" "$(uncovered "$ranges" "$ext")"
+	ranges=$(block_ranges "/v1/snapshots/snap-a/allocated?limit=500")
+	ext=$(extents "$(i 'ls -d /mnt/snap/base* | grep -vx /mnt/snap/base1 | tr "\n" " "')")
+	expect_eq "the first snapshot's allocated ranges hold every block of the files in it" "" "$(uncovered "$ranges" "$ext")"
+	[ "${n:-0}" -ge 31 ] && ok "with real extents to check ($n)" || bad "with real extents to check" "$n"
 	i 'cd /mnt/snap-b && touch only-in-clone && sync -f .'
 	expect_eq "a file made on the clone isn't on the original" 0 "$(i 'ls /mnt/snap | grep -c only-in-clone')"
 	expect_eq "nor one made on the original on the clone" 0 "$(i 'ls /mnt/snap-b | grep -c only-in-original')"
@@ -330,6 +365,7 @@ snapshot_tests() { # BACKEND POOL-TYPE
 	api "clone the first snapshot again, with its volume gone" 201 POST /v1/volumes '{"name":"clone-c","source":{"snapshot":"snap-a"}}'
 	api "delete the snapshots" 204 DELETE /v1/snapshots/snap-a
 	api "delete the other" 204 DELETE /v1/snapshots/snap-b
+	api "and the last" 204 DELETE /v1/snapshots/snap-c
 	api "map the last clone" 201 POST "/v1/subsystems/$sub_a/namespaces" '{"volume":"clone-c"}'
 	out=$(connect "$sub_a") && ok "host connects" || bad "host connects" "$out"
 	dev_a=$(ini_dev "$sub_a")

@@ -255,6 +255,8 @@ func (s *Server) Handler() http.Handler {
 	route("GET /v1/snapshots", s.listSnapshots)
 	route("POST /v1/snapshots", s.createSnapshot)
 	route("GET /v1/snapshots/{snapshot}", s.getSnapshot)
+	route("GET /v1/snapshots/{snapshot}/allocated", s.getSnapshotAllocated)
+	route("GET /v1/snapshots/{snapshot}/changes", s.getSnapshotChanges)
 	route("DELETE /v1/snapshots/{snapshot}", s.deleteSnapshot)
 
 	route("GET /v1/subsystems/{nqn}/namespaces", s.listNamespaces)

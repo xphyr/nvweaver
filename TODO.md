@@ -9,13 +9,14 @@ here first. Each step points at its items further down.
 
 ## Next
 
-Agreed with the user on 2026-11-09. Done since: bringing this list up to date, hardening the CSI driver with scoped API tokens,
-OpenShift, monitoring, and v0.4.0, which released the driver. In this order now:
+Agreed with the user on 2026-11-10. Done since the last list: scale (5,000 volumes on 100 nodes, and 1,000 connections), and
+the third outside review's findings. In this order now:
 
-1. **Scale:** measure the target's connection limits, then the driver at production-like volume and node counts. See phases 5 and 7
-2. **An outside review,** by Cursor, of everything new since the last: the CSI driver, scoped tokens, metrics, the Helm chart and
-   the release changes. Its findings come before new work, as the last two reviews' did
-3. **Changed block tracking,** starting with its correctness test. See phase 7
+1. **Changed block tracking,** starting with its correctness test. See phase 7
+2. **Consistency groups:** CSI's VolumeGroupSnapshot, several volumes snapshotted at one instant, as arrays do for a database's
+   data and log volumes or a VM's disks. Storage-level, so both targets get it
+3. **iSCSI as a second protocol,** then every feature that works on NVMe checked on iSCSI too: the API, the CLI, the web
+   interface, the CSI driver, snapshots, clones, CBT and consistency groups. See "Later" for what the probe found
 
 Smaller, to fit in: a test that a new version reads the previous release's state; the driver refusing to run when two nodes
 share a host NQN; a guest writing while it live-migrates; publishing the Helm chart.
@@ -194,13 +195,16 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [x] Use the snapshot and cloning features
   - [ ] Changed block tracking: CSI's `SnapshotMetadata` service (KEP-3314, beta in Kubernetes 1.36, CSI spec 1.10), for incremental
         backups of block volumes. After snapshots work in the driver. Storage does the work, so both targets get it
-    - [ ] First, on its own: prove the storage side never under-reports, as a missed block silently corrupts every incremental backup
-          built on it. Write known data, snapshot, change known ranges, including across chunk boundaries and with TRIM, snapshot
-          again, and check the reported delta covers every byte that differs. On LVM at several chunk sizes, and on XFS
-    - [ ] LVM thin: `thin_delta` and `thin_dump` on a reserved metadata snapshot, one at a time per pool. Ranges come in the pool's
-          chunk size. Add `device-mapper-persistent-data` to the images and to "Tools" in the README
-    - [ ] Reflink: `FIEMAP` on both snapshot files, where a different physical extent or a hole is a change
-    - [ ] API, spec first: paginated, read-only allocated and changed ranges on snapshots, with each pool's block size
+    - [x] First, on its own: prove the storage side never under-reports, as a missed block silently corrupts every incremental backup
+          built on it. `test/vm/cbt-check.sh`: 72 checks and 66 negative controls passed, on LVM at four chunk sizes and on XFS. See
+          "Changed block tracking" in `docs/testing.md` and decision 50
+    - [x] LVM thin: `thin_delta` and `thin_dump` on a reserved metadata snapshot, one at a time per pool. Ranges come in the pool's
+          chunk size. They're in `device-mapper-persistent-data`, which hosts already need for `thin_check`, and the images use the
+          host's LVM tools, so nothing is added to them
+    - [x] Reflink: `FIEMAP` on both snapshot files, where a different physical extent or a hole is a change
+    - [x] API, spec first: paginated, read-only allocated and changed ranges on snapshots, with each pool's block size:
+          `/v1/snapshots/{snapshot}/allocated` and `/changes`, and `nvweaver snapshot allocated` and `changes`. Checked end
+          to end by `vm-e2e.sh` against where a host's XFS put its files, on both pool types and targets
     - [ ] Driver: the `SnapshotMetadata` service, the `external-snapshot-metadata` sidecar with its TLS and token audiences, and a
           `SnapshotMetadataService` object. Test end to end in the k3s lab with the sidecar project's example client, and check
           whether Velero or Kasten use it yet
@@ -272,7 +276,7 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [ ] Add a smoke test on hosted macOS and Windows runners, running the real binary against a fake API, as nothing has run there yet. Don't publish those builds without it. All these targets
         cross-compile, but `go test ./cmd/nvweaver` won't there, as its tests use the Linux-only `internal/target`
   - [ ] Check what differs there: file paths for `--token-file` and `--ca`, the system's certificates, and signals on Windows
-- [ ] iSCSI as a second protocol, once the CLI and CSI driver have settled the API. It would be new resources, such as `/v1/iscsi/targets`, not a
+- [ ] iSCSI as a second protocol, next after consistency groups (see "Next"), once the CLI and CSI driver have settled the API. It would be new resources, such as `/v1/iscsi/targets`, not a
       `transport` on ports. Pools, volumes and snapshots should carry over: see decision 33
   - [x] Probe whether it's really feasible, driving LIO and SPDK by hand in VMs: it is, on both. See "iSCSI: is it feasible?" in `docs/testing.md`
   - [ ] Decide how to handle a volume's identity differing between LIO and SPDK, which can't be made to match

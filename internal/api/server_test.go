@@ -51,6 +51,10 @@ type fakePools struct {
 	growErr   error
 	capErr    error
 	alignTo   int64
+	// What Allocated and Changed report, and the internal names they were last asked about.
+	blocks    storage.Blocks
+	blocksErr error
+	asked     []string
 }
 
 func (f *fakePools) driver(p *target.Pool) (storage.Driver, error) {
@@ -63,6 +67,18 @@ func (f *fakePools) driver(p *target.Pool) (storage.Driver, error) {
 type fakeDriver struct{ *fakePools }
 
 func (d fakeDriver) Check() error { return d.checkErr }
+func (d fakeDriver) Allocated(internal string) (storage.Blocks, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.asked = []string{internal}
+	return d.blocks, d.blocksErr
+}
+func (d fakeDriver) Changed(base, internal string) (storage.Blocks, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.asked = []string{base, internal}
+	return d.blocks, d.blocksErr
+}
 func (d fakeDriver) Used(internal string) (int64, error) {
 	size, ok := d.files[internal]
 	if !ok {

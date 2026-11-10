@@ -52,12 +52,13 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | `e2e.sh`, kernel target | Loopback in one VM | 311 of 311 |
 | `e2e.sh`, SPDK target | Loopback in one VM | 327 of 327 |
 | `systemd-e2e.sh` | Loopback in one VM | 76 of 76 |
-| `vm/vm-e2e.sh` | Between two VMs | 915 of 915 |
+| `vm/vm-e2e.sh` | Between two VMs | 943 of 943 |
 | `webui-real-e2e.sh` | A browser, both targets in VMs | 93 of 93 |
 | `webui-e2e.sh` | A browser, no root | 245 of 245 |
 | `vm/k3s-csi.sh` `test`, `sanity` | k3s on three VMs | 34 of 34, 75 of 75 |
 
-All of these ran on 2026-11-09, on the working tree with decisions 48 and 49, by `run-all.sh` and then the last three.
+The CSI lab ran on 2026-11-09, with decisions 48 and 49. The rest ran on 2026-11-10, on the working tree with changed block
+tracking (decision 50), by `run-all.sh` and `webui-e2e.sh`, with `vm-e2e.sh` run again after its new checks were fixed.
 
 `go test -race` also passes. Earlier, smaller versions of these suites passed on GitHub's hosted runners, in
 CI run 41887410583 on commit `391e438`, with 2-vCPU VMs and Ubuntu's QEMU 8.2.
@@ -620,6 +621,51 @@ ReadWriteMany raw block disk. `helm upgrade` changed the reconnect delay on ever
 or badly formed `cluster`, and a missing API, with messages saying which. `make lint` lints it with `--strict` and renders it as
 on plain Kubernetes and as on OpenShift. Not tested yet: the chart on k3s, and installing it on a cluster that never had the
 driver.
+
+### Changed block tracking
+
+`test/vm/cbt-check.sh` checks, before anything is built on them, whether the ways nvweaver would report a snapshot's changed
+and allocated blocks ever miss one, as a missed block silently corrupts every incremental backup built on it. It runs
+`cbt-check.py` as root in a fresh lab VM, on loop devices: Fedora 44, kernel 7.2.15, LVM 2.03.38,
+`device-mapper-persistent-data` 1.3.4, xfsprogs 7.1.1.
+
+A 256 MiB volume goes through seven rounds, with a snapshot after each, taken as nvweaver takes them: half written with
+random data; single bytes at chunk edges and the last byte, a write across a chunk boundary, one unaligned at both ends over
+several chunks, and one from written into never-written space; 1,000 random 512-byte writes; TRIM of whole chunks, of parts
+of chunks, and of never-written space; the same data written again, and zeros into never-written space; nothing; and a full
+overwrite. Nine pairs of snapshots are compared, consecutive and further apart, and three snapshots' allocated ranges.
+
+| Method | Cases | Result |
+|---|---|---|
+| LVM thin: `thin_delta` and `thin_dump` on a reserved metadata snapshot of the live pool | 64 KiB chunks with zeroing on and off, 128 KiB, 256 KiB, 1 MiB | No byte unreported |
+| Reflink on XFS: FIEMAP of two `cp --reflink` snapshots, where a different physical extent, or written on one side only, is a change | 4 KiB blocks | No byte unreported |
+
+**72 checks and 66 negative controls passed.** Each check reads both snapshots and fails if any byte that differs, or any
+non-zero byte for allocated ranges, is outside what was reported. So that it can't pass by mistake, each check with anything
+to find runs again without the reported range that holds the first such byte, and must then fail. The six pairs with nothing
+changed have no control.
+
+- **Over-reporting grows with the chunk size,** as LVM reports whole chunks: 1,000 scattered 512-byte writes, 0.5 MB of
+  change, came back as 55 MB at 64 KiB chunks and 248 MB, nearly the whole volume, at 1 MiB. Reflink reported 3.9 MB.
+- **TRIM:** dm-thin unmaps only whole chunks, and reports those. A partial TRIM leaves the chunk as it was, and nothing is
+  reported, which is right, as nothing changed.
+- **The "same data again" round did change 509 to 2,550 bytes:** it read the data back through the page cache, where the
+  earlier unaligned TRIM had zeroed the partial page while dm-thin kept the chunk. Writing that back made the zeros real. They
+  were reported. Worth knowing for anything that reads a block device after an unaligned discard.
+
+**Through the API, end to end:** `vm-e2e.sh` checks nvweaver's own implementation, in its container, through `nsenter` to
+the VM's LVM, on both targets and both pool types. A host writes files to an XFS filesystem on a volume, and `filefrag`
+gives where each file's data is on the volume. `changes` must hold the rewritten file and every file written after the base
+snapshot (those not on a clone of it), and none of the 31 unchanged 8 MiB files in full; `changes` across a snapshot taken
+under load must hold every file whose fsync finished before it; and `allocated` must hold every file a snapshot has. All 20
+checks passed. Its first version bounded the reported size at 64 MiB, which failed on SPDK with reflink at 83 MB: files the
+writer finished just after the snapshot really had changed, so the bound was a guess. It was replaced by the exact checks
+above. The helper that compares ranges was tested by hand first, and an awk array indexed from an unset variable was found
+to hide the first range.
+
+**Not checked:** a pool whose metadata is changing while `thin_delta` reads it (the metadata snapshot holds what was
+committed when it was reserved, and nvweaver's snapshots are committed when taken), btrfs, Arm, SPDK's own snapshots, which
+nvweaver doesn't use, and real disks.
 
 ### The CSI driver at scale
 
