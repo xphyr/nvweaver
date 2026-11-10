@@ -26,6 +26,11 @@ func (s *Identity) GetPluginCapabilities(context.Context, *csi.GetPluginCapabili
 		{Type: &csi.PluginCapability_Service_{Service: &csi.PluginCapability_Service{Type: csi.PluginCapability_Service_CONTROLLER_SERVICE}}},
 		{Type: &csi.PluginCapability_VolumeExpansion_{VolumeExpansion: &csi.PluginCapability_VolumeExpansion{Type: csi.PluginCapability_VolumeExpansion_ONLINE}}},
 	}
+	if s.cfg.SnapshotMetadata && s.api != nil {
+		// Only where it's served: the controller, when asked for.
+		caps = append(caps, &csi.PluginCapability{Type: &csi.PluginCapability_Service_{Service: &csi.PluginCapability_Service{
+			Type: csi.PluginCapability_Service_SNAPSHOT_METADATA_SERVICE}}})
+	}
 	return &csi.GetPluginCapabilitiesResponse{Capabilities: caps}, nil
 }
 

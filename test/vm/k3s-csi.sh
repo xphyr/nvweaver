@@ -6,6 +6,8 @@
 #   test     volumes through the driver: filesystem and block, data kept across pods and nodes,
 #            growing, snapshots and clones, a volume shared by two nodes, and nothing left after
 #   sanity   run csi-sanity, the CSI conformance suite, against the driver on agent1, as cluster "sanity"
+#   cbt      changed block tracking, from Kubernetes 1.33: swap the driver for the Helm chart with snapshotMetadata on,
+#            and check what a backup client is told through the external-snapshot-metadata sidecar. Run it after the others
 #   remove   take the driver, and everything it made, back out
 #
 # Settings: IMAGE, nvweaver's image (localhost/nvweaver:dev), CSI_IMAGE (localhost/nvweaver-csi:dev),
@@ -18,6 +20,14 @@ LAB=$HERE/k3s-lab.sh
 IMAGE=${IMAGE:-localhost/nvweaver:dev}
 CSI_IMAGE=${CSI_IMAGE:-localhost/nvweaver-csi:dev}
 SNAPSHOTTER=v8.7.0
+# Helm, for the chart, and the external-snapshot-metadata release, for changed block tracking: pinned. The lister, its example
+# client, has no tag of its own; at the release's commit it still used the alpha API, which v1.1.0's CRD doesn't serve, so
+# it's built from the later commit that moved it to v1beta1.
+HELM_VERSION=v4.2.2
+HELM_SHA256=9adafecab4d406853bba163a70e9f104f47dbbf65ce24b7653bae7e36150bcb6
+CBT_VERSION=v1.1.0
+CBT_COMMIT=ca9890fac37303f89fb5575c24f7fc414bfd80eb
+CBT_URL=https://raw.githubusercontent.com/kubernetes-csi/external-snapshot-metadata/$CBT_VERSION
 # The last provisioner and resizer for Kubernetes before 1.34, as csi/README.md says.
 OLD_PROVISIONER=v5.3.0
 OLD_RESIZER=v1.14.0
@@ -401,6 +411,150 @@ EOF
 	return $rc
 }
 
+# covered RANGES OFFSET LENGTH: whether one range holds all of [OFFSET, OFFSET+LENGTH).
+covered() {
+	awk -v s="$2" -v e="$(($2 + $3))" '$1 <= s && $1 + $2 >= e { found = 1 } END { exit !found }' <<<"$1"
+}
+
+# lister ARGS: what the upstream example client is told, through the sidecar, as "offset length" lines.
+lister() {
+	local out
+	out=$(k exec cbt-client -- /go/bin/snapshot-metadata-lister -n default -o json "$@" 2>&1) || { echo "ERROR $out"; return; }
+	jq -r '.[].block_metadata[] | "\(.byte_offset // 0) \(.size_bytes)"' <<<"$out" 2>/dev/null || echo "ERROR $out"
+}
+
+# snapshot NAME: a VolumeSnapshot of the cbt claim, once it's ready.
+snapshot() {
+	k apply -f - >/dev/null <<YAML
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata: {name: $1, namespace: default}
+spec: {volumeSnapshotClassName: nvweaver, source: {persistentVolumeClaimName: cbt}}
+YAML
+	for _ in $(seq 1 60); do
+		[ "$(k get volumesnapshot "$1" -o jsonpath='{.status.readyToUse}' 2>/dev/null)" = true ] && return 0
+		sleep 2
+	done
+	return 1
+}
+
+cmd_cbt() {
+	echo "== changed block tracking, through the chart and the external-snapshot-metadata sidecar"
+	local minor
+	minor=$(k version -o json 2>/dev/null | jq -r '.serverVersion.minor' | tr -dc 0-9)
+	[ "${minor:-0}" -ge 33 ] || die "changed block tracking needs Kubernetes 1.33, and this is 1.$minor"
+
+	local cache=${LAB_DIR:-$HOME/nvweaver-vms}/k3s-cache tgz
+	tgz=$cache/helm-$HELM_VERSION-linux-amd64.tar.gz
+	if [ ! -f "$tgz" ]; then
+		mkdir -p "$cache" && curl -fsSL -o "$tgz.part" "https://get.helm.sh/$(basename "$tgz")" || die "cannot download Helm"
+		[ "$(sha256sum "$tgz.part" | cut -d' ' -f1)" = "$HELM_SHA256" ] || die "Helm's checksum doesn't match"
+		mv "$tgz.part" "$tgz"
+	fi
+	tar -xzO -f "$tgz" linux-amd64/helm | "$LAB" ssh server 'sudo tee /usr/local/bin/helm >/dev/null && sudo chmod 755 /usr/local/bin/helm' || die "cannot install Helm"
+	tar -C "$ROOT/csi/deploy/helm" -cz nvweaver-csi | "$LAB" ssh server 'rm -rf /tmp/chart && mkdir /tmp/chart && tar -xz -C /tmp/chart' || die "cannot copy the chart"
+	k apply -f "$CBT_URL/client/config/crd/cbt.storage.k8s.io_snapshotmetadataservices.yaml" >/dev/null || die "cannot apply the SnapshotMetadataService CRD"
+	k apply -f "$CBT_URL/deploy/snapshot-metadata-client-cluster-role.yaml" >/dev/null || die "cannot apply the client's role"
+
+	# The same driver, from the chart this time, with the sidecar.
+	k delete -f - --ignore-not-found >/dev/null <"$ROOT/csi/deploy/classes.yaml"
+	manifest | k delete --ignore-not-found -f - >/dev/null
+	"$LAB" ssh server "cat > /tmp/values.yaml" <<YAML
+cluster: $CLUSTER
+nvweaver: {existingSecret: nvweaver-api}
+image: {repository: ${CSI_IMAGE%:*}, tag: ${CSI_IMAGE##*:}, pullPolicy: Never}
+storageClasses:
+  - {name: nvweaver, pool: csi, port: "", fsType: "", reclaimPolicy: Delete, volumeBindingMode: WaitForFirstConsumer, allowVolumeExpansion: true, default: false, defaultVirt: false}
+snapshotMetadata: {enabled: true}
+YAML
+	"$LAB" ssh server "sudo helm --kubeconfig /etc/rancher/k3s/k3s.yaml upgrade --install nvweaver-csi /tmp/chart/nvweaver-csi -n $NS -f /tmp/values.yaml --wait --timeout 5m" ||
+		die "the chart didn't install"
+	expect_eq "the chart installs the driver with the sidecar, and its SnapshotMetadataService" "nvweaver.xphyr.github.io" \
+		"$(k get snapshotmetadataservice nvweaver.xphyr.github.io -o jsonpath='{.metadata.name}' 2>&1)"
+
+	# The upstream example client, allowed by its role, and an account with no role at all.
+	k apply -f - >/dev/null <<YAML
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: cbt-client, namespace: default}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: cbt-nobody, namespace: default}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: cbt-client}
+subjects: [{kind: ServiceAccount, name: cbt-client, namespace: default}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: external-snapshot-metadata-client-runner}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: cbt-client, namespace: default}
+spec:
+  serviceAccountName: cbt-client
+  restartPolicy: Never
+  containers:
+    - name: c
+      image: docker.io/library/golang:1.26
+      command: [sh, -c, "go install github.com/kubernetes-csi/external-snapshot-metadata/tools/snapshot-metadata-lister@$CBT_COMMIT && sleep 3600"]
+YAML
+	local built=
+	for _ in $(seq 1 150); do
+		k exec cbt-client -- test -x /go/bin/snapshot-metadata-lister 2>/dev/null && built=yes && break
+		sleep 4
+	done
+	[ -n "$built" ] || die "the example client didn't build: $(k logs cbt-client 2>&1 | tail -5)"
+
+	# Data at known places on a raw block volume, snapshotted before and after.
+	pvc cbt 64Mi ReadWriteOnce Block
+	pod cbt-w cbt agent1 'dd if=/dev/urandom of=/dev/xvda bs=1M count=4 oflag=direct 2>/dev/null && echo written; sleep 900' block
+	local said='' n
+	for _ in $(seq 1 90); do
+		said=$(k logs cbt-w 2>/dev/null)
+		[ "$said" = written ] && break
+		sleep 2
+	done
+	expect_eq "a pod writes 4 MiB at the start of a raw volume" written "$said"
+	snapshot cbt-1 && ok "snapshot it" || bad "snapshot it"
+	for n in 2560 7680; do # 10 MiB and 30 MiB in, 4 KiB each
+		k exec cbt-w -- dd if=/dev/urandom of=/dev/xvda bs=4096 count=1 seek=$n oflag=direct conv=notrunc 2>/dev/null
+	done
+	snapshot cbt-2 && ok "write 4 KiB at 10 MiB and 30 MiB, and snapshot it again" || bad "snapshot it again"
+
+	local ranges total
+	ranges=$(lister -s cbt-2 -p cbt-1)
+	case $ranges in ERROR*) bad "a backup client asks what changed" "$ranges" ;; *) ok "a backup client asks what changed, through the sidecar" ;; esac
+	covered "$ranges" 10485760 4096 && ok "it's told of the write at 10 MiB" || bad "it's told of the write at 10 MiB" "$ranges"
+	covered "$ranges" 31457280 4096 && ok "and of the one at 30 MiB" || bad "and of the one at 30 MiB" "$ranges"
+	total=$(awk '{ n += $2 } END { print n + 0 }' <<<"$ranges")
+	if [ "$total" -gt 0 ] && [ "$total" -le 2097152 ]; then ok "and of nothing much else ($total bytes)"; else bad "and of nothing much else" "$total bytes"; fi
+	ranges=$(lister -s cbt-1)
+	covered "$ranges" 0 4194304 && ok "the first snapshot's allocated blocks hold the 4 MiB written" || bad "the first snapshot's allocated blocks hold the 4 MiB written" "$ranges"
+	total=$(awk '{ n += $2 } END { print n + 0 }' <<<"$ranges")
+	if [ "$total" -gt 0 ] && [ "$total" -le 8388608 ]; then ok "and not the rest of the volume ($total bytes)"; else bad "and not the rest of the volume" "$total bytes"; fi
+	# Refused for that reason, not any other: an error alone would pass if nothing worked at all.
+	ranges=$(lister -s cbt-2 -p cbt-1 --service-account cbt-nobody --service-account-namespace default)
+	case $ranges in
+	ERROR*PermissionDenied* | ERROR*Unauthenticated*) ok "an account with no access to the snapshots is refused" ;;
+	*) bad "an account with no access to the snapshots is refused, as not allowed" "$ranges" ;;
+	esac
+
+	k delete pod cbt-w cbt-client --wait=true --timeout=120s >/dev/null 2>&1
+	k delete volumesnapshot cbt-1 cbt-2 --wait=true --timeout=120s >/dev/null
+	k delete pvc cbt --wait=true --timeout=120s >/dev/null
+	k delete clusterrolebinding cbt-client --ignore-not-found >/dev/null
+	k delete serviceaccount cbt-client cbt-nobody --ignore-not-found >/dev/null
+	"$LAB" ssh server "sudo helm --kubeconfig /etc/rancher/k3s/k3s.yaml uninstall nvweaver-csi -n $NS --wait >/dev/null"
+	expect_eq "uninstalling the chart takes its SnapshotMetadataService" "" "$(k get snapshotmetadataservice -o name 2>/dev/null)"
+	k delete -f "$CBT_URL/deploy/snapshot-metadata-client-cluster-role.yaml" --ignore-not-found >/dev/null
+	k delete -f "$CBT_URL/client/config/crd/cbt.storage.k8s.io_snapshotmetadataservices.yaml" --ignore-not-found >/dev/null
+	api GET /v1/volumes >/dev/null
+	expect_eq "nvweaver has no volumes left" 0 "$(bodyq '.items | length')"
+	echo "$fails failed"
+	[ "$fails" = 0 ]
+}
+
 cmd_remove() {
 	k delete -f - --ignore-not-found >/dev/null <"$ROOT/csi/deploy/classes.yaml"
 	manifest | k delete --ignore-not-found -f - >/dev/null
@@ -426,6 +580,7 @@ case "${1:-}" in
 deploy) cmd_deploy ;;
 test) cmd_test ;;
 sanity) cmd_sanity ;;
+cbt) cmd_cbt ;;
 remove) cmd_remove ;;
 *)
 	sed -n '2,/^set -u/p' "$0" | sed -n 's/^# \{0,1\}//p'

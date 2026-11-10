@@ -92,3 +92,19 @@ volumeSnapshotClass:
   create: true
   name: nvweaver
   deletionPolicy: Delete
+
+# Changed block tracking, for backups: the external-snapshot-metadata sidecar, which backup tools reach over TLS for what
+# changed between two snapshots. Off unless asked for. It needs Kubernetes 1.33 or later, and the SnapshotMetadataService
+# CRD installed first: see csi/README.md. Decision 50.
+snapshotMetadata:
+  enabled: false
+  image: registry.k8s.io/sig-storage/csi-snapshot-metadata:v1.1.0
+  # The audience backup clients ask their Kubernetes tokens for. The driver's name when empty.
+  audience: ""
+  # The Service's port.
+  port: 6443
+  tls:
+    # A kubernetes.io/tls secret with a certificate for <release>-snapshot-metadata.<namespace>, and with it the PEM of the
+    # CA that signed it, which clients are given. Empty makes and keeps a certificate of its own, for 10 years.
+    existingSecret: ""
+    caCert: ""

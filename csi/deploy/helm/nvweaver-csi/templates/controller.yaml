@@ -43,6 +43,9 @@ spec:
             - --mode=controller
             {{- include "nvweaver-csi.driverArgs" . | nindent 12 }}
             - --port={{ .Values.controller.port }}
+            {{- if .Values.snapshotMetadata.enabled }}
+            - --snapshot-metadata
+            {{- end }}
           env:
             - name: NVWEAVER_API_URL
               valueFrom: {secretKeyRef: {name: {{ include "nvweaver-csi.secretName" . }}, key: url}}
@@ -78,8 +81,31 @@ spec:
           image: {{ .Values.sidecars.livenessProbe.image }}
           args: [--csi-address=/csi/csi.sock]
           volumeMounts: [{name: socket, mountPath: /csi}]
+        {{- if .Values.snapshotMetadata.enabled }}
+        - name: snapshot-metadata
+          image: {{ .Values.snapshotMetadata.image }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --port=50051
+            - --tls-cert=/tls/tls.crt
+            - --tls-key=/tls/tls.key
+            - --audience={{ include "nvweaver-csi.snapshotMetadataAudience" . }}
+            - --http-endpoint=:8090
+          ports:
+            - {name: snapshot-meta, containerPort: 50051}
+          readinessProbe:
+            httpGet: {path: /health, port: 8090}
+          volumeMounts:
+            - {name: socket, mountPath: /csi}
+            - {name: snapshot-metadata-tls, mountPath: /tls, readOnly: true}
+        {{- end }}
       volumes:
         - {name: socket, emptyDir: {}}
+        {{- if .Values.snapshotMetadata.enabled }}
+        - name: snapshot-metadata-tls
+          secret:
+            secretName: {{ .Values.snapshotMetadata.tls.existingSecret | default (printf "%s-tls" (include "nvweaver-csi.snapshotMetadataName" .)) }}
+        {{- end }}
         - name: api
           secret:
             secretName: {{ include "nvweaver-csi.secretName" . }}

@@ -39,6 +39,7 @@ func main() {
 	lossTmo := flag.Int("ctrl-loss-tmo", -1, "seconds a node keeps reconnecting to nvweaver before giving its volumes up; -1 is for ever, as there's no failover")
 	reconnect := flag.Int("reconnect-delay", 2, "seconds a node waits between attempts to reconnect to nvweaver, which sets how long I/O stalls when a connection drops")
 	maxVols := flag.Int64("max-volumes-per-node", driver.MaxNamespaces, "how many volumes a node tells Kubernetes it can take")
+	metadata := flag.Bool("snapshot-metadata", false, "serve changed block tracking to the external-snapshot-metadata sidecar, for backups, in controller mode; it needs Kubernetes 1.33")
 	showVersion := flag.Bool("version", false, "print the version, and stop")
 	flag.Parse()
 	if *showVersion {
@@ -49,7 +50,7 @@ func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(*endpoint, *mode, *hostNQN, driver.Config{
 		Name: *name, Version: version, Cluster: *cluster, NQNPrefix: *prefix, Port: *port,
-		CtrlLossTmo: *lossTmo, ReconnectDelay: *reconnect, MaxVolumesPerNode: *maxVols, Log: log,
+		CtrlLossTmo: *lossTmo, ReconnectDelay: *reconnect, MaxVolumesPerNode: *maxVols, SnapshotMetadata: *metadata, Log: log,
 	}, log); err != nil {
 		log.Error("stopped", "err", err)
 		os.Exit(1)
@@ -77,6 +78,9 @@ func run(endpoint, mode, hostNQNFile string, cfg driver.Config, log *slog.Logger
 		}
 		api = c
 		csi.RegisterControllerServer(srv, driver.NewController(cfg, api))
+		if cfg.SnapshotMetadata {
+			csi.RegisterSnapshotMetadataServer(srv, driver.NewSnapshotMetadata(c))
+		}
 	}
 	if mode == "node" || mode == "all" {
 		n, err := driver.NewNode(cfg, hostNQNFile)

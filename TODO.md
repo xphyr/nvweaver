@@ -12,10 +12,16 @@ here first. Each step points at its items further down.
 Agreed with the user on 2026-11-10. Done since the last list: scale (5,000 volumes on 100 nodes, and 1,000 connections), and
 the third outside review's findings. In this order now:
 
-1. **Changed block tracking,** starting with its correctness test. See phase 7
-2. **Consistency groups:** CSI's VolumeGroupSnapshot, several volumes snapshotted at one instant, as arrays do for a database's
+1. **Changed block tracking:** done, for the storage, API, CLI and CSI driver, with the chart's sidecar. See phase 7. Still to
+   do: the manifests, and checking whether Velero or Kasten use it yet
+2. **Cleaning up after a node leaves,** moved up by the user on 2026-11-10: hosts owned by the token that made them, as
+   subsystems are, so the driver may delete its own; and the controller deleting the subsystem and host of a node whose
+   CSINode is gone, once nothing is exported in it. See phase 7
+3. **Consistency groups:** CSI's VolumeGroupSnapshot, several volumes snapshotted at one instant, as arrays do for a database's
    data and log volumes or a VM's disks. Storage-level, so both targets get it
-3. **iSCSI as a second protocol,** then every feature that works on NVMe checked on iSCSI too: the API, the CLI, the web
+4. **The CSI driver's gaps against arrays' drivers,** agreed on 2026-11-10, fitted in around 3: topology and capacity
+   reporting, volume health, and SELinux mount labelling. See phase 7
+5. **iSCSI as a second protocol,** then every feature that works on NVMe checked on iSCSI too: the API, the CLI, the web
    interface, the CSI driver, snapshots, clones, CBT and consistency groups. See "Later" for what the probe found
 
 Smaller, to fit in: a test that a new version reads the previous release's state; the driver refusing to run when two nodes
@@ -206,9 +212,12 @@ are in `CLAUDE.review.md`, which isn't in the repository.
           `/v1/snapshots/{snapshot}/allocated` and `/changes`, and `nvweaver snapshot allocated` and `changes`. Checked end
           to end by `vm-e2e.sh` against where a host's XFS put its files, on both pool types and targets
     - [x] Support Kubernetes down to 1.31, for OpenShift 4.18: older provisioner and resizer below 1.34, decision 51
-    - [ ] Driver: optional, off unless asked for, and only from Kubernetes 1.33, the sidecar's minimum. The `SnapshotMetadata` service, the `external-snapshot-metadata` sidecar with its TLS and token audiences, and a
-          `SnapshotMetadataService` object. Test end to end in the k3s lab with the sidecar project's example client, and check
-          whether Velero or Kasten use it yet
+    - [x] Driver: optional, off unless asked for, and only from Kubernetes 1.33, the sidecar's minimum. The `SnapshotMetadata` service, the `external-snapshot-metadata` sidecar with its TLS and token audiences, and a
+          `SnapshotMetadataService` object, by the Helm chart. Tested end to end in the k3s lab with the sidecar project's example
+          client: `k3s-csi.sh cbt`
+    - [ ] Changed block tracking with the manifests too, not only the Helm chart
+    - [ ] Check whether Velero, Kasten or other backup tools use it yet, and try one
+    - [ ] Test it on OpenShift, which needs `nvw` on 4.20 (Kubernetes 1.33) or later; it's on 4.22, so it can be tried now
   - [x] Map volumes into per-node subsystems, and each shared volume into its own subsystem
   - [x] Test RWX block volumes and KubeVirt live migration with the real thing: both passed on OpenShift. On the kernel target, removing the source host
         stalls the destination for about 10 s: see decision 30. Measured on OpenShift: the new node's I/O queued for 10 s, 10 s after
@@ -235,9 +244,18 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [x] A Helm chart, as another way to install: `csi/deploy/helm/nvweaver-csi`, linted and rendered by `make lint`, tested on OpenShift
   - [ ] Publish the chart with releases, such as to an OCI registry, and test it in the k3s lab too
   - [ ] DH-HMAC-CHAP for nodes: a key per node, from a Secret, set on its host
-  - [ ] Delete a node's subsystem and host when the node leaves the cluster. They stay while the driver runs, for its next volume.
+  - [ ] Delete a node's subsystem and host when the node leaves the cluster (step 2 of "Next"). They stay while the driver runs, for its next volume.
         A scoped token can delete the subsystem but not the host, as hosts have no owner and only an admin may delete one
-  - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver
+  - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver, such as one with a storage network,
+        and so the scheduler sees a pool that's full. Arrays' drivers all report capacity
+  - [ ] Volume health: `VOLUME_CONDITION` from the node and `GET_VOLUME` from the controller, so a lost path, a full thin pool or a
+        missing LV shows on the claim in Kubernetes, not only in nvweaver's warnings
+  - [ ] SELinux mount labelling: `seLinuxMount: true` on the CSIDriver, so a volume is mounted with its label rather than every
+        file relabelled at each pod start, which is slow on big volumes such as VM disks. Check the node passes the `context`
+        option through, and test on OpenShift. Mind Kubernetes 1.31, decision 51
+  - [ ] Several nvweavers behind one driver, each StorageClass naming its API and credentials through CSI secrets, as arrays'
+        drivers do for several arrays
+  - [ ] Importing a volume nvweaver already has into Kubernetes, for migrations
   - [x] `ListVolumes` and `ListSnapshots`, which `csi-sanity` and some backup tools use
   - [ ] Test on OpenShift 4.18 itself, and on Kubernetes 1.32 and 1.33, which only the chart's rendering covers
   - [ ] Test at production-like volume and node counts. The controller passed at 5,000 volumes on 100 simulated nodes, against

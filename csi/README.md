@@ -197,6 +197,35 @@ The values, all in [`values.yaml`](deploy/helm/nvweaver-csi/values.yaml) with wh
 `helm upgrade` changes any of them, except those that can't change once there are volumes. The CDI StorageProfile isn't in the
 chart, as CDI makes and owns it: apply it as below.
 
+### Changed block tracking, for backups
+
+Optional, and off unless asked for. A backup tool that supports Kubernetes' changed block tracking, CSI's
+`SnapshotMetadata` service, can read only what changed between two snapshots of a volume, or only what one holds, rather
+than all of it. The driver answers from nvweaver, which takes it from the pool's own mappings: see decisions 50 and 51.
+
+It needs **Kubernetes 1.33 or later**, for the upstream
+[external-snapshot-metadata](https://github.com/kubernetes-csi/external-snapshot-metadata) sidecar, and it's installed with
+the Helm chart. First, its CRD, once per cluster, from the sidecar's release:
+
+```sh
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshot-metadata/v1.1.0/client/config/crd/cbt.storage.k8s.io_snapshotmetadataservices.yaml
+```
+
+Then install or upgrade the chart with `--set snapshotMetadata.enabled=true`. That adds the sidecar to the controller, a
+Service for it, its RBAC, and the `SnapshotMetadataService` named for the driver, which is how backup tools find it. The
+chart refuses it below 1.33, or without the CRD.
+
+- **TLS:** the chart makes a certificate for the Service, and a CA for it, and keeps them on upgrades. The CA is in the
+  `SnapshotMetadataService`, which clients read. To use your own, give `snapshotMetadata.tls.existingSecret`, a
+  `kubernetes.io/tls` secret for `<release>-snapshot-metadata.<namespace>`, and `snapshotMetadata.tls.caCert`.
+- **Who may ask:** the sidecar checks each client's Kubernetes token, for the audience in the `SnapshotMetadataService`
+  (the driver's name unless `snapshotMetadata.audience` says), and that the client may read the VolumeSnapshots it asks
+  about. Backup tools usually bring their own RBAC; the sidecar's
+  [example client role](https://github.com/kubernetes-csi/external-snapshot-metadata/blob/v1.1.0/deploy/snapshot-metadata-client-cluster-role.yaml)
+  shows what one needs.
+- **What it reports:** byte ranges in whole blocks of the pool's unit, an LVM thin pool's chunk size or the filesystem's
+  block size, so a little more than changed, never less. Both snapshots must be of the same volume, and still exist.
+
 ### With KubeVirt or OpenShift Virtualization
 
 KubeVirt's Containerized Data Importer (CDI) keeps a StorageProfile for each StorageClass, saying what to ask for when it makes
@@ -284,6 +313,7 @@ Set in `deploy/nvweaver-csi.yaml`, on the `driver` containers.
 | `--nqn-prefix` | `nqn.2026-11.io.github.xphyr.nvweaver:csi` | How the NQN of each subsystem the driver makes starts. |
 | `--hostnqn-file` | `/etc/nvme/hostnqn` | The node's host NQN, which is its ID. |
 | `--driver-name` | `nvweaver.xphyr.github.io` | The driver's name in Kubernetes. |
+| `--snapshot-metadata` | off | On the controller, serve changed block tracking to the external-snapshot-metadata sidecar. See [Changed block tracking](#changed-block-tracking-for-backups). |
 
 **`--cluster`, `--nqn-prefix` and `--driver-name` can't change once volumes exist:** the driver finds its volumes by them, so
 changing one orphans every volume it made.
@@ -340,5 +370,5 @@ All tracked in `TODO.md`:
 - DH-HMAC-CHAP for nodes
 - Refusing to run when two nodes share a host NQN, rather than relying on the check above
 - Topology and capacity reporting
-- Changed block tracking, for incremental backups
+- Changed block tracking with the manifests, rather than the Helm chart
 - Removing a node's subsystem when the node leaves the cluster

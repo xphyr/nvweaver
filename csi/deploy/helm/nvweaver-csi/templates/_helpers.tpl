@@ -29,6 +29,15 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 - --nqn-prefix={{ .Values.nqnPrefix }}
 {{- end }}
 
+{{- define "nvweaver-csi.snapshotMetadataName" -}}
+{{ .Release.Name }}-snapshot-metadata
+{{- end }}
+
+{{- /* The audience backup clients ask their tokens for: the driver's name, unless set. */}}
+{{- define "nvweaver-csi.snapshotMetadataAudience" -}}
+{{ .Values.snapshotMetadata.audience | default .Values.driverName }}
+{{- end }}
+
 {{- define "nvweaver-csi.openshift" -}}
 {{- $v := toString .Values.openshift.privilegedSCC -}}
 {{- if or (eq $v "true") (and (eq $v "auto") (.Capabilities.APIVersions.Has "security.openshift.io/v1")) -}}true{{- end -}}

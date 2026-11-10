@@ -52,7 +52,7 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | `e2e.sh`, kernel target | Loopback in one VM | 311 of 311 |
 | `e2e.sh`, SPDK target | Loopback in one VM | 327 of 327 |
 | `systemd-e2e.sh` | Loopback in one VM | 76 of 76 |
-| `vm/vm-e2e.sh` | Between two VMs | 943 of 943 |
+| `vm/vm-e2e.sh` | Between two VMs | 944 of 944 |
 | `webui-real-e2e.sh` | A browser, both targets in VMs | 93 of 93 |
 | `webui-e2e.sh` | A browser, no root | 245 of 245 |
 | `vm/k3s-csi.sh` `test`, `sanity` | k3s on three VMs | 34 of 34, 75 of 75 |
@@ -668,6 +668,22 @@ checks passed. Its first version bounded the reported size at 64 MiB, which fail
 writer finished just after the snapshot really had changed, so the bound was a guess. It was replaced by the exact checks
 above. The helper that compares ranges was tested by hand first, and an awk array indexed from an unset variable was found
 to hide the first range.
+
+**Through the CSI driver:** `k3s-csi.sh cbt`, on k3s 1.37 on 2026-11-10, passed 13 of 13. It installs the driver with the Helm
+chart and `snapshotMetadata.enabled`, which also tests the chart in the lab, and the sidecar's CRD from v1.1.0. A pod writes
+4 MiB to a raw block volume, which is snapshotted; then 4 KiB at 10 MiB and 30 MiB, and it's snapshotted again. The
+sidecar's own example client, `snapshot-metadata-lister`, asking through the sidecar with a Kubernetes token, was told of both
+writes and 128 KiB in all, two 64 KiB chunks, and of the first snapshot's 4 MiB, and an account with no access to the
+snapshots was refused as not allowed. Its first runs failed on the test, each traced: the CRD's path in the release is a
+symlink, which a raw download gives as its target's name; the chart set `requireBaseSnapshotForDelta`, which v1.1.0's CRD
+doesn't have; the lister at the release's commit still used the alpha API, so it's built from the commit that moved it to
+v1beta1; and the refusal check passed on any error, which hid a missing option, so it now wants `PermissionDenied`.
+
+**A check that passed on the build host failed in CI:** `vm-e2e.sh` treated a file missing from a clone of the base snapshot as new
+data, so as a change. One file was written just before the snapshot: its data was in it, but not yet its name, which is
+what a crash-consistent snapshot holds. Its blocks didn't change, and weren't reported, which was right. Timing decided
+whether it happened. Now what isn't reported is compared byte for byte between the original and the clone, and only a
+difference fails.
 
 **Not checked:** a pool whose metadata is changing while `thin_delta` reads it (the metadata snapshot holds what was
 committed when it was reserved, and nvweaver's snapshots are committed when taken), btrfs, Arm, SPDK's own snapshots, which

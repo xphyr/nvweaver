@@ -639,6 +639,13 @@ there, not as absolute numbers.
   else should hold one on nvweaver's pools. Another tool that does would have it taken away.
 - **Where FIEMAP can't say where data is,** for delayed allocation, inline or encoded data, including btrfs's compressed
   extents, that range counts as changed: never under-reporting matters more than reporting little.
+- **The CSI driver serves CSI's `SnapshotMetadata` service,** only with `--snapshot-metadata`, and advertises it only then. It
+  streams nvweaver's pages as variable-length ranges, with CSI's codes: `NotFound`, `InvalidArgument` for snapshots of
+  different volumes, and `OutOfRange` past the end. The external-snapshot-metadata sidecar fronts it for backup tools, with
+  TLS and Kubernetes tokens, and needs 1.33, so the Helm chart adds it only with `snapshotMetadata.enabled`, and refuses
+  below 1.33 or without its CRD (decision 51). Not in the manifests yet.
+- **The chart makes the sidecar's certificate and CA,** valid for 10 years and kept on upgrades, as clients hold the CA from
+  the `SnapshotMetadataService`; or takes an existing secret and its CA. The audience defaults to the driver's name.
 
 ## 51. The CSI driver supports Kubernetes 1.31 and later
 
