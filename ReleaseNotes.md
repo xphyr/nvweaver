@@ -12,11 +12,15 @@ The major differences between versions. For every change, see the commit history
   snapshots of a volume, and `/allocated` where a snapshot holds data, from the storage's own mappings, on both pool types
   and both targets. Also `nvweaver snapshot changes` and `snapshot allocated`. On LVM it needs `thin_delta` and `thin_dump`,
   from the package that already provides `thin_check`. See decision 50.
+- **The CSI driver is tested on Arm,** on single-node OpenShift 5.0 on arm64, and `csi/deploy/openshift/` has MachineConfigs to
+  load `nvme-tcp` at boot on nodes that don't.
 - **The CSI driver serves changed block tracking to backup tools,** through Kubernetes' external-snapshot-metadata sidecar,
   from Kubernetes 1.33. It's off unless the Helm chart's `snapshotMetadata.enabled` is set. See `csi/README.md`.
 
 ### Fixed
 
+- **ReadOnlyMany filesystems work on SELinux nodes, such as OpenShift's.** Pods using one never started, as a read-only
+  filesystem can't be relabelled for each pod; they're mounted with one label now. See decision 53.
 - **The CSI driver mounts ReadOnlyMany filesystems read-only** on every node. Before, each node mounted them read-write,
   and only the pod's view was read-only, which can corrupt a filesystem mounted on several nodes. See decision 48.
 - **The CSI driver refuses a port listening on `0.0.0.0` or `::`,** with an error naming the port, rather than telling nodes

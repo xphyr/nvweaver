@@ -138,6 +138,16 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		// Formatting above still happens on the first node to find the device empty. Two nodes doing so at the
 		// same moment is a race this leaves: see decision 48.
 		flags = append(slices.DeleteFunc(slices.Clone(flags), func(f string) bool { return f == "rw" || f == "ro" }), "ro")
+		// Where SELinux labels files, the runtime relabels a volume for each pod, which a read-only filesystem refuses, so
+		// the pod never starts. One label for the whole mount, which any container may read, has nothing to relabel, and
+		// kubelet doesn't try. Unless the class gives one. See decision 53.
+		labelled, err := n.selinuxLabels(staging)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		if labelled && !slices.ContainsFunc(flags, func(f string) bool { return strings.HasPrefix(f, "context=") }) {
+			flags = append(flags, roContext)
+		}
 	}
 	if len(flags) > 0 {
 		args = append(args, "-o", strings.Join(flags, ","))
@@ -502,11 +512,35 @@ func (n *Node) unmount(ctx context.Context, path string) error {
 	return nil
 }
 
-// mount is one line of mountinfo: where, and what's there, as a device for a device or a bind mount of one, and
-// whether that mount is read-only.
+// mount is one line of mountinfo: where, and what's there, as a device for a device or a bind mount of one, whether
+// that mount is read-only, and its filesystem's own options, such as seclabel.
 type mount struct {
 	point, src string
 	ro         bool
+	super      []string
+}
+
+// roContext labels a whole read-only mount for containers: container_file_t at s0, which every container's level
+// dominates, so any pod using the volume may read it, and kubelet, seeing no seclabel, relabels nothing.
+const roContext = "context=system_u:object_r:container_file_t:s0"
+
+// selinuxLabels reports whether the filesystem holding path labels its files for SELinux, as kubelet decides whether
+// to relabel a volume: by seclabel among the filesystem's options.
+func (n *Node) selinuxLabels(path string) (bool, error) {
+	ms, err := n.mounts()
+	if err != nil {
+		return false, err
+	}
+	clean := filepath.Clean(path)
+	best, labelled := -1, false
+	for _, m := range ms {
+		if m.point == clean || m.point == "/" || strings.HasPrefix(clean, m.point+"/") {
+			if len(m.point) >= best {
+				best, labelled = len(m.point), slices.Contains(m.super, "seclabel")
+			}
+		}
+	}
+	return labelled, nil
 }
 
 func (n *Node) mounts() ([]mount, error) {
@@ -530,6 +564,9 @@ func (n *Node) mounts() ([]mount, error) {
 		}
 		if g := strings.Fields(post); len(g) >= 2 {
 			m.src = unescapeMount(g[1])
+			if len(g) >= 3 {
+				m.super = strings.Split(g[2], ",")
+			}
 			if g[0] == "devtmpfs" {
 				m.src = "/dev" + unescapeMount(f[3])
 			}

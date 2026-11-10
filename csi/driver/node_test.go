@@ -146,6 +146,36 @@ func TestReadOnlyManyIsStagedReadOnly(t *testing.T) {
 	}
 }
 
+// Where SELinux labels files, a read-only filesystem can't be relabelled for each pod, so pods using it never start. It's
+// mounted with one label for the whole mount, which kubelet leaves alone. Found on OpenShift; k3s doesn't relabel.
+func TestReadOnlyManyIsLabelledWhereSELinuxIs(t *testing.T) {
+	stage := filepath.Join(t.TempDir(), "staging")
+	sub := testCfg.sharedSubsystem("lab-pvc-r")
+	pc := map[string]string{ctxNQN: sub, ctxTransport: "tcp", ctxAddress: "10.98.0.1", ctxService: "4420", ctxNGUID: nguid}
+	stageWith := func(root string, flags ...string) string {
+		f := newFakeNode(t)
+		write(t, f.mnts, "22 1 0:21 / / rw - xfs /dev/vda1 "+root)
+		f.subsystem(t, sub, "nvme1n1", nguid)
+		rox := capOf(csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY, false)
+		rox.GetMount().MountFlags = flags
+		if _, err := f.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{VolumeId: "lab-pvc-r", StagingTargetPath: stage,
+			PublishContext: pc, VolumeCapability: rox}); err != nil {
+			t.Fatal(err)
+		}
+		return f.ran[len(f.ran)-1]
+	}
+	if got, want := stageWith("rw,seclabel,attr2"), "mount -t ext4 -o ro,"+roContext+" /dev/nvme1n1 "+stage; got != want {
+		t.Errorf("with SELinux:\n%s\nwant\n%s", got, want)
+	}
+	if got, want := stageWith("rw,attr2"), "mount -t ext4 -o ro /dev/nvme1n1 "+stage; got != want {
+		t.Errorf("without:\n%s\nwant\n%s", got, want)
+	}
+	// The class's own label wins.
+	if got, want := stageWith("rw,seclabel", "context=system_u:object_r:mine_t:s0"), "mount -t ext4 -o context=system_u:object_r:mine_t:s0,ro /dev/nvme1n1 "+stage; got != want {
+		t.Errorf("the class's:\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestAWildcardAddressIsntConnectedTo(t *testing.T) {
 	f := newFakeNode(t)
 	for _, addr := range []string{"0.0.0.0", "::"} {

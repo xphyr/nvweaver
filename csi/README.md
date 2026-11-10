@@ -5,7 +5,7 @@ as an enterprise array's driver would. It talks to nvweaver only through its API
 
 **Status:** new, from v0.4.0. It passes `csi-sanity`, the CSI conformance suite, and an end-to-end test in a k3s lab of three VMs, on both
 of nvweaver's targets (`test/vm/k3s-csi.sh`). It runs on Kubernetes 1.31 and later. On a compact OpenShift 4.22 cluster it passed the same checks as restricted pods,
-and ran and live-migrated a KubeVirt VM. It hasn't been tested at scale or on Arm yet. See [What isn't done yet](#what-isnt-done-yet).
+and ran and live-migrated a KubeVirt VM. It passed the same checks on a single-node OpenShift 5.0 cluster on arm64. It hasn't been tested with many real nodes yet. See [What isn't done yet](#what-isnt-done-yet).
 
 ## What it does
 
@@ -369,7 +369,7 @@ then disconnect each node with `nvme disconnect -n` and the same name.
 
 All tracked in `TODO.md`:
 
-- Tested on Arm, and at production-like scale
+- Tested at production-like scale with real nodes
 - DH-HMAC-CHAP for nodes
 - Refusing to run when two nodes share a host NQN, rather than relying on the check above
 - Topology and capacity reporting
