@@ -6,6 +6,8 @@ The major differences between versions. For every change, see the commit history
 
 ### Added
 
+- **The CSI driver supports Kubernetes 1.31 and later,** such as OpenShift 4.18. Below 1.34 it needs older releases of the
+  provisioner and resizer sidecars, which the Helm chart picks itself. See decision 51 and `csi/README.md`.
 - **Changed block tracking,** for backups: `GET /v1/snapshots/{snapshot}/changes?base=` reports what changed between two
   snapshots of a volume, and `/allocated` where a snapshot holds data, from the storage's own mappings, on both pool types
   and both targets. Also `nvweaver snapshot changes` and `snapshot allocated`. On LVM it needs `thin_delta` and `thin_dump`,

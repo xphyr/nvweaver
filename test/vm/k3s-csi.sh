@@ -18,6 +18,9 @@ LAB=$HERE/k3s-lab.sh
 IMAGE=${IMAGE:-localhost/nvweaver:dev}
 CSI_IMAGE=${CSI_IMAGE:-localhost/nvweaver-csi:dev}
 SNAPSHOTTER=v8.7.0
+# The last provisioner and resizer for Kubernetes before 1.34, as csi/README.md says.
+OLD_PROVISIONER=v5.3.0
+OLD_RESIZER=v1.14.0
 CSI_TEST=v5.6.0
 SNAP_URL=https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/$SNAPSHOTTER
 NVW_IP=10.98.0.1
@@ -28,6 +31,18 @@ NS=nvweaver-csi
 die() { echo "k3s-csi: $*" >&2; exit 1; }
 nvw() { "$LAB" ssh nvweaver "$@"; }
 k() { "$LAB" kubectl "$@"; }
+
+# manifest: the driver's manifest, as csi/README.md says to fill it in, with the older provisioner and resizer below
+# Kubernetes 1.34, whose newer releases need it.
+manifest() {
+	local minor
+	minor=$(k version -o json 2>/dev/null | jq -r '.serverVersion.minor' | tr -dc 0-9)
+	local args=(-e "s#IMAGE#$CSI_IMAGE#g" -e "s#CLUSTER#$CLUSTER#g")
+	if [ -n "$minor" ] && [ "$minor" -lt 34 ]; then
+		args+=(-e "s#csi-provisioner:v[0-9.]*#csi-provisioner:$OLD_PROVISIONER#" -e "s#csi-resizer:v[0-9.]*#csi-resizer:$OLD_RESIZER#")
+	fi
+	sed "${args[@]}" "$ROOT/csi/deploy/nvweaver-csi.yaml"
+}
 
 cmd_deploy() {
 	"$LAB" status >/dev/null 2>&1 && nvw true || die "no lab; run: $LAB up"
@@ -96,7 +111,7 @@ EOF
 	"$LAB" ssh server "cat > /tmp/ca.crt" <"$WORK/ca.crt"
 	"$LAB" ssh server "sudo k3s kubectl -n $NS create secret generic nvweaver-api --from-literal=url=$API --from-file=token=/tmp/token --from-file=ca.crt=/tmp/ca.crt >/dev/null; rm -f /tmp/token /tmp/ca.crt" ||
 		die "cannot create the secret"
-	sed -e "s#IMAGE#$CSI_IMAGE#g" -e "s#CLUSTER#$CLUSTER#g" "$ROOT/csi/deploy/nvweaver-csi.yaml" | k apply -f - >/dev/null || die "cannot apply the driver"
+	manifest | k apply -f - >/dev/null || die "cannot apply the driver"
 	k apply -f - <"$ROOT/csi/deploy/classes.yaml" >/dev/null || die "cannot apply the classes"
 	k -n $NS rollout restart deployment/nvweaver-csi-controller daemonset/nvweaver-csi-node >/dev/null
 	k -n $NS rollout status deployment/nvweaver-csi-controller --timeout=300s || die "the controller isn't running"
@@ -388,7 +403,7 @@ EOF
 
 cmd_remove() {
 	k delete -f - --ignore-not-found >/dev/null <"$ROOT/csi/deploy/classes.yaml"
-	sed -e "s#IMAGE#$CSI_IMAGE#g" -e "s#CLUSTER#$CLUSTER#g" "$ROOT/csi/deploy/nvweaver-csi.yaml" | k delete --ignore-not-found -f - >/dev/null
+	manifest | k delete --ignore-not-found -f - >/dev/null
 	k delete namespace $NS --ignore-not-found >/dev/null
 	# Each node's subsystem and host stay while the driver runs, for its next volume. Taking the driver out takes them too.
 	local sub host n

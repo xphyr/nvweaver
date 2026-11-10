@@ -639,3 +639,19 @@ there, not as absolute numbers.
   else should hold one on nvweaver's pools. Another tool that does would have it taken away.
 - **Where FIEMAP can't say where data is,** for delayed allocation, inline or encoded data, including btrfs's compressed
   extents, that range counts as changed: never under-reporting matters more than reporting little.
+
+## 51. The CSI driver supports Kubernetes 1.31 and later
+
+- **Asked for by the user:** 1.31, which OpenShift 4.18 is based on, as the oldest.
+- **The driver itself doesn't limit it.** It vendors CSI spec v1.13, but the spec only adds between minor versions, and
+  Kubernetes never checks which one a driver was built with: the kubelet and the sidecars call what they know.
+- **The sidecars do.** `csi-provisioner` from v6 and `csi-resizer` from v2 need 1.34, for VolumeAttributesClass `v1`, which the
+  driver doesn't implement. **Chosen: below 1.34, their last releases before that,** v5.3.0 and v1.14.0. The Helm chart picks
+  them by the cluster's version (`imageBefore134`), and the manifests' instructions say which two lines to change. The other
+  sidecars' minimums are 1.25 or lower.
+- **Accepted: those two lines aren't updated any more,** so older clusters run sidecars from June 2025. Rejected: the older
+  ones everywhere, which would give up their fixes on current clusters too.
+- **Changed block tracking needs 1.33,** the `external-snapshot-metadata` sidecar's minimum, so it's optional: off unless asked
+  for, and refused below 1.33.
+- **Tested:** the whole CSI suite and `csi-sanity` on k3s 1.31.14 and 1.37.2, and OpenShift 4.22 (1.35). Not yet on
+  OpenShift 4.18 itself, or 1.32 and 1.33.

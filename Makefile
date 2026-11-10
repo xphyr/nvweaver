@@ -50,6 +50,8 @@ lint:
 	podman run --rm --pull=missing -v "$$PWD/csi/deploy/helm:/charts:ro,Z" --workdir /charts $(HELM_IMAGE) \
 		template t nvweaver-csi --set cluster=lint --set nvweaver.existingSecret=api \
 		--api-versions security.openshift.io/v1 --api-versions snapshot.storage.k8s.io/v1/VolumeSnapshotClass >/dev/null
+	@# Below Kubernetes 1.34, the older provisioner and resizer, and from 1.34 the newer: each must render with its own.
+	./test/chart-versions.sh $(HELM_IMAGE)
 
 # BUILD_FLAGS can add layer caching, as CI does, or a platform such as --platform linux/arm64.
 images:

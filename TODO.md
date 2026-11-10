@@ -205,7 +205,8 @@ are in `CLAUDE.review.md`, which isn't in the repository.
     - [x] API, spec first: paginated, read-only allocated and changed ranges on snapshots, with each pool's block size:
           `/v1/snapshots/{snapshot}/allocated` and `/changes`, and `nvweaver snapshot allocated` and `changes`. Checked end
           to end by `vm-e2e.sh` against where a host's XFS put its files, on both pool types and targets
-    - [ ] Driver: the `SnapshotMetadata` service, the `external-snapshot-metadata` sidecar with its TLS and token audiences, and a
+    - [x] Support Kubernetes down to 1.31, for OpenShift 4.18: older provisioner and resizer below 1.34, decision 51
+    - [ ] Driver: optional, off unless asked for, and only from Kubernetes 1.33, the sidecar's minimum. The `SnapshotMetadata` service, the `external-snapshot-metadata` sidecar with its TLS and token audiences, and a
           `SnapshotMetadataService` object. Test end to end in the k3s lab with the sidecar project's example client, and check
           whether Velero or Kasten use it yet
   - [x] Map volumes into per-node subsystems, and each shared volume into its own subsystem
@@ -238,6 +239,7 @@ are in `CLAUDE.review.md`, which isn't in the repository.
         A scoped token can delete the subsystem but not the host, as hosts have no owner and only an admin may delete one
   - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver
   - [x] `ListVolumes` and `ListSnapshots`, which `csi-sanity` and some backup tools use
+  - [ ] Test on OpenShift 4.18 itself, and on Kubernetes 1.32 and 1.33, which only the chart's rendering covers
   - [ ] Test at production-like volume and node counts. The controller passed at 5,000 volumes on 100 simulated nodes, against
         a real nvweaver (phase 5). Still to do: real nodes connecting at that count, and the sidecars' own limits
   - [ ] Document that there is a single target, with no failover

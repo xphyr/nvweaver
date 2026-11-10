@@ -4,7 +4,7 @@ A Kubernetes CSI driver that provisions volumes from an nvweaver service's pools
 as an enterprise array's driver would. It talks to nvweaver only through its API.
 
 **Status:** new, from v0.4.0. It passes `csi-sanity`, the CSI conformance suite, and an end-to-end test in a k3s lab of three VMs, on both
-of nvweaver's targets (`test/vm/k3s-csi.sh`). On a compact OpenShift 4.22 cluster it passed the same checks as restricted pods,
+of nvweaver's targets (`test/vm/k3s-csi.sh`). It runs on Kubernetes 1.31 and later. On a compact OpenShift 4.22 cluster it passed the same checks as restricted pods,
 and ran and live-migrated a KubeVirt VM. It hasn't been tested at scale or on Arm yet. See [What isn't done yet](#what-isnt-done-yet).
 
 ## What it does
@@ -26,6 +26,13 @@ How it maps Kubernetes onto nvweaver is in decision 45 of [`docs/decisions.md`](
 its own in decision 44.
 
 ## Before you start
+
+### Kubernetes 1.31 or later
+
+From 1.31, which OpenShift 4.18 is based on, tested in the k3s lab on 1.31 and 1.37 and on OpenShift 4.22 (Kubernetes 1.35).
+The provisioner and resizer sidecars need 1.34 from their v6 and v2 releases, for a feature the driver doesn't use, so
+**below 1.34 use their older releases,** `csi-provisioner:v5.3.0` and `csi-resizer:v1.14.0`. The Helm chart picks them
+itself; with the manifests, see [Installing](#installing). Those older lines don't get updates any more.
 
 ### On nvweaver
 
@@ -131,6 +138,12 @@ Use the scoped token's name:
 sed -e 's#IMAGE#ghcr.io/xphyr/nvweaver-csi:0.4.0#' -e 's#CLUSTER#prod#' csi/deploy/nvweaver-csi.yaml | kubectl apply -f -
 kubectl -n nvweaver-csi rollout status deployment/nvweaver-csi-controller
 kubectl -n nvweaver-csi rollout status daemonset/nvweaver-csi-node
+```
+
+**Below Kubernetes 1.34,** such as OpenShift 4.18 to 4.20, add these to the `sed`, for the older provisioner and resizer:
+
+```sh
+-e 's#csi-provisioner:v[0-9.]*#csi-provisioner:v5.3.0#' -e 's#csi-resizer:v[0-9.]*#csi-resizer:v1.14.0#'
 ```
 
 **On OpenShift,** the node plugin also needs the privileged SCC, as it connects to NVMe and mounts on the node:

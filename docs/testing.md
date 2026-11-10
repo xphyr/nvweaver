@@ -519,6 +519,12 @@ the kernel target: a filesystem volume written on one node and read on another, 
 the volume and then its filesystem, a snapshot and a clone with the snapshot's data, a raw block volume written on one node
 and read on another while both had it, and nothing left after everything was deleted, in nvweaver or on the nodes.
 
+**On Kubernetes 1.31,** the oldest supported (decision 51): `K3S_VERSION=v1.31.14+k3s1`, on 2026-11-10, `test` passed all 34
+checks and `sanity` 75 of 75, with `csi-provisioner:v5.3.0` and `csi-resizer:v1.14.0`, which `k3s-csi.sh deploy` picks below
+1.34 as `csi/README.md` says to, and the other sidecars as on 1.37. `make lint` renders the chart as 1.31, 1.33, 1.34 and
+1.37, and checks each picks the right two (`test/chart-versions.sh`); with the older provisioner left out, 1.31 rendered v6.4.0,
+which it reports, and 1.30 is refused.
+
 **After the third review (decision 48) and the scale fixes (decision 49):** `test` passed all 34 checks, and `sanity` 75 of 75,
 in the lab on the build host on 2026-11-09. A new check restores the snapshot as a ReadOnlyMany filesystem and mounts it on two nodes at
 once: each pod reads the snapshot's data, sees `ro` though it didn't ask, and can't write. Before the fix, the staging mount
