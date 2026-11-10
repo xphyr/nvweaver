@@ -216,6 +216,22 @@ block_ranges() {
 	t "o=0; while [ -n \"\$o\" ]; do curl -s \"$API$1&offset=\$o\" > /tmp/r; jq -r '.ranges[] | \"\\(.offset) \\(.length)\"' /tmp/r; o=\$(jq -r '.next_offset // empty' /tmp/r); done"
 }
 
+# differing A-DEV B-DEV EXTENTS: the extents whose bytes differ between two of the initiator's devices, read directly. What a
+# delta leaves out is only wrong if the data there really differs.
+differing() {
+	local a=$1 b=$2
+	printf '%s\n' "$3" | while read -r off len; do
+		[ -n "$off" ] || continue
+		# Anything that isn't an extent, such as "no extents to check", is passed on, so it fails.
+		if ! [[ $off =~ ^[0-9]+$ && $len =~ ^[0-9]+$ ]]; then
+			echo "$off $len"
+			continue
+		fi
+		i "cmp -s <(sudo dd if=$a bs=512 skip=$((off / 512)) count=$(((len + 511) / 512)) iflag=direct status=none) \
+			<(sudo dd if=$b bs=512 skip=$((off / 512)) count=$(((len + 511) / 512)) iflag=direct status=none)" </dev/null || echo "$off $len"
+	done
+}
+
 # uncovered RANGES EXTENTS: the extents that no range holds, which must be none, as a missed block corrupts a backup.
 uncovered() {
 	awk 'BEGIN { n = 0 } NR == FNR { if (!NF) next; if (n && $1 <= e[n - 1]) { if ($1 + $2 > e[n - 1]) e[n - 1] = $1 + $2; next } s[n] = $1; e[n] = $1 + $2; n++; next } NF { m++; for (j = 0; j < n; j++) if (s[j] <= $1 && $1 + $2 <= e[j]) next; print }
@@ -329,12 +345,18 @@ snapshot_tests() { # BACKEND POOL-TYPE
 	expect_eq "and so is every file finished before it was asked for ($committed)" "rc=0" \
 		"$(i "cd /mnt/snap-b && head -n $committed /tmp/snap.journal | md5sum -c --quiet >/dev/null 2>&1; echo rc=\$?")"
 	# Changed block tracking (decision 50): what the API reports must hold every block the host's filesystem put new data in,
-	# and not everything. The original hasn't changed since base1 was rewritten, and the second clone shows what snap-b holds.
+	# and not everything. The original hasn't changed since base1 was rewritten, and the second clone holds what snap-b does.
+	# A file missing from the clone isn't always new data: one written just before snap-b can have its data in it but not
+	# yet its name. So whatever isn't reported is compared, byte for byte, between the original and the second clone.
 	api "snapshot the changed original" 201 POST /v1/snapshots '{"name":"snap-c","volume":"fs"}'
 	local ranges ext n
 	ranges=$(block_ranges "/v1/snapshots/snap-c/changes?base=snap-b&limit=500")
 	ext=$(extents /mnt/snap/base1 /mnt/snap/only-in-original "$(i 'cd /mnt/snap && for f in w*; do [ -e /mnt/snap-b/$f ] || printf "/mnt/snap/%s " $f; done')")
-	expect_eq "changes since the last snapshot hold the rewritten file, and every file written after that snapshot" "" "$(uncovered "$ranges" "$ext")"
+	local missed
+	missed=$(uncovered "$ranges" "$ext")
+	expect_eq "changes since the last snapshot hold every block of the rewritten file, and of files since, that really changed" "" \
+		"$(differing "$dev" "$dev_b" "$missed")"
+	[ -n "$missed" ] && ok "(not reported, and the same in both: $(printf '%s\n' "$missed" | grep -c .) extents)"
 	ext=$(extents "$(i 'ls -d /mnt/snap/base* | grep -vx /mnt/snap/base1 | tr "\n" " "')")
 	n=$(printf '%s\n' "$ext" | grep -c .)
 	expect_eq "and none of the $n unchanged files' extents" "$n" "$(uncovered "$ranges" "$ext" | grep -c .)"
