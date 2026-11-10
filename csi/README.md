@@ -197,7 +197,9 @@ The values, all in [`values.yaml`](deploy/helm/nvweaver-csi/values.yaml) with wh
 | `driverName`, `nqnPrefix` | as the flags | Can't change once there are volumes. |
 | `sidecars.*.image`, `sidecars.timeout` | the tested sidecar releases, `150s` | The CSI sidecars. |
 
-`helm upgrade` changes any of them, except those that can't change once there are volumes. The CDI StorageProfile isn't in the
+`helm upgrade` changes any of them, except those that can't change once there are volumes. **To keep your values when the
+chart is newer, use `--reset-then-reuse-values`, not `--reuse-values`:** the latter reuses the old chart's defaults too, so
+settings the new chart adds, such as `snapshotMetadata`, are missing, and rendering fails. The CDI StorageProfile isn't in the
 chart, as CDI makes and owns it: apply it as below.
 
 ### Changed block tracking, for backups
@@ -276,7 +278,7 @@ and the node waits its reconnect delay, `--reconnect-delay`, before carrying on.
 
 | Parameter | Meaning |
 |---|---|
-| `pool` | The nvweaver pool to create volumes in. It can be left out if there's only one. |
+| `pool` | The nvweaver pool to create volumes in. **Name it, even with one pool:** left out, it works only while nvweaver has one, and new volumes fail as soon as anyone adopts a second, as a class's parameters can't be changed later. |
 | `port` | The ID of the nvweaver port to offer volumes on. 1 by default, or what the driver's `--port` says. |
 
 Filesystems are ext4 unless the StorageClass's `csi.storage.k8s.io/fstype` says `xfs`.

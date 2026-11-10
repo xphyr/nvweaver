@@ -635,6 +635,17 @@ taken away, with nothing left in the cluster or in nvweaver but the node's own s
 - `nvme-tcp` wasn't loaded on the node; `csi/deploy/openshift/99-master-nvme-tcp.yaml` loads it, and was applied with a reboot.
 - Not yet: a KubeVirt VM on the class, and the end-to-end suites in native Arm VMs.
 
+**The same checks on x86-64 OpenShift,** the user's three-node 4.22 cluster (Kubernetes 1.35.9), with the next pod on another node
+each time: **25 of 25**, ReadOnlyMany and changed block tracking included, the first time CBT ran on OpenShift, on an amd64
+build of the same commit. Three things on the way:
+
+- **`helm upgrade --reuse-values` from the v0.4.0 chart failed,** as it reuses the old chart's defaults too, which have no
+  `snapshotMetadata`. `--reset-then-reuse-values` worked, keeping the release's own values; `csi/README.md` says so now.
+- **The cluster's class had stopped making volumes the day before,** with "there are 2 pools, so pool is required": its class
+  names no pool, and a second pool had been adopted on its nvweaver for the scale tests. That pool was forgotten again;
+  `csi/README.md` and the chart's values say to name the pool even when there's one.
+- **x86 k3s, for decision 39:** on 1.37, `test`, csi-sanity 75 of 75 and `cbt`; on 1.31, `test` and csi-sanity 75 of 75.
+
 ### The Helm chart
 
 On the OpenShift cluster, the manifest-installed driver was removed, keeping its namespace and API secret, and the chart

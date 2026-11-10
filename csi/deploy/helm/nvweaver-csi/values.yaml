@@ -74,7 +74,8 @@ sidecars:
 
 storageClasses:
   - name: nvweaver
-    # The nvweaver pool. It can be left out if nvweaver has only one.
+    # The nvweaver pool. Name it, even if nvweaver has only one: left out, new volumes fail once anyone adopts a second, and a
+    # class's parameters can't be changed later.
     pool: ""
     # The nvweaver port to offer volumes on, such as one on a storage network. Empty uses controller.port.
     port: ""
