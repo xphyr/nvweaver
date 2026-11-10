@@ -617,6 +617,35 @@ puts inside a double-quoted YAML string, so neither pod was made, and the pendin
   outage test against SPDK, or for longer than the kernel's default 10-minute timeout. `e2e.sh` doesn't run with a tokens
   file: the k3s lab is the only real service that has.
 
+### The CSI driver on Arm
+
+On 2026-11-10, on the user's single-node OpenShift 5.0.1 cluster on arm64 (Kubernetes 1.36.5, RHCOS 9.8), installed with the Helm
+chart, `snapshotMetadata` on, its own `nvweaver` class beside the cluster's default, against nvweaver-1 over the routed network.
+The image was CI's arm64 build of PR 20, from the arm job's artifact. As restricted pods, one node, so "another node" is the
+next pod after the first has gone: writing, detaching, attaching again and reading; growing the volume and its filesystem; a
+snapshot and a clone with its data; ReadOnlyMany; raw block shared by two pods; and changed block tracking, with the sidecar's
+example client built on arm64, told of both 4 KiB writes, 128 KiB in all, and the first snapshot's 4 MiB. Then everything
+taken away, with nothing left in the cluster or in nvweaver but the node's own subsystem.
+
+- **23 of 25: the two ReadOnlyMany checks failed,** as the user noticed while it ran: `relabel failed ... lsetxattr`. On SELinux
+  nodes the runtime relabels a volume for each pod, and decision 48 had made ReadOnlyMany filesystems read-only, so it
+  couldn't, and the pods never started. The k3s lab missed it, as its runtime doesn't relabel. Decision 53 mounts them with
+  one label; a unit test failed on the code before it.
+- **25 of 25 with the fix,** in an arm64 image built from the fix by emulation on the dev VM.
+- `nvme-tcp` wasn't loaded on the node; `csi/deploy/openshift/99-master-nvme-tcp.yaml` loads it, and was applied with a reboot.
+- Not yet: a KubeVirt VM on the class, and the end-to-end suites in native Arm VMs.
+
+**The same checks on x86-64 OpenShift,** the user's three-node 4.22 cluster (Kubernetes 1.35.9), with the next pod on another node
+each time: **25 of 25**, ReadOnlyMany and changed block tracking included, the first time CBT ran on OpenShift, on an amd64
+build of the same commit. Three things on the way:
+
+- **`helm upgrade --reuse-values` from the v0.4.0 chart failed,** as it reuses the old chart's defaults too, which have no
+  `snapshotMetadata`. `--reset-then-reuse-values` worked, keeping the release's own values; `csi/README.md` says so now.
+- **The cluster's class had stopped making volumes the day before,** with "there are 2 pools, so pool is required": its class
+  names no pool, and a second pool had been adopted on its nvweaver for the scale tests. That pool was forgotten again;
+  `csi/README.md` and the chart's values say to name the pool even when there's one.
+- **x86 k3s, for decision 39:** on 1.37, `test`, csi-sanity 75 of 75 and `cbt`; on 1.31, `test` and csi-sanity 75 of 75.
+
 ### The Helm chart
 
 On the OpenShift cluster, the manifest-installed driver was removed, keeping its namespace and API secret, and the chart

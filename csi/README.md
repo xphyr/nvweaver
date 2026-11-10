@@ -5,7 +5,7 @@ as an enterprise array's driver would. It talks to nvweaver only through its API
 
 **Status:** new, from v0.4.0. It passes `csi-sanity`, the CSI conformance suite, and an end-to-end test in a k3s lab of three VMs, on both
 of nvweaver's targets (`test/vm/k3s-csi.sh`). It runs on Kubernetes 1.31 and later. On a compact OpenShift 4.22 cluster it passed the same checks as restricted pods,
-and ran and live-migrated a KubeVirt VM. It hasn't been tested at scale or on Arm yet. See [What isn't done yet](#what-isnt-done-yet).
+and ran and live-migrated a KubeVirt VM. It passed the same checks on a single-node OpenShift 5.0 cluster on arm64. It hasn't been tested with many real nodes yet. See [What isn't done yet](#what-isnt-done-yet).
 
 ## What it does
 
@@ -52,7 +52,10 @@ itself; with the manifests, see [Installing](#installing). Those older lines don
 
 ### On every node
 
-- **The kernel's `nvme-tcp` module,** loaded at boot. The node plugin's image brings `nvme-cli` and the filesystem tools.
+- **The kernel's `nvme-tcp` module,** loaded at boot. The node plugin's image brings `nvme-cli` and the filesystem tools. On
+  OpenShift, some nodes load it already and some don't: if `lsmod` on a node doesn't show `nvme_tcp`, apply
+  [`99-master-nvme-tcp.yaml`](deploy/openshift/99-master-nvme-tcp.yaml) or its worker twin, for the pool your nodes are in.
+  It reboots the pool's nodes, one at a time; a single-node cluster is its master pool, and goes down while it reboots.
 - **A network route to nvweaver's port**, and to its API from wherever the controller runs.
 - **A unique NVMe host NQN in `/etc/nvme/hostnqn`.** This matters: see the next section.
 
@@ -194,7 +197,9 @@ The values, all in [`values.yaml`](deploy/helm/nvweaver-csi/values.yaml) with wh
 | `driverName`, `nqnPrefix` | as the flags | Can't change once there are volumes. |
 | `sidecars.*.image`, `sidecars.timeout` | the tested sidecar releases, `150s` | The CSI sidecars. |
 
-`helm upgrade` changes any of them, except those that can't change once there are volumes. The CDI StorageProfile isn't in the
+`helm upgrade` changes any of them, except those that can't change once there are volumes. **To keep your values when the
+chart is newer, use `--reset-then-reuse-values`, not `--reuse-values`:** the latter reuses the old chart's defaults too, so
+settings the new chart adds, such as `snapshotMetadata`, are missing, and rendering fails. The CDI StorageProfile isn't in the
 chart, as CDI makes and owns it: apply it as below.
 
 ### Changed block tracking, for backups
@@ -273,7 +278,7 @@ and the node waits its reconnect delay, `--reconnect-delay`, before carrying on.
 
 | Parameter | Meaning |
 |---|---|
-| `pool` | The nvweaver pool to create volumes in. It can be left out if there's only one. |
+| `pool` | The nvweaver pool to create volumes in. **Name it, even with one pool:** left out, it works only while nvweaver has one, and new volumes fail as soon as anyone adopts a second, as a class's parameters can't be changed later. |
 | `port` | The ID of the nvweaver port to offer volumes on. 1 by default, or what the driver's `--port` says. |
 
 Filesystems are ext4 unless the StorageClass's `csi.storage.k8s.io/fstype` says `xfs`.
@@ -366,7 +371,7 @@ then disconnect each node with `nvme disconnect -n` and the same name.
 
 All tracked in `TODO.md`:
 
-- Tested on Arm, and at production-like scale
+- Tested at production-like scale with real nodes
 - DH-HMAC-CHAP for nodes
 - Refusing to run when two nodes share a host NQN, rather than relying on the check above
 - Topology and capacity reporting

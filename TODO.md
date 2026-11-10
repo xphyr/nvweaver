@@ -16,7 +16,8 @@ the third outside review's findings. In this order now:
    do: the manifests, and checking whether Velero or Kasten use it yet
 2. **Cleaning up after a node leaves,** moved up by the user on 2026-11-10: hosts owned by the token that made them, as
    subsystems are, so the driver may delete its own; and the controller deleting the subsystem and host of a node whose
-   CSINode is gone, once nothing is exported in it. See phase 7
+   CSINode is gone, once nothing is exported in it. The driver also labels each host with its cluster and Kubernetes node,
+   and the web interface shows them, as the user couldn't tell which host was which. See phase 7
 3. **Consistency groups:** CSI's VolumeGroupSnapshot, several volumes snapshotted at one instant, as arrays do for a database's
    data and log volumes or a VM's disks. Storage-level, so both targets get it
 4. **The CSI driver's gaps against arrays' drivers,** agreed on 2026-11-10, fitted in around 3: topology and capacity
@@ -24,7 +25,8 @@ the third outside review's findings. In this order now:
 5. **iSCSI as a second protocol,** then every feature that works on NVMe checked on iSCSI too: the API, the CLI, the web
    interface, the CSI driver, snapshots, clones, CBT and consistency groups. See "Later" for what the probe found
 
-Smaller, to fit in: a test that a new version reads the previous release's state; the driver refusing to run when two nodes
+Smaller, to fit in: the CSI driver on Arm, on a single-node OpenShift 5.0 cluster on arm64 that the user has added, and then
+native Arm VMs there for the end-to-end suites (see "Testing without hardware"); a test that a new version reads the previous release's state; the driver refusing to run when two nodes
 share a host NQN; a guest writing while it live-migrates; publishing the Helm chart.
 
 ## 1. Build and release
@@ -171,6 +173,10 @@ Production-like scale is a requirement, so measure this before building on it.
 
 Built ahead of what was left of phases 3 and 5, by choice, so that there was something to see.
 
+- [ ] **LVM snapshots show as `missing` when they're only inactive,** as their state comes from whether the device node exists,
+      and the driver's snapshots are kept inactive (activation-skip). Found by the user browsing nvweaver-1: every snapshot
+      showed as missing. Ask LVM, once per pool for a listing, and report inactive ones as there
+- [ ] Show active problems on the overview: warnings, and objects really missing once the above is fixed
 - [x] Read-only screens, embedded in the binary, tested in a real browser. See decision 37
 - [x] Sign in with a username and password, from a users file in bcrypt. See decision 40
 - [x] Try signing in over real TLS, in a browser. It has a real certificate that the browser is told to accept, as trusting a CA isn't what's being tested
@@ -254,6 +260,8 @@ are in `CLAUDE.review.md`, which isn't in the repository.
         A scoped token can delete the subsystem but not the host, as hosts have no owner and only an admin may delete one
   - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver, such as one with a storage network,
         and so the scheduler sees a pool that's full. Arrays' drivers all report capacity
+  - [x] ReadOnlyMany filesystems on SELinux nodes: found on OpenShift, where pods using them never started, as a read-only
+        filesystem can't be relabelled. Mounted with one label now, decision 53
   - [ ] Volume health: `VOLUME_CONDITION` from the node and `GET_VOLUME` from the controller, so a lost path, a full thin pool or a
         missing LV shows on the claim in Kubernetes, not only in nvweaver's warnings
   - [ ] SELinux mount labelling: `seLinuxMount: true` on the CSIDriver, so a volume is mounted with its label rather than every
@@ -329,6 +337,18 @@ To decide later: these matter if tests should match enterprise array behaviour c
 - [ ] Other initiators than Linux, such as VMware and Windows
 
 ## Testing without hardware
+
+- [x] The CSI driver on Arm: installed with the Helm chart on the user's single-node OpenShift 5.0 cluster on arm64, with a
+      class of its own. 25 of 25 checks, CBT included, once decision 53 fixed ReadOnlyMany on SELinux nodes. See "The CSI driver
+      on Arm" in `docs/testing.md`
+- [ ] A KubeVirt VM on that cluster, on the nvweaver class
+- [ ] `nvw`'s class names no pool, so adopting a second pool on nvweaver-1 stopped it making volumes (found 2026-11-10, after
+      the scale pool was adopted the day before; the scale pool was forgotten again). Recreate the class with `pool: csi`, which
+      means deleting it, as its parameters can't change; it's KubeVirt's default
+- [ ] The k3s lab doesn't relabel volumes for SELinux, which is how decision 53's bug got past it: run k3s with SELinux
+      (`--selinux`) so the lab sees what OpenShift does
+- [ ] Native Arm VMs on that cluster, on its DHCP VLAN, to run `e2e.sh` and `vm-e2e.sh` with nvweaver as the target on both
+      backends, rather than emulated on x86 (`LAB_ARCH=aarch64`), which is too slow to run often
 
 No physical NVMe hardware is available right now, so development continues on emulation: loopback on one machine, QEMU VMs
 with emulated NVMe, SATA and virtio disks, a k3s lab, a Raspberry Pi CM4 over a real network, and a dedicated test server, a VM with four

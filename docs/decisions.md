@@ -675,3 +675,17 @@ there, not as absolute numbers.
 - **Accepted:** a Go patch release, which can carry security fixes, isn't used until someone bumps it. Check for one at
   each release.
 - **Rejected: following the newest automatically,** which is what broke, as the two sources update at different times.
+
+## 53. Read-only filesystems get one SELinux label for the whole mount
+
+- **The problem, found on OpenShift:** decision 48 mounts ReadOnlyMany filesystems read-only on every node. Where SELinux labels
+  files, the container runtime relabels a volume for each pod's label when the pod starts, and a read-only filesystem
+  refuses: `relabel failed ... lsetxattr`, and the pod never starts. The k3s lab didn't see it, as its runtime doesn't relabel.
+- **Chosen:** where the filesystem holding the staging path has `seclabel`, which is how kubelet itself decides whether to
+  relabel, a ReadOnlyMany filesystem is mounted with `context=system_u:object_r:container_file_t:s0`. Every file then has that
+  label, which every container's level dominates, so any pod using the volume may read it; the mount has no `seclabel`, so
+  kubelet relabels nothing. Without `seclabel`, nothing changes. A class that gives its own `context=` keeps it.
+- **Accepted:** the label doesn't keep pods' categories apart on that volume. It's read-only, and only pods that use it have it
+  mounted, as with any read-only shared filesystem, such as NFS's `nfs_t`.
+- **Rejected for now: `seLinuxMount: true` on the CSIDriver,** which has kubelet mount with each pod's own label. It isn't in
+  every Kubernetes the driver supports (decision 51), and is in `TODO.md` with the driver's other SELinux work.
