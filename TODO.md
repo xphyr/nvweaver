@@ -29,6 +29,9 @@ share a host NQN; a guest writing while it live-migrates; publishing the Helm ch
 
 ## 1. Build and release
 
+- [ ] Keep the Go version in one file that the Containerfiles (by a build argument) and CI read, so that a bump is one line
+      (decision 52). Until then it's in the three Containerfiles, `ci.yml`'s four `setup-go` steps, and the test images
+- [ ] Bump Go to 1.26.11 once `setup-go` lists it, everywhere at once, and check for a new patch release before each release
 - [x] Create a GitHub workflow for building and releasing code (`docs/releasing.md`)
   - [x] Lint and unit tests on every push
   - [x] End-to-end suites in VMs on every push

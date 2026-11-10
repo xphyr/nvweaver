@@ -4,7 +4,7 @@
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ENGINE=${ENGINE:-podman}
-GO_IMAGE=docker.io/library/golang:1.26-alpine
+GO_IMAGE=docker.io/library/golang:1.26.10-alpine
 # The npm package below has to match this image's browsers.
 PLAYWRIGHT_VERSION=1.50.0
 BROWSER_IMAGE=mcr.microsoft.com/playwright:v$PLAYWRIGHT_VERSION-noble

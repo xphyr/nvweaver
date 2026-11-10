@@ -662,3 +662,16 @@ there, not as absolute numbers.
   for, and refused below 1.33.
 - **Tested:** the whole CSI suite and `csi-sanity` on k3s 1.31.14 and 1.37.2, and OpenShift 4.22 (1.35). Not yet on
   OpenShift 4.18 itself, or 1.32 and 1.33.
+
+## 52. Every Go build uses one exact Go release, bumped by hand
+
+- **The problem:** images were built from `golang:1.26-alpine` and the tarball by CI's `setup-go` with `1.26.x`. When Go
+  1.26.11 came out, the image had it the same day, while `setup-go`'s list of releases still stopped at 1.26.10, so a pull
+  request's images and binaries were built with different Go, and the SBOM check refused them, as it's meant to (decision
+  on releases in `docs/releasing.md`). Nothing in the pull request had changed.
+- **Chosen, by the user: one exact release everywhere,** `1.26.10` for now: the three Containerfiles, CI's `setup-go`, and
+  the test images and tools. A new Go release becomes a deliberate change, made once `setup-go` lists it, in all of them at
+  once, and tested like any other.
+- **Accepted:** a Go patch release, which can carry security fixes, isn't used until someone bumps it. Check for one at
+  each release.
+- **Rejected: following the newest automatically,** which is what broke, as the two sources update at different times.

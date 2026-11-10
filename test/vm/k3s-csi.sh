@@ -370,7 +370,7 @@ cmd_sanity() {
 	local bin=$WORK/bin
 	mkdir -p "$bin"
 	echo "Building csi-sanity $CSI_TEST"
-	podman run --rm -v "$bin:/out:Z" -e GOBIN=/out -e CGO_ENABLED=0 docker.io/library/golang:1.26-alpine \
+	podman run --rm -v "$bin:/out:Z" -e GOBIN=/out -e CGO_ENABLED=0 docker.io/library/golang:1.26.10-alpine \
 		go install "github.com/kubernetes-csi/csi-test/v5/cmd/csi-sanity@$CSI_TEST" >/dev/null 2>&1 || die "cannot build csi-sanity"
 	local c
 	c=$(podman create "$CSI_IMAGE") || die "no $CSI_IMAGE"
@@ -496,7 +496,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: c
-      image: docker.io/library/golang:1.26
+      image: docker.io/library/golang:1.26.10
       command: [sh, -c, "go install github.com/kubernetes-csi/external-snapshot-metadata/tools/snapshot-metadata-lister@$CBT_COMMIT && sleep 3600"]
 YAML
 	local built=
