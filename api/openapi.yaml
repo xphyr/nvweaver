@@ -1043,6 +1043,87 @@ paths:
           $ref: '#/components/responses/NotFound'
         '503':
           $ref: '#/components/responses/Busy'
+  /v1/snapshots/{snapshot}/allocated:
+    parameters:
+      - $ref: '#/components/parameters/SnapshotName'
+    get:
+      operationId: getSnapshotAllocated
+      summary: Where a snapshot holds data, for a full backup
+      description: |
+        The byte ranges of the snapshot that hold data, a page at a time, from the pool's own mappings: on LVM thin, from
+        `thin_dump` of a metadata snapshot; on reflink, from FIEMAP. Everything outside them reads as zeros. Ranges are
+        whole blocks of `block_size`, so they can include zeros too, but never leave out data: see decision 50.
+      tags: [snapshots]
+      parameters:
+        - $ref: '#/components/parameters/RangeOffset'
+        - $ref: '#/components/parameters/RangeLimit'
+      responses:
+        '200':
+          description: A page of ranges, in order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockRanges'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+        '500':
+          description: The storage couldn't say, as when a pool is offline, or a tool it needs is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/Busy'
+  /v1/snapshots/{snapshot}/changes:
+    parameters:
+      - $ref: '#/components/parameters/SnapshotName'
+    get:
+      operationId: getSnapshotChanges
+      summary: What changed since an earlier snapshot, for an incremental backup
+      description: |
+        The byte ranges that differ between `base` and this snapshot, a page at a time, from the pool's own mappings: on
+        LVM thin, from `thin_delta`; on reflink, from FIEMAP of both. Everything outside them is the same in both. Ranges
+        are whole blocks of `block_size`, so they can include bytes that didn't change, but never leave out one that did:
+        see decision 50. Both must be snapshots of the same volume. Either may be the older.
+      tags: [snapshots]
+      parameters:
+        - name: base
+          in: query
+          required: true
+          description: The snapshot to compare with, of the same volume.
+          schema:
+            type: string
+        - $ref: '#/components/parameters/RangeOffset'
+        - $ref: '#/components/parameters/RangeLimit'
+      responses:
+        '200':
+          description: A page of ranges, in order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockRanges'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Invalid'
+        '500':
+          description: The storage couldn't say, as when a pool is offline, or a tool it needs is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/Busy'
   /v1/subsystems/{nqn}/namespaces:
     parameters:
       - $ref: '#/components/parameters/NQN'
@@ -1218,6 +1299,25 @@ components:
       description: The snapshot's name.
       schema:
         type: string
+    RangeOffset:
+      name: offset
+      in: query
+      description: >-
+        Start at this byte: a range that holds it is cut to start here. Use `next_offset` from the previous page.
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        default: 0
+    RangeLimit:
+      name: limit
+      in: query
+      description: The most ranges to return.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 10000
+        default: 1000
     PortID:
       name: id
       in: path
@@ -1540,6 +1640,39 @@ components:
         owner:
           type: string
           description: The scoped token that created it, which may change it, as an admin may. Absent when an admin made it with no owner.
+    BlockRanges:
+      type: object
+      required: [block_size, size_bytes, ranges]
+      properties:
+        block_size:
+          type: integer
+          format: int64
+          description: >-
+            The pool's unit of tracking, in bytes: an LVM thin pool's chunk size, or the filesystem's block size for
+            reflink. Every range starts and ends on a multiple of it, except the last, which can end at `size_bytes`.
+        size_bytes:
+          type: integer
+          format: int64
+          description: The snapshot's size.
+        ranges:
+          type: array
+          description: In order, apart and not touching. Adjacent blocks are one range.
+          items:
+            $ref: '#/components/schemas/BlockRange'
+        next_offset:
+          type: integer
+          format: int64
+          description: Pass this as `offset` for the next page. Absent on the last page.
+    BlockRange:
+      type: object
+      required: [offset, length]
+      properties:
+        offset:
+          type: integer
+          format: int64
+        length:
+          type: integer
+          format: int64
     SnapshotPage:
       type: object
       required: [items]

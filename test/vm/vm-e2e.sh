@@ -206,6 +206,95 @@ backend_tests() { # BACKEND IMAGE [run args]
 our_lvs() { t "sudo lvs --noheadings -o lv_name $VG | grep -c nvw-"; }
 pool_data_percent() { t "sudo sync; sudo lvs --noheadings -o data_percent $VG/pool0 | tr -d ' '"; }
 
+# extents FILE...: where files' data is on the volume, as "offset length" in bytes, from the host's filesystem.
+extents() {
+	i "for f in $*; do sudo filefrag -e -b512 \$f; done | awk '/^ *[0-9]+:/ { gsub(/\\.\\./, \" \"); gsub(/:/, \" \"); print \$4 * 512, \$6 * 512 }'"
+}
+
+# block_ranges PATH: a snapshot's allocated or changed ranges from the API, as "offset length", following every page.
+block_ranges() {
+	t "o=0; while [ -n \"\$o\" ]; do curl -s \"$API$1&offset=\$o\" > /tmp/r; jq -r '.ranges[] | \"\\(.offset) \\(.length)\"' /tmp/r; o=\$(jq -r '.next_offset // empty' /tmp/r); done"
+}
+
+# differing i|t A B EXTENTS: the extents whose bytes differ between two devices or files on the initiator (i) or the target
+# (t), read directly. What a delta leaves out is only wrong if the data there really differs.
+differing() {
+	local run=$1 a=$2 b=$3
+	printf '%s\n' "$4" | while read -r off len; do
+		[ -n "$off" ] || continue
+		# Anything that isn't an extent, such as "no extents to check", is passed on, so it fails.
+		if ! [[ $off =~ ^[0-9]+$ && $len =~ ^[0-9]+$ ]]; then
+			echo "$off $len"
+			continue
+		fi
+		# Large reads, by bytes: 512-byte ones took 10 minutes an extent through SPDK in interrupt mode, one request at a time.
+		"$run" "cmp -s <(sudo dd if=$a bs=1M iflag=direct,skip_bytes,count_bytes skip=$off count=$len status=none) \
+			<(sudo dd if=$b bs=1M iflag=direct,skip_bytes,count_bytes skip=$off count=$len status=none)" </dev/null || echo "$off $len"
+	done
+}
+
+# stored API-PATH: where a volume or snapshot is stored on the target, to read it there: an LVM volume, activated read-only
+# if it's a snapshot, or a file in the pool's directory, pool_dir.
+stored() {
+	local path
+	path=$(t "curl -s $API$1 | jq -r .device_path")
+	case $path in
+	/dev/*) t "sudo lvchange -q -ay -K ${path#/dev/} >/dev/null 2>&1; true" ;;
+	*) path=$pool_dir/$(basename "$path") ;;
+	esac
+	echo "$path"
+}
+
+# explain A B EXTENTS: for extents that differ between two of the target's snapshots, what the storage says of them, to tell
+# a missed change from a misread one: for files, FIEMAP's mappings over the range; and where the bytes first differ, and
+# whether each side is all zeros there.
+explain() {
+	local a=$1 b=$2
+	printf '%s\n' "$3" | while read -r off len; do
+		[[ $off =~ ^[0-9]+$ && $len =~ ^[0-9]+$ ]] || continue
+		echo "extent $off+$len:"
+		local f
+		for f in "$a" "$b"; do
+			case $f in
+			/dev/*) echo "  $f: a block device" ;;
+			*) echo "  $f:"
+				t "sudo filefrag -v -b512 $f" </dev/null | awk -v s=$((off / 512)) -v e=$(((off + len) / 512)) \
+					'/^ *[0-9]+:/ { line = $0; gsub(/\.\./, " "); gsub(/:/, " "); if ($3 + 0 >= s && $2 + 0 < e) print "    " line }' ;;
+			esac
+		done
+		t "cmp <(sudo dd if=$a bs=1M iflag=direct,skip_bytes,count_bytes skip=$off count=$len status=none) \
+			<(sudo dd if=$b bs=1M iflag=direct,skip_bytes,count_bytes skip=$off count=$len status=none) | head -1;
+			for f in $a $b; do echo \"  \$f non-zero bytes: \$(sudo dd if=\$f bs=1M iflag=direct,skip_bytes,count_bytes skip=$off count=$len status=none | tr -d '\\0' | wc -c)\"; done" </dev/null
+	done
+}
+
+# uncovered RANGES EXTENTS: the parts of the extents that no range holds, as "offset length", which must be none where the
+# data changed, as a missed block corrupts a backup. Only the parts: a reported range can rightly hold part of an extent,
+# where only part of it changed. Ranges come in order; those that touch are joined. With no extents to check, it says so.
+uncovered() {
+	awk 'BEGIN { n = 0 }
+		NR == FNR { if (!NF) next; if (n && $1 <= e[n - 1]) { if ($1 + $2 > e[n - 1]) e[n - 1] = $1 + $2; next } s[n] = $1; e[n] = $1 + $2; n++; next }
+		NF { m++; pos = $1; end = $1 + $2
+			for (j = 0; j < n && pos < end; j++) {
+				if (e[j] <= pos) continue
+				if (s[j] >= end) break
+				if (s[j] > pos) print pos, s[j] - pos
+				pos = e[j]
+			}
+			if (pos < end) print pos, end - pos }
+		END { if (!m) print "no extents to check" }' \
+		<(printf '%s\n' "$1") <(printf '%s\n' "$2")
+}
+
+# whole RANGES EXTENTS: how many of the extents one range holds in full.
+whole() {
+	awk 'BEGIN { n = 0 }
+		NR == FNR { if (!NF) next; if (n && $1 <= e[n - 1]) { if ($1 + $2 > e[n - 1]) e[n - 1] = $1 + $2; next } s[n] = $1; e[n] = $1 + $2; n++; next }
+		NF { for (j = 0; j < n; j++) if (s[j] <= $1 && $1 + $2 <= e[j]) { c++; next } }
+		END { print c + 0 }' \
+		<(printf '%s\n' "$1") <(printf '%s\n' "$2")
+}
+
 # What a client relies on a snapshot for: real files on a real filesystem, including one taken while
 # they're being written. A file whose fsync finished before the snapshot was asked for must be in it.
 snapshot_tests() { # BACKEND POOL-TYPE
@@ -295,6 +384,7 @@ snapshot_tests() { # BACKEND POOL-TYPE
 	out=$(i 'cd /mnt/snap && md5sum -c --quiet /tmp/snap.manifest 2>/dev/null | wc -l')
 	expect_eq "the original has really changed" 1 "$out"
 
+
 	# XFS refuses a second filesystem with the same UUID on a host without nouuid, as a clone has.
 	api "map the first clone" 201 POST "/v1/subsystems/$sub_a/namespaces" '{"volume":"clone-a"}'
 	out=$(connect "$sub_a") && ok "host connects to the first clone" || bad "host connects to the first clone" "$out"
@@ -310,6 +400,43 @@ snapshot_tests() { # BACKEND POOL-TYPE
 	expect_eq "the files from before it are intact" "rc=0" "$(i 'cd /mnt/snap-b && md5sum -c --quiet /tmp/snap.manifest >/dev/null 2>&1; echo rc=$?')"
 	expect_eq "and so is every file finished before it was asked for ($committed)" "rc=0" \
 		"$(i "cd /mnt/snap-b && head -n $committed /tmp/snap.journal | md5sum -c --quiet >/dev/null 2>&1; echo rc=\$?")"
+	# Changed block tracking (decision 50): what the API reports must hold every block that really changed between two
+	# snapshots, and not everything. A file missing from the clone of snap-b isn't always new data: one written just before
+	# it can have its data in it but not yet its name. So what isn't reported is compared, byte for byte, between the two
+	# snapshots themselves, read where they're stored on the target, with no host or clone in between.
+	# The client flushes everything first, names and all, as a guest agent or backup hook would: snap-b is the snapshot
+	# taken without that, mid-write, and snap-c the one taken with it.
+	i 'sync -f /mnt/snap'
+	api "snapshot the changed original" 201 POST /v1/snapshots '{"name":"snap-c","volume":"fs"}'
+	local ranges ext n missed wrong written_ext snap_b snap_c original
+	ranges=$(block_ranges "/v1/snapshots/snap-c/changes?base=snap-b&limit=500")
+	written_ext=$(extents /mnt/snap/base1 /mnt/snap/only-in-original "$(i 'cd /mnt/snap && for f in w*; do [ -e /mnt/snap-b/$f ] || printf "/mnt/snap/%s " $f; done')")
+	missed=$(uncovered "$ranges" "$written_ext")
+	snap_b=$(stored /v1/snapshots/snap-b)
+	snap_c=$(stored /v1/snapshots/snap-c)
+	original=$(stored /v1/volumes/fs)
+	wrong=$(differing t "$snap_b" "$snap_c" "$missed")
+	expect_eq "changes since the last snapshot hold every block that really changed, read from the snapshots on the target" "" "$wrong"
+	if [ -n "$wrong" ]; then
+		explain "$snap_b" "$snap_c" "$wrong" | sed 's/^/        /'
+		# Asked again now: if it's reported this time, the snapshots' mappings weren't settled when first asked.
+		local again
+		again=$(uncovered "$(block_ranges "/v1/snapshots/snap-c/changes?base=snap-b&limit=500")" "$wrong")
+		echo "        asked again now, still not reported: [${again}]"
+	fi
+	[ -z "$wrong" ] && [ -n "$missed" ] && ok "(not reported, and the same in both: $(printf '%s\n' "$missed" | grep -c .) extents)"
+	# Everything the client wrote and synced before snap-c was asked for is in it.
+	expect_eq "the last snapshot holds every block written before it, byte for byte" "" "$(differing t "$original" "$snap_c" "$written_ext")"
+	ext=$(extents "$(i 'ls -d /mnt/snap/base* | grep -vx /mnt/snap/base1 | tr "\n" " "')")
+	n=$(printf '%s\n' "$ext" | grep -c .)
+	expect_eq "and none of the $n unchanged files' extents in full" 0 "$(whole "$ranges" "$ext")"
+	ranges=$(block_ranges "/v1/snapshots/snap-b/changes?base=snap-a&limit=500")
+	ext=$(extents "$(i "head -n $committed /tmp/snap.journal | awk '{ print \"/mnt/snap/\" \$2 }' | tr '\\n' ' '")")
+	expect_eq "changes across the snapshot taken under load hold every file finished before it" "" "$(uncovered "$ranges" "$ext")"
+	ranges=$(block_ranges "/v1/snapshots/snap-a/allocated?limit=500")
+	ext=$(extents "$(i 'ls -d /mnt/snap/base* | grep -vx /mnt/snap/base1 | tr "\n" " "')")
+	expect_eq "the first snapshot's allocated ranges hold every block of the files in it" "" "$(uncovered "$ranges" "$ext")"
+	[ "${n:-0}" -ge 31 ] && ok "with real extents to check ($n)" || bad "with real extents to check" "$n"
 	i 'cd /mnt/snap-b && touch only-in-clone && sync -f .'
 	expect_eq "a file made on the clone isn't on the original" 0 "$(i 'ls /mnt/snap | grep -c only-in-clone')"
 	expect_eq "nor one made on the original on the clone" 0 "$(i 'ls /mnt/snap-b | grep -c only-in-original')"
@@ -330,6 +457,7 @@ snapshot_tests() { # BACKEND POOL-TYPE
 	api "clone the first snapshot again, with its volume gone" 201 POST /v1/volumes '{"name":"clone-c","source":{"snapshot":"snap-a"}}'
 	api "delete the snapshots" 204 DELETE /v1/snapshots/snap-a
 	api "delete the other" 204 DELETE /v1/snapshots/snap-b
+	api "and the last" 204 DELETE /v1/snapshots/snap-c
 	api "map the last clone" 201 POST "/v1/subsystems/$sub_a/namespaces" '{"volume":"clone-c"}'
 	out=$(connect "$sub_a") && ok "host connects" || bad "host connects" "$out"
 	dev_a=$(ini_dev "$sub_a")
@@ -1053,6 +1181,23 @@ if [ -n "${POWER_ONLY:-}" ]; then
 	api "host" 201 POST /v1/hosts "{\"nqn\":\"$HOST\"}"
 	for _ in $(seq 1 "$only_rounds"); do
 		power_tests "$only_backend" "$only_image" "$only_kind" || break
+	done
+	[ "$fail" = 0 ]
+	exit
+fi
+
+# SNAPSHOT_ONLY="BACKEND POOL-TYPE ROUNDS" repeats just the snapshot tests, with their changed block checks, whose cases
+# depend on timing.
+if [ -n "${SNAPSHOT_ONLY:-}" ]; then
+	read -r only_backend only_kind only_rounds <<<"$SNAPSHOT_ONLY"
+	only_image=localhost/nvweaver:dev
+	[ "$only_backend" = spdk ] && only_image=localhost/nvweaver:spdk
+	start_service "$only_backend" "$only_image"
+	wait_api || exit 1
+	api "port on the link address" 201 POST /v1/ports "{\"id\":1,\"address\":\"$TARGET_IP\",\"service\":$PORT}"
+	api "host" 201 POST /v1/hosts "{\"nqn\":\"$HOST\"}"
+	for _ in $(seq 1 "$only_rounds"); do
+		snapshot_tests "$only_backend" "$only_kind"
 	done
 	[ "$fail" = 0 ]
 	exit

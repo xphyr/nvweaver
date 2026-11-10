@@ -22,14 +22,27 @@
 #   load VM|nodes IMAGE copy a local Podman image into a VM, or into every k3s node
 #   sync VM             copy this source tree to ~/nvweaver in a VM
 #
-# Settings: LAB_DIR (~/nvweaver-vms), K3S_CPUS (2), K3S_MEM_MB (2048 for agents),
+# Settings: K3S_VERSION (see below), LAB_DIR (~/nvweaver-vms), K3S_CPUS (2), K3S_MEM_MB (2048 for agents),
 # K3S_SERVER_MEM_MB (3072), K3S_NVW_MEM_MB (3072), IMAGE for check (localhost/nvweaver:dev).
 # LAB_ARCH=aarch64 runs Arm VMs instead, from lab.sh's Arm base image; emulated on x86, slowly.
 set -u
 
-K3S_VERSION=v1.37.2+k3s1
-K3S_SHA256_x86_64=265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda
-K3S_SHA256_aarch64=a779ccf1e5e2e33a62f5a29c2f1c0bbf99431e100579d4c10f0aa0742a6aa84b
+# K3S_VERSION picks another Kubernetes, from the checksums pinned here: the oldest is the oldest the driver supports.
+K3S_VERSION=${K3S_VERSION:-v1.37.2+k3s1}
+case "$K3S_VERSION" in
+v1.37.2+k3s1)
+	K3S_SHA256_x86_64=265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda
+	K3S_SHA256_aarch64=a779ccf1e5e2e33a62f5a29c2f1c0bbf99431e100579d4c10f0aa0742a6aa84b
+	;;
+v1.31.14+k3s1)
+	K3S_SHA256_x86_64=660c48d525e5fa2c2ddd889a25ce2c18c961e3046cc083cbde8557a8ff1ddb46
+	K3S_SHA256_aarch64=ce16d95de12a85ddf2e72359401dd50dae396cc7725e26f09e2bbb78dae4e555
+	;;
+*)
+	echo "k3s-lab: no checksum is pinned for k3s $K3S_VERSION: add one to k3s-lab.sh, from the release's sha256sum files" >&2
+	exit 1
+	;;
+esac
 PAUSE_IMAGE=registry.k8s.io/pause:3.10
 LAB_ARCH=${LAB_ARCH:-x86_64}
 

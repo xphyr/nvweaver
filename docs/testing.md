@@ -52,12 +52,13 @@ Fedora 44 VMs on KVM, kernel 7.2.15, SELinux enforcing, 4 vCPUs and 4 GB each, r
 | `e2e.sh`, kernel target | Loopback in one VM | 311 of 311 |
 | `e2e.sh`, SPDK target | Loopback in one VM | 327 of 327 |
 | `systemd-e2e.sh` | Loopback in one VM | 76 of 76 |
-| `vm/vm-e2e.sh` | Between two VMs | 915 of 915 |
+| `vm/vm-e2e.sh` | Between two VMs | 949 of 949 |
 | `webui-real-e2e.sh` | A browser, both targets in VMs | 93 of 93 |
 | `webui-e2e.sh` | A browser, no root | 245 of 245 |
 | `vm/k3s-csi.sh` `test`, `sanity` | k3s on three VMs | 34 of 34, 75 of 75 |
 
-All of these ran on 2026-11-09, on the working tree with decisions 48 and 49, by `run-all.sh` and then the last three.
+The CSI lab ran on 2026-11-09, with decisions 48 and 49. The rest ran on 2026-11-10, on the working tree with changed block
+tracking (decision 50), by `run-all.sh` and `webui-e2e.sh`, with `vm-e2e.sh` run again after its new checks were fixed.
 
 `go test -race` also passes. Earlier, smaller versions of these suites passed on GitHub's hosted runners, in
 CI run 41887410583 on commit `391e438`, with 2-vCPU VMs and Ubuntu's QEMU 8.2.
@@ -518,6 +519,12 @@ the kernel target: a filesystem volume written on one node and read on another, 
 the volume and then its filesystem, a snapshot and a clone with the snapshot's data, a raw block volume written on one node
 and read on another while both had it, and nothing left after everything was deleted, in nvweaver or on the nodes.
 
+**On Kubernetes 1.31,** the oldest supported (decision 51): `K3S_VERSION=v1.31.14+k3s1`, on 2026-11-10, `test` passed all 34
+checks and `sanity` 75 of 75, with `csi-provisioner:v5.3.0` and `csi-resizer:v1.14.0`, which `k3s-csi.sh deploy` picks below
+1.34 as `csi/README.md` says to, and the other sidecars as on 1.37. `make lint` renders the chart as 1.31, 1.33, 1.34 and
+1.37, and checks each picks the right two (`test/chart-versions.sh`); with the older provisioner left out, 1.31 rendered v6.4.0,
+which it reports, and 1.30 is refused.
+
 **After the third review (decision 48) and the scale fixes (decision 49):** `test` passed all 34 checks, and `sanity` 75 of 75,
 in the lab on the build host on 2026-11-09. A new check restores the snapshot as a ReadOnlyMany filesystem and mounts it on two nodes at
 once: each pod reads the snapshot's data, sees `ro` though it didn't ask, and can't write. Before the fix, the staging mount
@@ -620,6 +627,85 @@ ReadWriteMany raw block disk. `helm upgrade` changed the reconnect delay on ever
 or badly formed `cluster`, and a missing API, with messages saying which. `make lint` lints it with `--strict` and renders it as
 on plain Kubernetes and as on OpenShift. Not tested yet: the chart on k3s, and installing it on a cluster that never had the
 driver.
+
+### Changed block tracking
+
+`test/vm/cbt-check.sh` checks, before anything is built on them, whether the ways nvweaver would report a snapshot's changed
+and allocated blocks ever miss one, as a missed block silently corrupts every incremental backup built on it. It runs
+`cbt-check.py` as root in a fresh lab VM, on loop devices: Fedora 44, kernel 7.2.15, LVM 2.03.38,
+`device-mapper-persistent-data` 1.3.4, xfsprogs 7.1.1.
+
+A 256 MiB volume goes through seven rounds, with a snapshot after each, taken as nvweaver takes them: half written with
+random data; single bytes at chunk edges and the last byte, a write across a chunk boundary, one unaligned at both ends over
+several chunks, and one from written into never-written space; 1,000 random 512-byte writes; TRIM of whole chunks, of parts
+of chunks, and of never-written space; the same data written again, and zeros into never-written space; nothing; and a full
+overwrite. Nine pairs of snapshots are compared, consecutive and further apart, and three snapshots' allocated ranges.
+
+| Method | Cases | Result |
+|---|---|---|
+| LVM thin: `thin_delta` and `thin_dump` on a reserved metadata snapshot of the live pool | 64 KiB chunks with zeroing on and off, 128 KiB, 256 KiB, 1 MiB | No byte unreported |
+| Reflink on XFS: FIEMAP of two `cp --reflink` snapshots, where a different physical extent, or written on one side only, is a change | 4 KiB blocks | No byte unreported |
+
+**72 checks and 66 negative controls passed.** Each check reads both snapshots and fails if any byte that differs, or any
+non-zero byte for allocated ranges, is outside what was reported. So that it can't pass by mistake, each check with anything
+to find runs again without the reported range that holds the first such byte, and must then fail. The six pairs with nothing
+changed have no control.
+
+- **Over-reporting grows with the chunk size,** as LVM reports whole chunks: 1,000 scattered 512-byte writes, 0.5 MB of
+  change, came back as 55 MB at 64 KiB chunks and 248 MB, nearly the whole volume, at 1 MiB. Reflink reported 3.9 MB.
+- **TRIM:** dm-thin unmaps only whole chunks, and reports those. A partial TRIM leaves the chunk as it was, and nothing is
+  reported, which is right, as nothing changed.
+- **The "same data again" round did change 509 to 2,550 bytes:** it read the data back through the page cache, where the
+  earlier unaligned TRIM had zeroed the partial page while dm-thin kept the chunk. Writing that back made the zeros real. They
+  were reported. Worth knowing for anything that reads a block device after an unaligned discard.
+
+**Through the API, end to end:** `vm-e2e.sh` checks nvweaver's own implementation, in its container, through `nsenter` to
+the VM's LVM, on both targets and both pool types. A host writes files to an XFS filesystem on a volume, and `filefrag`
+gives where each file's data is on the volume. `changes` must hold the rewritten file and every file written after the base
+snapshot (those not on a clone of it), and none of the 31 unchanged 8 MiB files in full; `changes` across a snapshot taken
+under load must hold every file whose fsync finished before it; and `allocated` must hold every file a snapshot has. All 20
+checks passed. Its first version bounded the reported size at 64 MiB, which failed on SPDK with reflink at 83 MB: files the
+writer finished just after the snapshot really had changed, so the bound was a guess. It was replaced by the exact checks
+above. The helper that compares ranges was tested by hand first, and an awk array indexed from an unset variable was found
+to hide the first range.
+
+**Through the CSI driver:** `k3s-csi.sh cbt`, on k3s 1.37 on 2026-11-10, passed 13 of 13. It installs the driver with the Helm
+chart and `snapshotMetadata.enabled`, which also tests the chart in the lab, and the sidecar's CRD from v1.1.0. A pod writes
+4 MiB to a raw block volume, which is snapshotted; then 4 KiB at 10 MiB and 30 MiB, and it's snapshotted again. The
+sidecar's own example client, `snapshot-metadata-lister`, asking through the sidecar with a Kubernetes token, was told of both
+writes and 128 KiB in all, two 64 KiB chunks, and of the first snapshot's 4 MiB, and an account with no access to the
+snapshots was refused as not allowed. Its first runs failed on the test, each traced: the CRD's path in the release is a
+symlink, which a raw download gives as its target's name; the chart set `requireBaseSnapshotForDelta`, which v1.1.0's CRD
+doesn't have; the lister at the release's commit still used the alpha API, so it's built from the commit that moved it to
+v1beta1; and the refusal check passed on any error, which hid a missing option, so it now wants `PermissionDenied`.
+
+**The end-to-end check failed in CI three times, each time on the check, never on what CBT reported,** which took four
+rounds of fixes to show. Each wrong turn is worth knowing:
+
+1. It treated a file missing from a clone of the base snapshot as new data. A file being written when a snapshot is taken
+   can have its data in it but not its name, which is what a crash-consistent snapshot holds; its blocks hadn't changed.
+   Timing decided whether it happened, so it passed on the build host and failed in CI.
+2. It then compared what wasn't reported between the live original and that clone. The original isn't a moment, and the
+   clone had been mounted, so neither stood for a snapshot. Now both snapshots are read where they're stored on the target,
+   LVM snapshots activated read-only, reflink snapshots as their files, with no host or clone in between.
+3. Its byte comparison read 512 bytes at a time with direct I/O: through SPDK in interrupt mode, at about 35 ms a request,
+   an 8 MiB extent took 10 minutes, which looked like a hang. Its reads were in uninterruptible sleep, and SPDK's reactor in
+   `epoll_wait`, which suggested a lost wakeup in SPDK; one more read, which finished at once, showed the "stuck" reads were
+   new ones. It reads 1 MiB at a time now.
+4. It asked whether one reported range held a whole extent of a file. On SPDK with reflink, about one round in three, the
+   file being written was half there in the base snapshot and a hole after; CBT rightly reported only the half that
+   changed, and the check, comparing the whole extent, called the rest a miss. Asked again, the API gave the same ranges,
+   which ruled out timing. Now only the parts of an extent that no range holds are compared, and only a difference fails.
+   `TestReflinkChangesAcrossManyExtents` builds the same layout, in about 1,700 extents, over several FIEMAP calls.
+
+With all four, `SNAPSHOT_ONLY="spdk reflink 6"` passed 384 of 384, meeting the half-written file in four rounds of six, its
+unreported half the same in both snapshots each time. The client also syncs before the last snapshot now, as a guest agent
+or backup hook would; the one before it is still taken mid-write, unsynced. Also from these runs: the power-loss tests leave
+their background `lab.sh ssh` loops running on the build host, on connections to a VM that was reset, until killed.
+
+**Not checked:** a pool whose metadata is changing while `thin_delta` reads it (the metadata snapshot holds what was
+committed when it was reserved, and nvweaver's snapshots are committed when taken), btrfs, Arm, SPDK's own snapshots, which
+nvweaver doesn't use, and real disks.
 
 ### The CSI driver at scale
 

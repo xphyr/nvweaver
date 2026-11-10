@@ -67,7 +67,9 @@ type Config struct {
 	ReconnectDelay int
 	// MaxVolumesPerNode is what the node tells Kubernetes it can take.
 	MaxVolumesPerNode int64
-	Log               *slog.Logger
+	// SnapshotMetadata serves changed block tracking, for the external-snapshot-metadata sidecar, which needs Kubernetes 1.33.
+	SnapshotMetadata bool
+	Log              *slog.Logger
 }
 
 // MaxNamespaces is how many namespaces a subsystem can hold, on both targets: NVMET_MAX_NAMESPACES in the kernel's, and

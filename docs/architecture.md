@@ -107,6 +107,11 @@ namespace with PID 1's. Otherwise it runs directly, as under systemd.
 A snapshot and a clone are separate driver calls, because they can differ by pool type: a thin LVM snapshot stays inactive
 until it's needed. On reflink both are instant copies of a file, and independent of their source once made.
 
+Changed block tracking is a storage call too, and so works the same on both targets: a snapshot's allocated ranges, and
+what changed between two snapshots of a volume, come from the pool's own mappings, `thin_dump` and `thin_delta` on a
+reserved metadata snapshot for LVM, and FIEMAP for reflink. They run outside the lock, one at a time per LVM pool, as a
+pool holds one metadata snapshot at a time. See decision 50.
+
 ## Backend lifetime
 
 | | Kernel | SPDK |

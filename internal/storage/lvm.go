@@ -31,6 +31,7 @@ var lvmNameRE = regexp.MustCompile(`^[A-Za-z0-9_+.][A-Za-z0-9_+.-]{0,126}$`)
 type lvmThinDriver struct {
 	vg, pool string
 	run      func(args ...string) (string, error)
+	tool     func(prog string, args ...string) (string, error) // dmsetup and the thin tools, where lvm runs
 }
 
 func newLVMThin(p *target.Pool) (Driver, error) {
@@ -40,7 +41,7 @@ func newLVMThin(p *target.Pool) (Driver, error) {
 	if !lvmNameRE.MatchString(p.VolumeGroup) || !lvmNameRE.MatchString(p.ThinPool) {
 		return nil, target.Invalid("an %s pool needs a valid volume_group and thin_pool", TypeLVMThin)
 	}
-	return &lvmThinDriver{vg: p.VolumeGroup, pool: p.ThinPool, run: hostLVM}, nil
+	return &lvmThinDriver{vg: p.VolumeGroup, pool: p.ThinPool, run: hostLVM, tool: hostTool}, nil
 }
 
 // hostLVM runs lvm. A container started with --pid=host sees the host's init as PID 1, in other

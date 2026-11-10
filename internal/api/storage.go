@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"nvweaver/internal/storage"
 	"nvweaver/internal/target"
 )
 
@@ -924,6 +925,124 @@ func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) error {
 		writeJSON(w, http.StatusOK, page)
 		return nil
 	})
+}
+
+const (
+	defaultRangeLimit = 1000
+	maxRangeLimit     = 10000
+)
+
+// blockRanges is a page of a snapshot's allocated or changed ranges.
+type blockRanges struct {
+	BlockSize  int64        `json:"block_size"`
+	SizeBytes  int64        `json:"size_bytes"`
+	Ranges     []blockRange `json:"ranges"`
+	NextOffset *int64       `json:"next_offset,omitempty"`
+}
+
+type blockRange struct {
+	Offset int64 `json:"offset"`
+	Length int64 `json:"length"`
+}
+
+// snapshotForBlocks finds a snapshot and its pool's driver, outside any lock once found, as the storage can be slow.
+func (s *Server) snapshotForBlocks(name string) (target.Snapshot, storage.Driver, error) {
+	var snap target.Snapshot
+	var pool *target.Pool
+	if err := s.m.view(func(st *target.State) error {
+		found := st.Snapshots[name]
+		if found == nil {
+			return notFound("no such snapshot %s", name)
+		}
+		snap, pool = *found, st.Pools[found.Pool]
+		return nil
+	}); err != nil {
+		return snap, nil, err
+	}
+	if pool == nil {
+		return snap, nil, notFound("no such pool %s", snap.Pool)
+	}
+	driver, err := s.m.newDriver(pool)
+	return snap, driver, err
+}
+
+// writeBlockRanges sends the page of ranges that starts at the request's offset, cut to the snapshot's size.
+func writeBlockRanges(w http.ResponseWriter, r *http.Request, b storage.Blocks, size int64) error {
+	q := r.URL.Query()
+	offset := int64(0)
+	if v := q.Get("offset"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return target.Invalid("offset must be a byte offset, 0 or more")
+		}
+		offset = n
+	}
+	limit := defaultRangeLimit
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > maxRangeLimit {
+			return target.Invalid("limit must be between 1 and %d", maxRangeLimit)
+		}
+		limit = n
+	}
+	page := blockRanges{BlockSize: b.BlockSize, SizeBytes: size, Ranges: []blockRange{}}
+	for _, rg := range b.Ranges {
+		start, end := max(rg.Offset, offset), min(rg.End(), size)
+		if end <= start {
+			continue
+		}
+		if len(page.Ranges) == limit {
+			page.NextOffset = &start
+			break
+		}
+		page.Ranges = append(page.Ranges, blockRange{Offset: start, Length: end - start})
+	}
+	writeJSON(w, http.StatusOK, page)
+	return nil
+}
+
+func (s *Server) getSnapshotAllocated(w http.ResponseWriter, r *http.Request) error {
+	name := r.PathValue("snapshot")
+	snap, driver, err := s.snapshotForBlocks(name)
+	if err != nil {
+		return err
+	}
+	b, err := driver.Allocated(snap.InternalName)
+	if err != nil {
+		return fmt.Errorf("snapshot %s: %w", name, err)
+	}
+	return writeBlockRanges(w, r, b, snap.SizeBytes)
+}
+
+func (s *Server) getSnapshotChanges(w http.ResponseWriter, r *http.Request) error {
+	name, baseName := r.PathValue("snapshot"), r.URL.Query().Get("base")
+	if baseName == "" {
+		return target.Invalid("base is needed: the snapshot to compare with")
+	}
+	snap, driver, err := s.snapshotForBlocks(name)
+	if err != nil {
+		return err
+	}
+	var base target.Snapshot
+	if err := s.m.view(func(st *target.State) error {
+		found := st.Snapshots[baseName]
+		if found == nil {
+			return notFound("no such snapshot %s, to compare with", baseName)
+		}
+		base = *found
+		return nil
+	}); err != nil {
+		return err
+	}
+	// A pool's mappings compare any two of its devices, but only snapshots of one volume share a history.
+	if base.Volume != snap.Volume || base.Pool != snap.Pool {
+		return target.Invalid("snapshots %s and %s aren't of the same volume (%s and %s)", baseName, name, base.Volume, snap.Volume)
+	}
+	b, err := driver.Changed(base.InternalName, snap.InternalName)
+	if err != nil {
+		return fmt.Errorf("snapshots %s and %s: %w", baseName, name, err)
+	}
+	return writeBlockRanges(w, r, b, snap.SizeBytes)
 }
 
 func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) error {

@@ -1,0 +1,110 @@
+{{- /*
+Changed block tracking, for backups (decisions 50 and 51): the external-snapshot-metadata sidecar in the controller pod,
+reached by backup clients over TLS at a Service, and the SnapshotMetadataService that tells them where. Off unless asked for.
+*/}}
+{{- if .Values.snapshotMetadata.enabled }}
+{{- if semverCompare "<1.33.0-0" .Capabilities.KubeVersion.Version }}
+{{- fail (printf "snapshotMetadata needs Kubernetes 1.33 or later, for the external-snapshot-metadata sidecar, and this is %s: leave it off" .Capabilities.KubeVersion.Version) }}
+{{- end }}
+{{- if not (.Capabilities.APIVersions.Has "cbt.storage.k8s.io/v1beta1/SnapshotMetadataService") }}
+{{- fail "snapshotMetadata needs the SnapshotMetadataService CRD (cbt.storage.k8s.io/v1beta1) installed first: see csi/README.md" }}
+{{- end }}
+{{- $name := include "nvweaver-csi.snapshotMetadataName" . }}
+{{- $host := printf "%s.%s" $name .Release.Namespace }}
+{{- $ca := "" }}
+{{- if .Values.snapshotMetadata.tls.existingSecret }}
+{{- $ca = required "snapshotMetadata.tls.caCert is needed with an existing secret: the PEM of the CA that signed it" .Values.snapshotMetadata.tls.caCert }}
+{{- else }}
+{{- /* A certificate made here, and kept on upgrades, so that clients' copies of the CA stay good. */}}
+{{- $secretName := printf "%s-tls" $name }}
+{{- $old := lookup "v1" "Secret" .Release.Namespace $secretName }}
+{{- $crt := "" }}
+{{- $key := "" }}
+{{- if and $old (index $old.data "ca.crt") }}
+{{- $ca = index $old.data "ca.crt" | b64dec }}
+{{- $crt = index $old.data "tls.crt" | b64dec }}
+{{- $key = index $old.data "tls.key" | b64dec }}
+{{- else }}
+{{- $authority := genCA (printf "%s snapshot metadata CA" .Release.Name) 3650 }}
+{{- $cert := genSignedCert $host nil (list $name $host (printf "%s.svc" $host)) 3650 $authority }}
+{{- $ca = $authority.Cert }}
+{{- $crt = $cert.Cert }}
+{{- $key = $cert.Key }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "nvweaver-csi.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $crt | b64enc }}
+  tls.key: {{ $key | b64enc }}
+  ca.crt: {{ $ca | b64enc }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "nvweaver-csi.labels" . | nindent 4 }}
+spec:
+  ports:
+    - name: snapshot-metadata
+      port: {{ .Values.snapshotMetadata.port }}
+      targetPort: snapshot-meta
+  selector:
+    app.kubernetes.io/name: nvweaver-csi
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: controller
+---
+# Named for the driver, which is how backup clients find it.
+apiVersion: cbt.storage.k8s.io/v1beta1
+kind: SnapshotMetadataService
+metadata:
+  name: {{ .Values.driverName }}
+  labels: {{- include "nvweaver-csi.labels" . | nindent 4 }}
+spec:
+  address: {{ $host }}:{{ .Values.snapshotMetadata.port }}
+  caCert: {{ $ca | b64enc }}
+  audience: {{ include "nvweaver-csi.snapshotMetadataAudience" . }}
+  # The base snapshot has to still exist, as changes come from comparing the two snapshots' mappings. Newer CRDs than
+  # v1.1.0's can say so, with requireBaseSnapshotForDelta: true; v1.1.0's refuses the field.
+---
+# What the sidecar needs, from its own RBAC file: to read its SnapshotMetadataService, check clients' tokens and access,
+# and find the snapshots they ask about.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-snapshot-metadata
+  labels: {{- include "nvweaver-csi.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [cbt.storage.k8s.io]
+    resources: [snapshotmetadataservices]
+    verbs: [get, list, watch]
+  - apiGroups: [authentication.k8s.io]
+    resources: [tokenreviews]
+    verbs: [create]
+  - apiGroups: [authorization.k8s.io]
+    resources: [subjectaccessreviews]
+    verbs: [create]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshots, volumesnapshotcontents]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-snapshot-metadata
+  labels: {{- include "nvweaver-csi.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-controller
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-snapshot-metadata
+{{- end }}

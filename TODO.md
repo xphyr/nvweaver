@@ -9,19 +9,29 @@ here first. Each step points at its items further down.
 
 ## Next
 
-Agreed with the user on 2026-11-09. Done since: bringing this list up to date, hardening the CSI driver with scoped API tokens,
-OpenShift, monitoring, and v0.4.0, which released the driver. In this order now:
+Agreed with the user on 2026-11-10. Done since the last list: scale (5,000 volumes on 100 nodes, and 1,000 connections), and
+the third outside review's findings. In this order now:
 
-1. **Scale:** measure the target's connection limits, then the driver at production-like volume and node counts. See phases 5 and 7
-2. **An outside review,** by Cursor, of everything new since the last: the CSI driver, scoped tokens, metrics, the Helm chart and
-   the release changes. Its findings come before new work, as the last two reviews' did
-3. **Changed block tracking,** starting with its correctness test. See phase 7
+1. **Changed block tracking:** done, for the storage, API, CLI and CSI driver, with the chart's sidecar. See phase 7. Still to
+   do: the manifests, and checking whether Velero or Kasten use it yet
+2. **Cleaning up after a node leaves,** moved up by the user on 2026-11-10: hosts owned by the token that made them, as
+   subsystems are, so the driver may delete its own; and the controller deleting the subsystem and host of a node whose
+   CSINode is gone, once nothing is exported in it. See phase 7
+3. **Consistency groups:** CSI's VolumeGroupSnapshot, several volumes snapshotted at one instant, as arrays do for a database's
+   data and log volumes or a VM's disks. Storage-level, so both targets get it
+4. **The CSI driver's gaps against arrays' drivers,** agreed on 2026-11-10, fitted in around 3: topology and capacity
+   reporting, volume health, and SELinux mount labelling. See phase 7
+5. **iSCSI as a second protocol,** then every feature that works on NVMe checked on iSCSI too: the API, the CLI, the web
+   interface, the CSI driver, snapshots, clones, CBT and consistency groups. See "Later" for what the probe found
 
 Smaller, to fit in: a test that a new version reads the previous release's state; the driver refusing to run when two nodes
 share a host NQN; a guest writing while it live-migrates; publishing the Helm chart.
 
 ## 1. Build and release
 
+- [ ] Keep the Go version in one file that the Containerfiles (by a build argument) and CI read, so that a bump is one line
+      (decision 52). Until then it's in the three Containerfiles, `ci.yml`'s four `setup-go` steps, and the test images
+- [ ] Bump Go to 1.26.11 once `setup-go` lists it, everywhere at once, and check for a new patch release before each release
 - [x] Create a GitHub workflow for building and releasing code (`docs/releasing.md`)
   - [x] Lint and unit tests on every push
   - [x] End-to-end suites in VMs on every push
@@ -61,6 +71,7 @@ share a host NQN; a guest writing while it live-migrates; publishing the Helm ch
 - [ ] Test that a new version reads the previous release's saved state, before each release. Nothing does yet
 - [x] Add a `LICENSE` (MIT)
 - [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)
+- [ ] Add container image scanning prior to image publication
 
 ## 2. Storage layer, spec first
 
@@ -110,6 +121,8 @@ and CLI once, against the result.
 
 ## Test suite
 
+- [ ] `vm-e2e.sh`'s power-loss tests leave their background `lab.sh ssh` loops running on the build host after the VM is reset,
+      on dead connections, until killed. Kill them when the test ends
 - [ ] Add path filters to pull requests, using the table in decision 39, keeping the full run on `main` and releases
 - [x] Audit the suites with deliberately introduced bugs, timing each section. Every suite caught something no other did, so none was removed. Results in `docs/testing.md`
 - [ ] Decide whether `vm-e2e.sh` runs its storage-only LVM sections on one backend: about 3 minutes, as bugs in shared code were caught by both copies. Host-visible checks stay on both
@@ -194,16 +207,23 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [x] Use the snapshot and cloning features
   - [ ] Changed block tracking: CSI's `SnapshotMetadata` service (KEP-3314, beta in Kubernetes 1.36, CSI spec 1.10), for incremental
         backups of block volumes. After snapshots work in the driver. Storage does the work, so both targets get it
-    - [ ] First, on its own: prove the storage side never under-reports, as a missed block silently corrupts every incremental backup
-          built on it. Write known data, snapshot, change known ranges, including across chunk boundaries and with TRIM, snapshot
-          again, and check the reported delta covers every byte that differs. On LVM at several chunk sizes, and on XFS
-    - [ ] LVM thin: `thin_delta` and `thin_dump` on a reserved metadata snapshot, one at a time per pool. Ranges come in the pool's
-          chunk size. Add `device-mapper-persistent-data` to the images and to "Tools" in the README
-    - [ ] Reflink: `FIEMAP` on both snapshot files, where a different physical extent or a hole is a change
-    - [ ] API, spec first: paginated, read-only allocated and changed ranges on snapshots, with each pool's block size
-    - [ ] Driver: the `SnapshotMetadata` service, the `external-snapshot-metadata` sidecar with its TLS and token audiences, and a
-          `SnapshotMetadataService` object. Test end to end in the k3s lab with the sidecar project's example client, and check
-          whether Velero or Kasten use it yet
+    - [x] First, on its own: prove the storage side never under-reports, as a missed block silently corrupts every incremental backup
+          built on it. `test/vm/cbt-check.sh`: 72 checks and 66 negative controls passed, on LVM at four chunk sizes and on XFS. See
+          "Changed block tracking" in `docs/testing.md` and decision 50
+    - [x] LVM thin: `thin_delta` and `thin_dump` on a reserved metadata snapshot, one at a time per pool. Ranges come in the pool's
+          chunk size. They're in `device-mapper-persistent-data`, which hosts already need for `thin_check`, and the images use the
+          host's LVM tools, so nothing is added to them
+    - [x] Reflink: `FIEMAP` on both snapshot files, where a different physical extent or a hole is a change
+    - [x] API, spec first: paginated, read-only allocated and changed ranges on snapshots, with each pool's block size:
+          `/v1/snapshots/{snapshot}/allocated` and `/changes`, and `nvweaver snapshot allocated` and `changes`. Checked end
+          to end by `vm-e2e.sh` against where a host's XFS put its files, on both pool types and targets
+    - [x] Support Kubernetes down to 1.31, for OpenShift 4.18: older provisioner and resizer below 1.34, decision 51
+    - [x] Driver: optional, off unless asked for, and only from Kubernetes 1.33, the sidecar's minimum. The `SnapshotMetadata` service, the `external-snapshot-metadata` sidecar with its TLS and token audiences, and a
+          `SnapshotMetadataService` object, by the Helm chart. Tested end to end in the k3s lab with the sidecar project's example
+          client: `k3s-csi.sh cbt`
+    - [ ] Changed block tracking with the manifests too, not only the Helm chart
+    - [ ] Check whether Velero, Kasten or other backup tools use it yet, and try one
+    - [ ] Test it on OpenShift, which needs `nvw` on 4.20 (Kubernetes 1.33) or later; it's on 4.22, so it can be tried now
   - [x] Map volumes into per-node subsystems, and each shared volume into its own subsystem
   - [x] Test RWX block volumes and KubeVirt live migration with the real thing: both passed on OpenShift. On the kernel target, removing the source host
         stalls the destination for about 10 s: see decision 30. Measured on OpenShift: the new node's I/O queued for 10 s, 10 s after
@@ -230,10 +250,20 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [x] A Helm chart, as another way to install: `csi/deploy/helm/nvweaver-csi`, linted and rendered by `make lint`, tested on OpenShift
   - [ ] Publish the chart with releases, such as to an OCI registry, and test it in the k3s lab too
   - [ ] DH-HMAC-CHAP for nodes: a key per node, from a Secret, set on its host
-  - [ ] Delete a node's subsystem and host when the node leaves the cluster. They stay while the driver runs, for its next volume.
+  - [ ] Delete a node's subsystem and host when the node leaves the cluster (step 2 of "Next"). They stay while the driver runs, for its next volume.
         A scoped token can delete the subsystem but not the host, as hosts have no owner and only an admin may delete one
-  - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver
+  - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver, such as one with a storage network,
+        and so the scheduler sees a pool that's full. Arrays' drivers all report capacity
+  - [ ] Volume health: `VOLUME_CONDITION` from the node and `GET_VOLUME` from the controller, so a lost path, a full thin pool or a
+        missing LV shows on the claim in Kubernetes, not only in nvweaver's warnings
+  - [ ] SELinux mount labelling: `seLinuxMount: true` on the CSIDriver, so a volume is mounted with its label rather than every
+        file relabelled at each pod start, which is slow on big volumes such as VM disks. Check the node passes the `context`
+        option through, and test on OpenShift. Mind Kubernetes 1.31, decision 51
+  - [ ] Several nvweavers behind one driver, each StorageClass naming its API and credentials through CSI secrets, as arrays'
+        drivers do for several arrays
+  - [ ] Importing a volume nvweaver already has into Kubernetes, for migrations
   - [x] `ListVolumes` and `ListSnapshots`, which `csi-sanity` and some backup tools use
+  - [ ] Test on OpenShift 4.18 itself, and on Kubernetes 1.32 and 1.33, which only the chart's rendering covers
   - [ ] Test at production-like volume and node counts. The controller passed at 5,000 volumes on 100 simulated nodes, against
         a real nvweaver (phase 5). Still to do: real nodes connecting at that count, and the sidecars' own limits
   - [ ] Document that there is a single target, with no failover
@@ -272,7 +302,7 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [ ] Add a smoke test on hosted macOS and Windows runners, running the real binary against a fake API, as nothing has run there yet. Don't publish those builds without it. All these targets
         cross-compile, but `go test ./cmd/nvweaver` won't there, as its tests use the Linux-only `internal/target`
   - [ ] Check what differs there: file paths for `--token-file` and `--ca`, the system's certificates, and signals on Windows
-- [ ] iSCSI as a second protocol, once the CLI and CSI driver have settled the API. It would be new resources, such as `/v1/iscsi/targets`, not a
+- [ ] iSCSI as a second protocol, next after consistency groups (see "Next"), once the CLI and CSI driver have settled the API. It would be new resources, such as `/v1/iscsi/targets`, not a
       `transport` on ports. Pools, volumes and snapshots should carry over: see decision 33
   - [x] Probe whether it's really feasible, driving LIO and SPDK by hand in VMs: it is, on both. See "iSCSI: is it feasible?" in `docs/testing.md`
   - [ ] Decide how to handle a volume's identity differing between LIO and SPDK, which can't be made to match

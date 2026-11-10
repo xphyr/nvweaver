@@ -559,6 +559,30 @@ func (c *Client) GetSnapshot(ctx context.Context, name string) (*Snapshot, error
 	return get[Snapshot](ctx, c, p("v1", "snapshots", name))
 }
 
+// SnapshotAllocated returns a page of where a snapshot holds data, from offset; a limit of 0 is the server's default.
+func (c *Client) SnapshotAllocated(ctx context.Context, snapshot string, offset int64, limit int) (*BlockRanges, error) {
+	return c.blockRanges(ctx, p("v1", "snapshots", snapshot, "allocated"), url.Values{}, offset, limit)
+}
+
+// SnapshotChanges returns a page of where snapshot differs from base, an earlier or later snapshot of the same volume.
+func (c *Client) SnapshotChanges(ctx context.Context, base, snapshot string, offset int64, limit int) (*BlockRanges, error) {
+	return c.blockRanges(ctx, p("v1", "snapshots", snapshot, "changes"), url.Values{"base": {base}}, offset, limit)
+}
+
+func (c *Client) blockRanges(ctx context.Context, path string, query url.Values, offset int64, limit int) (*BlockRanges, error) {
+	if offset > 0 {
+		query.Set("offset", strconv.FormatInt(offset, 10))
+	}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	out := &BlockRanges{}
+	if err := c.request(ctx, http.MethodGet, path, query, nil, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CreateSnapshot snapshots a volume. Asking again with the same settings returns the existing one.
 func (c *Client) CreateSnapshot(ctx context.Context, in SnapshotCreate) (*Snapshot, error) {
 	return send[Snapshot](ctx, c, http.MethodPost, "/v1/snapshots", in)

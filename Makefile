@@ -40,7 +40,7 @@ lint:
 	@for f in internal/client/*.go; do case $$f in *_test.go) continue ;; esac; \
 		cmp -s $$f csi/vendor/nvweaver/$$f || { echo "csi/vendor/nvweaver/$$f is out of date: cd csi && go mod vendor"; exit 1; }; done
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(SHELLCHECK_IMAGE) -S warning \
-		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/k3s-lab.sh test/vm/k3s-csi.sh test/vm/vm-e2e.sh test/vm/run-all.sh test/vm/scale-bench.sh test/webui-e2e.sh test/webui-real-e2e.sh .github/publish-images.sh
+		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/k3s-lab.sh test/vm/k3s-csi.sh test/vm/vm-e2e.sh test/vm/run-all.sh test/vm/scale-bench.sh test/vm/cbt-check.sh test/chart-versions.sh test/webui-e2e.sh test/webui-real-e2e.sh .github/publish-images.sh
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(ACTIONLINT_IMAGE)
 	podman run --rm --pull=missing -v "$$PWD:/spec:ro,Z" --workdir /spec $(REDOCLY_IMAGE) \
 		lint --skip-rule operation-4xx-response api/openapi.yaml
@@ -50,6 +50,8 @@ lint:
 	podman run --rm --pull=missing -v "$$PWD/csi/deploy/helm:/charts:ro,Z" --workdir /charts $(HELM_IMAGE) \
 		template t nvweaver-csi --set cluster=lint --set nvweaver.existingSecret=api \
 		--api-versions security.openshift.io/v1 --api-versions snapshot.storage.k8s.io/v1/VolumeSnapshotClass >/dev/null
+	@# Below Kubernetes 1.34, the older provisioner and resizer, and from 1.34 the newer: each must render with its own.
+	./test/chart-versions.sh $(HELM_IMAGE)
 
 # BUILD_FLAGS can add layer caching, as CI does, or a platform such as --platform linux/arm64.
 images:

@@ -294,6 +294,21 @@ type SnapshotPage struct {
 	NextAfter string     `json:"next_after,omitempty"`
 }
 
+// BlockRanges is one page of a snapshot's allocated or changed byte ranges, in whole blocks of BlockSize, except where
+// the last is cut at SizeBytes. NextOffset is nil on the last page.
+type BlockRanges struct {
+	BlockSize  int64        `json:"block_size"`
+	SizeBytes  int64        `json:"size_bytes"`
+	Ranges     []BlockRange `json:"ranges"`
+	NextOffset *int64       `json:"next_offset,omitempty"`
+}
+
+// BlockRange is part of a volume, in bytes.
+type BlockRange struct {
+	Offset int64 `json:"offset"`
+	Length int64 `json:"length"`
+}
+
 // SnapshotCreate snapshots a volume.
 type SnapshotCreate struct {
 	Name   string `json:"name"`

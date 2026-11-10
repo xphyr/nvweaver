@@ -611,3 +611,67 @@ there, not as absolute numbers.
   another. Exporting by path still compares with everything, by what it reaches, as before.
 - **Kept:** a volume's file hard-linked, or its device's disk or partition, exported by path, is still a conflict, in
   either order.
+
+## 50. Changed blocks come from the storage's own mappings, checked against the data first
+
+- **The problem:** CSI's `SnapshotMetadata` service lets backup tools read only what changed between two snapshots, or what a
+  snapshot holds. A missed block makes every incremental backup built on it silently wrong, so the method has to be proven
+  before anything is built on it.
+- **Chosen: on LVM thin, `thin_delta` and `thin_dump`,** reading a metadata snapshot reserved on the live pool
+  (`reserve_metadata_snap`), as the pool can't be taken offline. Only one can be reserved at a time, so one request at a time
+  per pool. Ranges come in the pool's chunk size. They're in `device-mapper-persistent-data`, which hosts already need for
+  `thin_check`, so nothing new is required.
+- **Chosen: on reflink, FIEMAP** of the two snapshot files: a different physical extent, or written on one side only, is a
+  change. Unwritten extents count as holes, as they read as zeros. Allocated ranges are the written extents.
+- **Checked against the data:** `test/vm/cbt-check.sh` compares every byte of the snapshots with what's reported, on LVM at
+  four chunk sizes and on XFS, with negative controls so that it can't pass by mistake. Nothing was missed.
+- **Accepted: over-reporting.** LVM reports whole chunks, so scattered small writes on a pool with large chunks report nearly
+  everything. That's correct, only slower to back up; `docs/pools.md` should say so.
+- **Rejected: tracking writes in nvweaver,** as it isn't in the data path, and **comparing data,** which reads both snapshots
+  in full, the cost CBT exists to avoid.
+- **The API:** `GET /v1/snapshots/{snapshot}/allocated`, and `/changes?base=` for two snapshots of the same volume, in either
+  order. Both are read-only, so open to scoped tokens, as all reads are (decision 46). Ranges are bytes, in whole blocks of
+  `block_size`, merged where they touch, cut at the snapshot's size, and paged by `offset`, as CSI's `starting_offset` is.
+  Each page asks the storage again: simple, and a backup reads the ranges once.
+- **Refused: snapshots of different volumes.** A pool's mappings could compare any two devices, but only snapshots of one
+  volume share a history, and a delta between unrelated volumes would be nearly everything.
+- **A metadata snapshot left reserved,** by a service that stopped in the middle, is released and taken again, as nothing
+  else should hold one on nvweaver's pools. Another tool that does would have it taken away.
+- **Where FIEMAP can't say where data is,** for delayed allocation, inline or encoded data, including btrfs's compressed
+  extents, that range counts as changed: never under-reporting matters more than reporting little.
+- **The CSI driver serves CSI's `SnapshotMetadata` service,** only with `--snapshot-metadata`, and advertises it only then. It
+  streams nvweaver's pages as variable-length ranges, with CSI's codes: `NotFound`, `InvalidArgument` for snapshots of
+  different volumes, and `OutOfRange` past the end. The external-snapshot-metadata sidecar fronts it for backup tools, with
+  TLS and Kubernetes tokens, and needs 1.33, so the Helm chart adds it only with `snapshotMetadata.enabled`, and refuses
+  below 1.33 or without its CRD (decision 51). Not in the manifests yet.
+- **The chart makes the sidecar's certificate and CA,** valid for 10 years and kept on upgrades, as clients hold the CA from
+  the `SnapshotMetadataService`; or takes an existing secret and its CA. The audience defaults to the driver's name.
+
+## 51. The CSI driver supports Kubernetes 1.31 and later
+
+- **Asked for by the user:** 1.31, which OpenShift 4.18 is based on, as the oldest.
+- **The driver itself doesn't limit it.** It vendors CSI spec v1.13, but the spec only adds between minor versions, and
+  Kubernetes never checks which one a driver was built with: the kubelet and the sidecars call what they know.
+- **The sidecars do.** `csi-provisioner` from v6 and `csi-resizer` from v2 need 1.34, for VolumeAttributesClass `v1`, which the
+  driver doesn't implement. **Chosen: below 1.34, their last releases before that,** v5.3.0 and v1.14.0. The Helm chart picks
+  them by the cluster's version (`imageBefore134`), and the manifests' instructions say which two lines to change. The other
+  sidecars' minimums are 1.25 or lower.
+- **Accepted: those two lines aren't updated any more,** so older clusters run sidecars from June 2025. Rejected: the older
+  ones everywhere, which would give up their fixes on current clusters too.
+- **Changed block tracking needs 1.33,** the `external-snapshot-metadata` sidecar's minimum, so it's optional: off unless asked
+  for, and refused below 1.33.
+- **Tested:** the whole CSI suite and `csi-sanity` on k3s 1.31.14 and 1.37.2, and OpenShift 4.22 (1.35). Not yet on
+  OpenShift 4.18 itself, or 1.32 and 1.33.
+
+## 52. Every Go build uses one exact Go release, bumped by hand
+
+- **The problem:** images were built from `golang:1.26-alpine` and the tarball by CI's `setup-go` with `1.26.x`. When Go
+  1.26.11 came out, the image had it the same day, while `setup-go`'s list of releases still stopped at 1.26.10, so a pull
+  request's images and binaries were built with different Go, and the SBOM check refused them, as it's meant to (decision
+  on releases in `docs/releasing.md`). Nothing in the pull request had changed.
+- **Chosen, by the user: one exact release everywhere,** `1.26.10` for now: the three Containerfiles, CI's `setup-go`, and
+  the test images and tools. A new Go release becomes a deliberate change, made once `setup-go` lists it, in all of them at
+  once, and tested like any other.
+- **Accepted:** a Go patch release, which can carry security fixes, isn't used until someone bumps it. Check for one at
+  each release.
+- **Rejected: following the newest automatically,** which is what broke, as the two sources update at different times.
