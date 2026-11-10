@@ -1,0 +1,20 @@
+# Loads the nvme-tcp module at every boot of each worker node, which the CSI driver's node plugin needs to connect to nvweaver.
+# Some nodes load it already; others, such as a single-node cluster on arm64, don't. See csi/README.md. Applying it reboots the
+# pool's nodes, one at a time.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 99-worker-nvme-tcp
+spec:
+  config:
+    ignition:
+      version: 3.4.0
+    storage:
+      files:
+        - path: /etc/modules-load.d/nvme-tcp.conf
+          mode: 0644
+          overwrite: true
+          contents:
+            source: data:,nvme_tcp%0A

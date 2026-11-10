@@ -52,7 +52,10 @@ itself; with the manifests, see [Installing](#installing). Those older lines don
 
 ### On every node
 
-- **The kernel's `nvme-tcp` module,** loaded at boot. The node plugin's image brings `nvme-cli` and the filesystem tools.
+- **The kernel's `nvme-tcp` module,** loaded at boot. The node plugin's image brings `nvme-cli` and the filesystem tools. On
+  OpenShift, some nodes load it already and some don't: if `lsmod` on a node doesn't show `nvme_tcp`, apply
+  [`99-master-nvme-tcp.yaml`](deploy/openshift/99-master-nvme-tcp.yaml) or its worker twin, for the pool your nodes are in.
+  It reboots the pool's nodes, one at a time; a single-node cluster is its master pool, and goes down while it reboots.
 - **A network route to nvweaver's port**, and to its API from wherever the controller runs.
 - **A unique NVMe host NQN in `/etc/nvme/hostnqn`.** This matters: see the next section.
 

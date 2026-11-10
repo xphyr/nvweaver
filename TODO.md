@@ -24,7 +24,8 @@ the third outside review's findings. In this order now:
 5. **iSCSI as a second protocol,** then every feature that works on NVMe checked on iSCSI too: the API, the CLI, the web
    interface, the CSI driver, snapshots, clones, CBT and consistency groups. See "Later" for what the probe found
 
-Smaller, to fit in: a test that a new version reads the previous release's state; the driver refusing to run when two nodes
+Smaller, to fit in: the CSI driver on Arm, on a single-node OpenShift 5.0 cluster on arm64 that the user has added, and then
+native Arm VMs there for the end-to-end suites (see "Testing without hardware"); a test that a new version reads the previous release's state; the driver refusing to run when two nodes
 share a host NQN; a guest writing while it live-migrates; publishing the Helm chart.
 
 ## 1. Build and release
@@ -329,6 +330,12 @@ To decide later: these matter if tests should match enterprise array behaviour c
 - [ ] Other initiators than Linux, such as VMware and Windows
 
 ## Testing without hardware
+
+- [ ] The CSI driver on Arm: install it with the Helm chart on the user's single-node OpenShift 5.0 cluster on arm64, with a
+      class of its own, and run the same checks as on `nvw`, CBT and a KubeVirt VM included. `nvme-tcp` needs loading at boot
+      there, by a MachineConfig, which reboots the node
+- [ ] Native Arm VMs on that cluster, on its DHCP VLAN, to run `e2e.sh` and `vm-e2e.sh` with nvweaver as the target on both
+      backends, rather than emulated on x86 (`LAB_ARCH=aarch64`), which is too slow to run often
 
 No physical NVMe hardware is available right now, so development continues on emulation: loopback on one machine, QEMU VMs
 with emulated NVMe, SATA and virtio disks, a k3s lab, a Raspberry Pi CM4 over a real network, and a dedicated test server, a VM with four
