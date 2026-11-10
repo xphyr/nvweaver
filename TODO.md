@@ -342,9 +342,8 @@ To decide later: these matter if tests should match enterprise array behaviour c
       class of its own. 25 of 25 checks, CBT included, once decision 53 fixed ReadOnlyMany on SELinux nodes. See "The CSI driver
       on Arm" in `docs/testing.md`
 - [ ] A KubeVirt VM on that cluster, on the nvweaver class
-- [ ] `nvw`'s class names no pool, so adopting a second pool on nvweaver-1 stopped it making volumes (found 2026-11-10, after
-      the scale pool was adopted the day before; the scale pool was forgotten again). Recreate the class with `pool: csi`, which
-      means deleting it, as its parameters can't change; it's KubeVirt's default
+- [x] `nvw`'s class names no pool, so adopting a second pool on nvweaver-1 stopped it making volumes (found 2026-11-10).
+      Recreated with `pool: csi`, through Helm
 - [ ] The k3s lab doesn't relabel volumes for SELinux, which is how decision 53's bug got past it: run k3s with SELinux
       (`--selinux`) so the lab sees what OpenShift does
 - [ ] Native Arm VMs on that cluster, on its DHCP VLAN, to run `e2e.sh` and `vm-e2e.sh` with nvweaver as the target on both
