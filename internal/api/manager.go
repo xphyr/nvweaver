@@ -345,18 +345,25 @@ func controllerNamespaces(ctrl string) ([]string, error) {
 // partitions are the same store. skipNQN and skipNSID name the namespace being
 // updated, if any, and skipVolume the volume being mapped, whose own entry and
 // mappings don't count.
+//
+// Mapping a volume compares it only with namespaces exported by path. Volumes
+// and snapshots are each a device or file their pool made for them alone, so
+// one can't reach another, and a namespace of a volume is that volume's own
+// device. Looking each of those up made every publish cost a few syscalls per
+// volume, which at 5,000 LVM volumes was most of its time: see decision 49.
 func checkUnshared(s *target.State, path, skipNQN string, skipNSID uint32, skipVolume string) error {
 	want, err := newStore(path)
 	if err != nil {
 		return err
 	}
+	mapping := skipVolume != ""
 	for _, vol := range s.Volumes {
-		if vol.Name != skipVolume && want.same(vol.DevicePath) {
+		if !mapping && want.same(vol.DevicePath) {
 			return target.NewConflict("%s belongs to volume %s: map the volume instead", path, vol.Name)
 		}
 	}
 	for _, snap := range s.Snapshots {
-		if want.same(snap.DevicePath) {
+		if !mapping && want.same(snap.DevicePath) {
 			return target.NewConflict("%s belongs to snapshot %s: clone it to a volume instead", path, snap.Name)
 		}
 	}
@@ -371,7 +378,7 @@ func checkUnshared(s *target.State, path, skipNQN string, skipNSID uint32, skipV
 			}
 		}
 		for _, ns := range sub.Namespaces {
-			if sub.NQN == skipNQN && ns.NSID == skipNSID || skipVolume != "" && ns.Volume == skipVolume {
+			if sub.NQN == skipNQN && ns.NSID == skipNSID || mapping && ns.Volume != "" {
 				continue
 			}
 			if want.same(ns.DevicePath) {

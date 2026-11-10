@@ -95,11 +95,18 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		return &csi.NodeStageVolumeResponse{}, nil // A block volume is bound to its target when published.
 	}
 	staging := req.GetStagingTargetPath()
-	if src, ok, err := n.mountedAt(staging); err != nil {
+	// Several nodes mount a ReadOnlyMany filesystem at once. Mounted read-write, each would write its journal and
+	// superblock, and corrupt it, even with every pod read-only.
+	readOnly := req.GetVolumeCapability().GetAccessMode().GetMode() == csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY
+	if m, ok, err := n.mountAt(staging); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	} else if ok {
-		if src != dev {
-			return nil, status.Errorf(codes.AlreadyExists, "%s has %s mounted, not %s", staging, src, dev)
+		if m.src != dev {
+			return nil, status.Errorf(codes.AlreadyExists, "%s has %s mounted, not %s", staging, m.src, dev)
+		}
+		if readOnly && !m.ro {
+			return nil, status.Errorf(codes.FailedPrecondition, "%s is mounted read-write at %s, and a ReadOnlyMany volume must be read-only on every node",
+				dev, staging)
 		}
 		return &csi.NodeStageVolumeResponse{}, nil
 	}
@@ -126,7 +133,13 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	args := []string{"-t", fsType}
-	if flags := mnt.GetMountFlags(); len(flags) > 0 {
+	flags := mnt.GetMountFlags()
+	if readOnly {
+		// Formatting above still happens on the first node to find the device empty. Two nodes doing so at the
+		// same moment is a race this leaves: see decision 48.
+		flags = append(slices.DeleteFunc(slices.Clone(flags), func(f string) bool { return f == "rw" || f == "ro" }), "ro")
+	}
+	if len(flags) > 0 {
 		args = append(args, "-o", strings.Join(flags, ","))
 	}
 	if _, err := n.run(ctx, "mount", append(args, dev, staging)...); err != nil {
@@ -331,6 +344,10 @@ func (n *Node) connect(ctx context.Context, pc map[string]string) error {
 	if nqn == "" || addr == "" || svc == "" {
 		return status.Error(codes.InvalidArgument, "the publish context has no subsystem to connect to")
 	}
+	if !routable(addr) {
+		return status.Errorf(codes.FailedPrecondition, "the publish context's address is %q, and connecting there reaches this node itself: "+
+			"the port needs an address the nodes can route to", addr)
+	}
 	if transport == "" {
 		transport = "tcp"
 	}
@@ -485,8 +502,12 @@ func (n *Node) unmount(ctx context.Context, path string) error {
 	return nil
 }
 
-// mount is one line of mountinfo: where, and what's there, as a device for a device or a bind mount of one.
-type mount struct{ point, src string }
+// mount is one line of mountinfo: where, and what's there, as a device for a device or a bind mount of one, and
+// whether that mount is read-only.
+type mount struct {
+	point, src string
+	ro         bool
+}
 
 func (n *Node) mounts() ([]mount, error) {
 	b, err := os.ReadFile(n.mountinfo)
@@ -504,6 +525,9 @@ func (n *Node) mounts() ([]mount, error) {
 			continue
 		}
 		m := mount{point: unescapeMount(f[4])}
+		if len(f) > 5 {
+			m.ro = slices.Contains(strings.Split(f[5], ","), "ro")
+		}
 		if g := strings.Fields(post); len(g) >= 2 {
 			m.src = unescapeMount(g[1])
 			if g[0] == "devtmpfs" {
@@ -518,18 +542,24 @@ func (n *Node) mounts() ([]mount, error) {
 // mountedAt reports whether something is mounted at path, and what: the device,
 // or for a bind mount of a device, the device it was bound from. The last mount at a path is the one in use.
 func (n *Node) mountedAt(path string) (string, bool, error) {
+	m, ok, err := n.mountAt(path)
+	return m.src, ok, err
+}
+
+// mountAt is mountedAt, with the whole mount.
+func (n *Node) mountAt(path string) (mount, bool, error) {
 	ms, err := n.mounts()
 	if err != nil {
-		return "", false, err
+		return mount{}, false, err
 	}
 	clean := filepath.Clean(path)
-	found, src := false, ""
+	found, last := false, mount{}
 	for _, m := range ms {
 		if m.point == clean {
-			found, src = true, m.src
+			found, last = true, m
 		}
 	}
-	return src, found, nil
+	return last, found, nil
 }
 
 // usedElsewhere lists where a device is mounted, other than at the paths given.

@@ -259,6 +259,10 @@ func (c *Controller) ControllerPublishVolume(ctx context.Context, req *csi.Contr
 	if err != nil {
 		return nil, apiError(err, fmt.Sprintf("port %d", port))
 	}
+	if !routable(p.Address) {
+		return nil, status.Errorf(codes.FailedPrecondition, "port %d listens on %q, which no node can connect to: "+
+			"give the class a port with an address the nodes can route to", port, p.Address)
+	}
 	if err := c.ensureHost(ctx, node); err != nil {
 		return nil, err
 	}
@@ -281,7 +285,15 @@ func (c *Controller) ControllerPublishVolume(ctx context.Context, req *csi.Contr
 }
 
 func (c *Controller) ensureHost(ctx context.Context, node string) error {
-	_, err := c.api.CreateHost(ctx, client.HostCreate{NQN: node})
+	// Read first: a create that finds it there already still waits for nvweaver's lock, and every publish would make one.
+	_, err := c.api.GetHost(ctx, node)
+	if err == nil {
+		return nil
+	}
+	if !client.IsNotFound(err) {
+		return apiError(err, "host "+node)
+	}
+	_, err = c.api.CreateHost(ctx, client.HostCreate{NQN: node})
 	if err == nil || client.IsConflict(err) {
 		return nil
 	}
@@ -290,14 +302,19 @@ func (c *Controller) ensureHost(ctx context.Context, node string) error {
 
 // ensureSubsystem makes sure the subsystem exists, lets the node in, and is offered on the port.
 func (c *Controller) ensureSubsystem(ctx context.Context, sub, node string, port int) error {
-	_, err := c.api.CreateSubsystem(ctx, client.SubsystemCreate{NQN: sub, AllowedHosts: []string{node}, Ports: []int{port}})
-	if err == nil {
-		return nil
-	}
-	if !client.IsConflict(err) {
-		return apiError(err, "subsystem "+sub)
-	}
+	// Read first, as for hosts: a node's subsystem is made once, for its first volume.
 	s, err := c.api.GetSubsystem(ctx, sub)
+	if client.IsNotFound(err) {
+		_, err = c.api.CreateSubsystem(ctx, client.SubsystemCreate{NQN: sub, AllowedHosts: []string{node}, Ports: []int{port}})
+		if err == nil {
+			return nil
+		}
+		if !client.IsConflict(err) {
+			return apiError(err, "subsystem "+sub)
+		}
+		// Made since the read, by another publish: check it as if it had been there.
+		s, err = c.api.GetSubsystem(ctx, sub)
+	}
 	if err != nil {
 		return apiError(err, "subsystem "+sub)
 	}

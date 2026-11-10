@@ -16,6 +16,9 @@ and ran and live-migrated a KubeVirt VM. It hasn't been tested at scale or on Ar
 - **Shared volumes** (ReadWriteMany, ReadOnlyMany) get a subsystem of their own, which each node using it is allowed into.
   ReadWriteMany is for **raw block volumes only**: a filesystem written from two nodes would be corrupted. Whatever shares a raw
   device must use direct I/O, as each node's page cache keeps what it read first.
+  A ReadOnlyMany filesystem is mounted read-only on every node.
+- **A StorageClass's `port` needs an address the nodes can route to.** A port listening on `0.0.0.0` or `::` is refused, as
+  nodes told to connect there would reach themselves.
 - **Nodes wait out an outage.** If nvweaver stops, I/O pauses until it's back, rather than failing. Nodes keep reconnecting for
   ever by default, as there's one target and no failover.
 

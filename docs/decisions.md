@@ -576,3 +576,38 @@ there, not as absolute numbers.
   over HTTP is possible with the standard library, but more to get right than a first version needs. In `TODO.md`.
 - **Not yet:** connections, which on SPDK cost an RPC per subsystem (decision 43), reconcile timings, and the CSI driver's
   own metrics beyond its sidecars'.
+
+## 48. The CSI driver stages ReadOnlyMany read-only, and never hands a node a wildcard address
+
+- **The problem, found by the third outside review:** a ReadOnlyMany filesystem was staged read-write on every node that used
+  it, and only each pod's bind mount was read-only. Several nodes with the same ext4 or XFS mounted read-write corrupt it,
+  through their journals and superblocks, even when no pod writes. Separately, a port listening on `0.0.0.0` or `::` put
+  that address in the publish context, and a node told to connect there reached itself: the volume never appeared, and
+  the failure looked like a missing device.
+- **Chosen: ReadOnlyMany filesystems are staged with `ro`,** which replaces any `rw` or `ro` from the StorageClass. An
+  empty device is still formatted first, by the first node to stage it, so a new volume can be used. A node that finds
+  the staging path already mounted keeps that mount only if it's read-only; a read-write mount there is
+  `FailedPrecondition`. Raw block volumes and ReadWriteOnce are unchanged.
+- **Left: two nodes formatting a blank ReadOnlyMany volume at once.** Both can see an empty device and both run `mkfs`. A
+  ReadOnlyMany volume is normally filled from a snapshot or a clone, which is never blank, so this needs a pod scheduled on
+  two nodes at the same moment for a volume that has nothing to read anyway.
+- **Also left: journal replay.** Mounting ext4 or XFS read-only still replays a dirty journal, which writes. The driver's
+  own volumes are unmounted cleanly; one that wasn't would need `noload` or `norecovery`, which show an inconsistent
+  filesystem, so the driver doesn't add them.
+- **Chosen: a port whose address is empty, `0.0.0.0` or `::` is refused when publishing,** with `FailedPrecondition`
+  naming the port, before any host, subsystem or namespace is made. The node checks again before connecting, for a
+  publish context made before this. The target may still listen on a wildcard, for clients that connect to a real address
+  themselves; such a port just can't be a StorageClass's `port`.
+
+## 49. Mapping a volume compares it only with what was exported by path
+
+- **The problem, found at scale:** with 5,000 LVM volumes, exporting one took about 0.2 s of the API's lock, so the CSI
+  driver published only 3 to 5 volumes a second. `checkUnshared` resolved and looked up every volume, snapshot and
+  namespace on each export: a symlink walk, a `stat` and two sysfs lookups apiece, 300,000 syscalls in 10 seconds. On
+  sparse files, where the earlier scale work measured, each is one cheap `stat`, so it hadn't shown.
+- **Chosen:** when the path being exported is a volume's, compare it only with namespaces exported by path (a device or
+  a file, which an admin named) and with passthrough controllers' namespaces. Each volume and snapshot is a device or file
+  its pool made for it alone, by an internal name, and a namespace of a volume is that volume's own path; none can reach
+  another. Exporting by path still compares with everything, by what it reaches, as before.
+- **Kept:** a volume's file hard-linked, or its device's disk or partition, exported by path, is still a conflict, in
+  either order.

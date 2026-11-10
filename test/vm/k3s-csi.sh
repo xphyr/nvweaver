@@ -226,6 +226,25 @@ EOF
 	expect_eq "with the snapshot's data" hello-from-agent1 "$(k logs c1 2>&1)"
 	gone c1
 
+	echo "== a filesystem shared read-only by two nodes"
+	# Both nodes mount it at once, so each must mount it read-only, or their journals corrupt it: decision 48. A read-only
+	# filesystem shows as ro in the pod even though the pod didn't ask, which a read-write staging mount wouldn't.
+	pvc ro 128Mi ReadOnlyMany Filesystem "  dataSource: {name: snap, kind: VolumeSnapshot, apiGroup: snapshot.storage.k8s.io}"
+	# No double quotes in it: pod puts it in a double-quoted YAML string.
+	local n said check="cat /data/f; grep ' /data ' /proc/mounts | cut -d' ' -f4 | cut -d, -f1; touch /data/x 2>/dev/null && echo wrote || echo refused; sleep 300"
+	pod ro1 ro agent1 "$check"
+	pod ro2 ro agent2 "$check"
+	for n in ro1 ro2; do
+		said=
+		for _ in $(seq 1 90); do
+			said=$(k logs $n 2>/dev/null | tr '\n' ' ')
+			case $said in *refused* | *wrote*) break ;; esac
+			sleep 2
+		done
+		expect_eq "$n reads the snapshot's data, on a read-only mount, and can't write" "hello-from-agent1 ro refused " "$said"
+	done
+	gone ro1 ro2
+
 	echo "== a raw block volume shared by two nodes"
 	pvc shared 32Mi ReadWriteMany Block
 	# Direct I/O, as anything sharing a raw device must use: each node's page cache would otherwise keep what it read first,
@@ -298,7 +317,7 @@ EOF
 
 	echo "== taking everything away"
 	k delete volumesnapshot snap --wait=true --timeout=120s >/dev/null
-	k delete pvc fs clone shared out --wait=true --timeout=120s >/dev/null
+	k delete pvc fs clone ro shared out --wait=true --timeout=120s >/dev/null
 	local left=
 	for _ in $(seq 1 60); do
 		api GET /v1/volumes >/dev/null

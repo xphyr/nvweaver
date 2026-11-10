@@ -9,21 +9,16 @@ here first. Each step points at its items further down.
 
 ## Next
 
-Agreed with the user on 2026-11-09, in this order:
+Agreed with the user on 2026-11-09. Done since: bringing this list up to date, hardening the CSI driver with scoped API tokens,
+OpenShift, monitoring, and v0.4.0, which released the driver. In this order now:
 
-1. **Bring this list up to date.** Done in the same change as this section.
-2. **Harden the CSI driver, before OpenShift:** run it on SPDK; settle the node's controller-loss timeout, and test nvweaver
-   restarting and a node rebooting with volumes mounted; report `MaxVolumesPerNode`; add `ListVolumes` and `ListSnapshots`,
-   then pass `csi-sanity`; and scoped API tokens, so that a cluster's driver can only touch its own names. See phase 7 and
-   "Security"
-3. **OpenShift,** on the user's three-node virtual cluster, with nvweaver on a dedicated test server's disks, over a real network:
-   RHCOS, SCCs, MachineConfig, and KubeVirt live migration. See phase 7
-4. **Scale:** measure the target's connection limits, then the driver at production-like volume and node counts. See phases 5 and 7
-5. **Monitoring:** a Prometheus endpoint and OpenTelemetry metrics, so that usage can be watched and alerts set up in a third-party
-   tool. See "Monitoring"
-6. **Release v0.4.0 with the driver:** its image for amd64 and arm64, with notices, `k3s-csi.sh` before each release, and a test
-   that a new version reads the previous release's state. See phases 1 and 7
-7. **Changed block tracking,** starting with its correctness test. See phase 7
+1. **Scale:** measure the target's connection limits, then the driver at production-like volume and node counts. See phases 5 and 7
+2. **An outside review,** by Cursor, of everything new since the last: the CSI driver, scoped tokens, metrics, the Helm chart and
+   the release changes. Its findings come before new work, as the last two reviews' did
+3. **Changed block tracking,** starting with its correctness test. See phase 7
+
+Smaller, to fit in: a test that a new version reads the previous release's state; the driver refusing to run when two nodes
+share a host NQN; a guest writing while it live-migrates; publishing the Helm chart.
 
 ## 1. Build and release
 
@@ -147,8 +142,17 @@ Production-like scale is a requirement, so measure this before building on it.
 - [x] Replace the full reconcile and single lock. The whole-state save stays, as it no longer limits scale: see decision 29
 - [ ] Add pagination to list endpoints: subsystems, hosts and ports still come as one list
 - [ ] Add server-side search to the volume and snapshot lists. The web interface's filter only sees what's loaded so far, and its picker for adding a volume reads every volume, which won't do at 5,000
-- [ ] Measure target limits with many connections: each connection opens roughly one TCP
-      connection per CPU, so per-volume subsystems add up quickly
+- [x] Measure target limits with many connections: 1,000 controllers with 4 I/O queues each, about 5,000 TCP connections, to one
+      kernel target, cost about 2 MB each with the initiator on the same machine, and the target's connect stayed about 9 ms.
+      See "Many connections to one target" in `docs/testing.md`. From many machines, and on SPDK, not yet
+- [x] The CSI driver's controller at 5,000 LVM volumes on 100 simulated nodes, against a real nvweaver: `csi/test/scale`. Found
+      two slow paths, both fixed: exporting a volume looked up every other volume (decision 49), and every publish made two
+      creates that changed nothing. See "The CSI driver at scale" in `docs/testing.md`
+- [ ] Each change rewrites the whole state with an fsync: about 50 ms at 5,000 volumes, so the API makes 15 to 20 changes a
+      second at that size. Decision 29 kept it, and it's now the floor for publishing, unpublishing and node changes
+- [ ] On LVM, every create, snapshot and delete waits for the volume group's lock, and each `lvcreate` takes about 0.4 s of
+      it at 5,000 LVs: building 5,000 volumes takes 18 minutes, at 2.5 a second by the end. That's LVM's, but document it, and
+      see whether `lvcreate` can skip anything nvweaver doesn't need
 
 ## 6. Web UI
 
@@ -212,7 +216,8 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [x] Scope names per cluster, so that several clusters can share one target: `--cluster`, decision 45
   - [ ] Detect nodes sharing a `hostnqn`, common on cloned images, which breaks access
         control
-  - [ ] Limit queue counts per connection, based on the phase 5 measurements
+  - [ ] Limit queue counts per connection, based on the phase 5 measurements. Probably not needed: 1,000 controllers of 5 queues
+        each cost about 2 MB apiece, and a node has one per subsystem it uses
   - [x] Run `k3s-csi.sh` against the SPDK target: all 25 passed
   - [x] Survive outages: nodes retry for ever by default (`--ctrl-loss-tmo=-1`), decision 45. Tested with nvweaver stopped for
         90 s, and a node rebooting, with a pod writing
@@ -225,10 +230,12 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [x] A Helm chart, as another way to install: `csi/deploy/helm/nvweaver-csi`, linted and rendered by `make lint`, tested on OpenShift
   - [ ] Publish the chart with releases, such as to an OCI registry, and test it in the k3s lab too
   - [ ] DH-HMAC-CHAP for nodes: a key per node, from a Secret, set on its host
-  - [ ] Delete a node's subsystem and host when the node leaves the cluster. They stay while the driver runs, for its next volume
+  - [ ] Delete a node's subsystem and host when the node leaves the cluster. They stay while the driver runs, for its next volume.
+        A scoped token can delete the subsystem but not the host, as hosts have no owner and only an admin may delete one
   - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver
   - [x] `ListVolumes` and `ListSnapshots`, which `csi-sanity` and some backup tools use
-  - [ ] Test at production-like volume and node counts
+  - [ ] Test at production-like volume and node counts. The controller passed at 5,000 volumes on 100 simulated nodes, against
+        a real nvweaver (phase 5). Still to do: real nodes connecting at that count, and the sidecars' own limits
   - [ ] Document that there is a single target, with no failover
   - [ ] Document what can never change once volumes exist: `--cluster`, the NQN prefix and the driver's name, as changing them
         orphans every volume. Test upgrading the driver with volumes in use
