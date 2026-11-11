@@ -124,9 +124,10 @@ await visit(page, "#/snapshots");
 await page.waitForSelector("main tbody tr");
 check("snapshots come from both pools", (await page.locator("main tbody tr").count()) === 5);
 const member = page.locator("main tbody tr", { hasText: "db-1" });
-check("a group's snapshot shows its group, and has no Delete of its own, as it goes with the group",
+check("a group's snapshot shows its group, and offers only to delete the group, as it goes with it",
   (await member.textContent()).includes("vol-0003") && (await member.locator("td").nth(5).textContent()) === "db" &&
-  (await member.locator("button", { hasText: "Delete" }).count()) === 0 && (await member.locator("button", { hasText: "Clone" }).count()) === 1,
+  (await member.locator("button", { hasText: /^Delete$/ }).count()) === 0 && (await member.locator("button", { hasText: "Delete group" }).count()) === 1 &&
+  (await member.locator("button", { hasText: "Clone" }).count()) === 1,
   await member.textContent());
 
 console.log("\nOne volume");
@@ -424,6 +425,14 @@ await ed.waitForSelector("dialog[open]");
 await submit();
 await closed();
 check("a snapshot can be deleted", (await api("/v1/snapshots/ui-snap")).status === 404);
+await ed.locator("tr", { hasText: "db-1" }).locator("button", { hasText: "Delete group" }).click();
+await ed.waitForSelector("dialog[open]");
+check("deleting a group's snapshot deletes its group, and says which snapshots go",
+  /db-1, db-2/.test(await ed.textContent("dialog[open]")), await ed.textContent("dialog[open]"));
+await submit();
+await closed();
+check("and they're gone", (await api("/v1/snapshot-groups/db")).status === 404 &&
+  (await api("/v1/snapshots/db-1")).status === 404 && (await api("/v1/snapshots/db-2")).status === 404);
 await visit(ed, "#/volume/ui-clone");
 await ed.waitForSelector("#delete-volume");
 await ed.click("#delete-volume");

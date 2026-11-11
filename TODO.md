@@ -16,12 +16,13 @@ scale (5,000 volumes on 100 nodes, and 1,000 connections), and the third outside
    do: the manifests, and checking whether Velero or Kasten use it yet
 2. **Cleaning up after a node leaves:** done. Hosts have owners and labels, the controller labels each node's host with its
    cluster and node, and forgets a node whose CSINode has gone once nothing is exported to it. The web interface shows hosts'
-   cluster, node and owner, and the overview lists problems. Decision 54. Still to do: give `nvw`'s existing hosts to its token
-3. **Consistency groups:** built on 2026-11-10, decision 56: snapshot groups in the API, CLI and web interface, which pause
-   hosts with ANA on both targets, and the CSI driver's VolumeGroupSnapshot, which refuses a group that would pause a node
-   without native multipath. Tested on both targets and pool types, and in the k3s lab on 1.37 and 1.31. A KubeVirt
-   VM snapshot with its guest agent's freeze passed on `nvw` on 2026-11-11. Still to do: deleting groups in the web
-   interface, as group snapshots passed on `snoarm`, OpenShift 5.0 on Arm, on 2026-11-11. `nvw`'s 4.22 has them only as Tech Preview
+   cluster, node and owner, and the overview lists problems. Decision 54. `nvw`'s and `snoarm`'s hosts, made before hosts had
+   owners, were given to their tokens on 2026-11-11, and their drivers labelled them
+3. **Consistency groups:** done, decision 56. Snapshot groups in the API, CLI and web interface, which pause hosts with ANA
+   on both targets, and the CSI driver's VolumeGroupSnapshot, which refuses a group that would pause a node without native
+   multipath. Tested on both targets and pool types, in the k3s lab on 1.37 and 1.31, and on `snoarm`, OpenShift 5.0 on Arm,
+   on 2026-11-11. A KubeVirt VM snapshot with its guest agent's freeze passed on `nvw`, whose OpenShift 4.22 has group
+   snapshots only as Tech Preview
 4. **The CSI driver's gaps against arrays' drivers,** agreed on 2026-11-10, fitted in around 3: topology and capacity
    reporting, volume health, and SELinux mount labelling. See phase 7
 5. **SPDK first, with a Synology as a supported platform,** agreed on 2026-11-11. What nvweaver has that TrueNAS and the
@@ -332,12 +333,12 @@ are in `CLAUDE.review.md`, which isn't in the repository.
 Agreed with the user on 2026-11-11: step 5 of "Next". Nothing here changes the API: both backends already share it, and its
 tests.
 
-- [ ] Probe the user's Synology, by hand and in a container, before deciding anything: DSM's kernel and CPU (many models are
-      Arm), whether it has `nvmet-tcp` (expected not), whether reflink works on its btrfs volumes, and what Container
-      Manager allows: host networking, devices, capabilities, memory locking. Record it in `docs/testing.md`
-- [ ] Find the least privilege SPDK runs with, with a reflink pool and no LVM: ideally no `--privileged`, no `--pid=host`
-      and no `/dev`. Today's images assume them, for the kernel target and LVM. What it can drop decides how "SPDK first" is
-      packaged
+- [x] Probe a Synology's DSM, on a Virtual DSM the user made for it, on 2026-11-11: DSM 7.4.1 on Linux 4.4, with no
+      `nvmet` or `dm_thin_pool`, so SPDK and reflink only; reflink works on its btrfs volumes; Container Manager's Docker
+      is 24.0.2. See "A Synology's DSM, for SPDK first" in `docs/testing.md`
+- [x] The least privilege SPDK runs with: none. The SPDK Quadlet's settings worked unchanged on DSM, with a host connecting,
+      snapshots, clones and a snapshot group: host networking, every capability dropped, `no-new-privileges`, no devices
+- [ ] The same on a real Synology, and an Arm model if the user has one
 - [ ] Make SPDK and reflink the defaults where nothing says otherwise, and say so in the README, keeping the kernel target,
       LVM and the systemd unit as documented options. A decision in `docs/decisions.md`
 - [ ] A Compose file for Container Manager's Projects, the user's choice on 2026-11-11 over a Helm chart, as DSM runs Docker,

@@ -845,6 +845,36 @@ paused. Nothing was left afterwards.
   a group that wasn't there. It now checks nvweaver's `snapshot_groups` capability, and refuses, saying to upgrade.
 - nvweaver-1 was upgraded to `v0.4.0-19-g9c406a7` for this, which restarted it; `nvw`'s volumes and driver carried on, with
   no failed calls.
+- **Hosts made before hosts had owners** were then given to `nvw`'s and `snoarm`'s tokens, the exact four from their CSINodes.
+  The janitors labelled three at once, and the fourth, `nvw`'s master-1, at their next check, five minutes later: its node
+  plugin was restarting with the driver's upgrade, so the first check didn't find it, which is the miss the janitor allows
+  for. `nvw`'s driver was upgraded to an image of `main` at `9c406a7` for its janitor, without group snapshots; the
+  StorageClass, and so its StorageProfile, were kept.
+
+### A Synology's DSM, for SPDK first
+
+A first, read-only probe on 2026-11-11, as an ordinary user, of a Virtual DSM: DSM 7.4.1 in Synology's Virtual Machine
+Manager, which runs DSM's own kernel. A real Synology's model may differ, Arm ones especially.
+
+- **Linux 4.4.302, with no `nvme_core`, `nvmet` or `nvmet-tcp` at all,** which arrived in Linux 5.0. So on DSM, the kernel
+  target is out, and SPDK is the only way to serve NVMe/TCP. DSM's own iSCSI target, LIO, is loaded.
+- **No `dm_thin_pool`,** so no LVM thin pools: reflink pools only.
+- **Reflink works** on its btrfs volumes, `cp --reflink=always` in a home directory.
+- Container Manager's Docker is 24.0.2, and its socket is root's only. AppArmor, not SELinux. `aio-max-nr` is 65536, and a
+  user's memory-lock limit 64 KiB, which matters if SPDK locks memory in a container.
+
+**Then nvweaver itself, in Container Manager's Docker, with no privileges,** as the SPDK Quadlet already runs it: host
+networking, every capability dropped, `no-new-privileges`, and its data in a folder on a btrfs volume. No `--privileged`,
+no devices, no `--pid=host`. The image is 102 MB.
+- It started, and SPDK 26.09 served, in 2 seconds, without hugepages, in interrupt mode, on DSM's kernel 4.4.
+- A reflink pool on the btrfs volume, a 1 GiB volume, a snapshot and a clone of it, and an export on the routed
+  network, all worked.
+- A host on another machine, the lab's initiator VM, connected over NVMe/TCP, and wrote 64 MiB that read back the
+  same, and was the same in the volume's file on btrfs. The snapshot taken before held only zeros.
+- A snapshot group of two volumes, taken while the host wrote: hosts paused 57 ms, and all 2,726 of its writes in
+  20 s succeeded.
+- Not tried yet: a real Synology rather than a Virtual DSM, an Arm model, the storage network, TLS and tokens, a
+  restart, and running it as a Container Manager Project rather than `docker run`.
 
 ### Snapshot groups
 
@@ -875,7 +905,8 @@ Unit tests cover:
 - the driver refusing a group that would pause a node that can't be paused, while a node using none of the volumes
   doesn't matter, and each node's Lease.
 
-The browser test checks a group's snapshot showing its group, with no Delete of its own: 248 passed.
+The browser test checks a group's snapshot showing its group, offering only to delete the group, and the dialog naming every
+snapshot that goes with it, then the group gone: 250 passed, on 2026-11-11.
 
 **Through Kubernetes, `k3s-csi.sh groups`,** on fresh labs on k3s 1.37.2 and 1.31.14, 14 checks each, none failed:
 - every node's Lease said it could be paused;
