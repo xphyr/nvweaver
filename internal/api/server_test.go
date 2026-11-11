@@ -55,6 +55,9 @@ type fakePools struct {
 	blocks    storage.Blocks
 	blocksErr error
 	asked     []string
+	reading   func() // runs while Allocated or Changed reads the storage
+	// snapshotting runs as each snapshot is taken, and its error fails it.
+	snapshotting func(source string) error
 }
 
 func (f *fakePools) driver(p *target.Pool) (storage.Driver, error) {
@@ -68,12 +71,18 @@ type fakeDriver struct{ *fakePools }
 
 func (d fakeDriver) Check() error { return d.checkErr }
 func (d fakeDriver) Allocated(internal string) (storage.Blocks, error) {
+	if d.reading != nil {
+		d.reading()
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.asked = []string{internal}
 	return d.blocks, d.blocksErr
 }
 func (d fakeDriver) Changed(base, internal string) (storage.Blocks, error) {
+	if d.reading != nil {
+		d.reading()
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.asked = []string{base, internal}
@@ -156,6 +165,11 @@ func (d fakeDriver) copy(source, internal string, size int64) (string, error) {
 	return fakeDriver{d.fakePools}.Create(internal, size)
 }
 func (d fakeDriver) Snapshot(source, internal string) (string, error) {
+	if d.snapshotting != nil {
+		if err := d.snapshotting(source); err != nil {
+			return "", err
+		}
+	}
 	return d.copy(source, internal, 0)
 }
 func (d fakeDriver) Clone(source, internal string, size int64) (string, error) {

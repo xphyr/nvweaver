@@ -26,6 +26,8 @@ type Manager struct {
 	mu sync.Mutex // Held for each change, so one is applied at a time.
 	// state is replaced whole, and never modified once it's here, so reads don't wait for a change.
 	state atomic.Pointer[target.State]
+	// lvs are the names each LVM pool has, read now and then, for snapshots' state: see lvnames.go.
+	lvs lvNames
 	// waiting counts the changes queued for mu.
 	waiting atomic.Int32
 	busyMu  sync.Mutex
@@ -135,6 +137,16 @@ func (m *Manager) mutate(fn func(*target.State) error) error {
 // the target is moved back, so a request either happens completely or not at all. fn runs with the lock
 // held, so it must be quick. Work that's already been done uses this directly, so as not to be refused.
 func (m *Manager) commit(fn func(*target.State) error) error {
+	return m.commitAnd(fn, true)
+}
+
+// apply is commit for a change that isn't saved, as nothing in it would be: pausing and resuming namespaces. That keeps
+// a save, which takes tens of ms at thousands of volumes, out of the time hosts are paused. See decision 56.
+func (m *Manager) apply(fn func(*target.State) error) error {
+	return m.commitAnd(fn, false)
+}
+
+func (m *Manager) commitAnd(fn func(*target.State) error, save bool) error {
 	m.waiting.Add(1)
 	m.mu.Lock()
 	m.waiting.Add(-1)
@@ -152,7 +164,10 @@ func (m *Manager) commit(fn func(*target.State) error) error {
 	}
 	err := m.backend.Reconcile(state, next)
 	if err == nil {
-		if err = m.save(next); err == nil {
+		if save {
+			err = m.save(next)
+		}
+		if err == nil {
 			m.state.Store(next)
 			m.noteExportsChanged()
 			return nil

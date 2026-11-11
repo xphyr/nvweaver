@@ -182,3 +182,35 @@ func TestAScopedTokenCantChangeTheService(t *testing.T) {
 	e.as(e.lab, "GET", "/v1/subsystems/"+sub, nil, http.StatusOK)
 	e.as(e.lab, "GET", "/v1/system", nil, http.StatusOK)
 }
+
+// A host a scoped token makes is its own: it may label and delete it, as the CSI driver does for nodes that have left, but
+// not set its keys, nor touch another's. An admin may give a host to a token. Decision 54.
+func TestHostsAreOwned(t *testing.T) {
+	e := newScopedEnv(t)
+	const mine, theirs, old = "nqn.2026-11.net.example:mine", "nqn.2026-11.net.example:theirs", "nqn.2026-11.net.example:old"
+	h := e.as(e.lab, "POST", "/v1/hosts", obj{"nqn": mine, "labels": obj{"csi-cluster": "lab"}}, http.StatusCreated)
+	if h["owner"] != "lab" || h["labels"].(map[string]any)["csi-cluster"] != "lab" {
+		t.Errorf("made by lab: %v", h)
+	}
+	e.as(e.lab, "POST", "/v1/hosts", obj{"nqn": "nqn.2026-11.net.example:x", "owner": "other"}, http.StatusForbidden)
+	e.as(e.other, "POST", "/v1/hosts", obj{"nqn": theirs}, http.StatusCreated)
+	e.as(e.admin, "POST", "/v1/hosts", obj{"nqn": old}, http.StatusCreated)
+
+	h = e.as(e.lab, "PATCH", "/v1/hosts/"+mine, obj{"labels": obj{"csi-cluster": "lab", "csi-node": "worker-1"}}, http.StatusOK)
+	if h["labels"].(map[string]any)["csi-node"] != "worker-1" {
+		t.Errorf("relabelled: %v", h)
+	}
+	e.as(e.lab, "PATCH", "/v1/hosts/"+mine, obj{"dhchap_key": "k"}, http.StatusForbidden)
+	e.as(e.lab, "PATCH", "/v1/hosts/"+mine, obj{"owner": "other"}, http.StatusForbidden)
+	e.as(e.lab, "PATCH", "/v1/hosts/"+theirs, obj{"labels": obj{}}, http.StatusForbidden)
+	e.as(e.lab, "DELETE", "/v1/hosts/"+theirs, nil, http.StatusForbidden)
+	e.as(e.lab, "PATCH", "/v1/hosts/"+old, obj{"labels": obj{}}, http.StatusForbidden) // made before owners, by an admin
+
+	// An admin gives the old one to lab, which may then delete it.
+	if h = e.as(e.admin, "PATCH", "/v1/hosts/"+old, obj{"owner": "lab"}, http.StatusOK); h["owner"] != "lab" {
+		t.Errorf("given to lab: %v", h)
+	}
+	e.as(e.lab, "DELETE", "/v1/hosts/"+old, nil, http.StatusNoContent)
+	e.as(e.lab, "DELETE", "/v1/hosts/"+mine, nil, http.StatusNoContent)
+	e.as(e.other, "DELETE", "/v1/hosts/"+theirs, nil, http.StatusNoContent)
+}

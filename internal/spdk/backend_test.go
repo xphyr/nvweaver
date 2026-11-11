@@ -30,6 +30,9 @@ type fake struct {
 	// listed counts nvmf_get_subsystems calls, and listedAll those not naming a subsystem.
 	listed, listedAll int
 	listedBdevs       int
+	// anaReporting is the subsystems made with it, and ana each listener's state for the pause group, by NQN and address.
+	anaReporting map[string]bool
+	ana          map[string]string
 }
 
 func btoi(b bool) int {
@@ -45,6 +48,9 @@ func newFake() *fake {
 		bdevs: map[string]bool{},
 		keys:  map[string]bool{},
 		fail:  map[string]error{},
+
+		anaReporting: map[string]bool{},
+		ana:          map[string]string{},
 	}
 }
 
@@ -66,6 +72,9 @@ func (f *fake) Call(method string, params, result any) error {
 		Listen        liveListener `json:"listen_address"`
 		Key           string       `json:"dhchap_key"`
 		CtrlKey       string       `json:"dhchap_ctrlr_key"`
+		ANAReporting  bool         `json:"ana_reporting"`
+		ANAState      string       `json:"ana_state"`
+		ANAGroup      uint32       `json:"anagrpid"`
 		Namespace     liveNamespace
 		RawNamespaces json.RawMessage `json:"namespace"`
 	}
@@ -136,6 +145,25 @@ func (f *fake) Call(method string, params, result any) error {
 		delete(f.bdevs, p.Name)
 	case "nvmf_create_subsystem":
 		f.subs[p.NQN] = &liveSubsystem{NQN: p.NQN, AllowAnyHost: p.AllowAny}
+		f.anaReporting[p.NQN] = p.ANAReporting
+	case "nvmf_subsystem_listener_set_ana_state":
+		// SPDK 26.09 knows only these, and refuses "change".
+		if !slices.Contains([]string{"optimized", "non_optimized", "inaccessible"}, p.ANAState) || !f.anaReporting[p.NQN] {
+			return &RPCError{Code: invalidParams, Message: "Invalid parameters"}
+		}
+		if !slices.ContainsFunc(sub.Listeners, func(l liveListener) bool { return l.address() == p.Listen.address() }) {
+			return &RPCError{Code: invalidParams, Message: "Unable to find listener."}
+		}
+		f.ana[p.NQN+" "+p.Listen.address()] = p.ANAState
+	case "nvmf_subsystem_set_ns_ana_group":
+		if !f.anaReporting[p.NQN] {
+			return &RPCError{Code: invalidParams, Message: "ANA reporting is off"}
+		}
+		for i := range sub.Namespaces {
+			if sub.Namespaces[i].NSID == p.NSID {
+				sub.Namespaces[i].ANAGroup = p.ANAGroup
+			}
+		}
 	case "nvmf_delete_subsystem":
 		delete(f.subs, p.NQN)
 	case "nvmf_subsystem_allow_any_host":
@@ -831,5 +859,61 @@ func TestABdevCheckThatFailsIsAnError(t *testing.T) {
 	delete(f.fail, "bdev_get_bdevs")
 	if err := b.Reconcile(cur, next); err != nil {
 		t.Errorf("with the check working again: %v", err)
+	}
+}
+
+// A snapshot group's pause: the pause group made inaccessible on the subsystem's listeners before the namespace moves
+// in, and the reverse after. Namespaces start in group 1, not SPDK's default of a group per NSID. Decision 56.
+func TestPausingANamespaceWithANA(t *testing.T) {
+	b, f := newBackend()
+	st := state()
+	st.Subsystems[subA].Namespaces[2] = &target.Namespace{NSID: 2, DevicePath: "/dev/y", UUID: "EEEE-FF", NGUID: "11-22", Enabled: true}
+	if err := b.Reconcile(target.NewState(), st); err != nil {
+		t.Fatal(err)
+	}
+	if !f.anaReporting[subA] {
+		t.Fatal("the subsystem was made without ANA reporting, so it can't be paused")
+	}
+	groups := func() map[uint32]uint32 {
+		out := map[uint32]uint32{}
+		for _, ns := range f.subs[subA].Namespaces {
+			out[ns.NSID] = ns.ANAGroup
+		}
+		return out
+	}
+	if g := groups(); g[1] != 1 || g[2] != 1 {
+		t.Fatalf("namespaces start in groups %v", g)
+	}
+
+	paused := st.Clone()
+	paused.Subsystems[subA].Namespaces[2].Paused = true
+	f.calls = nil
+	if err := b.Reconcile(st, paused); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"nvmf_subsystem_listener_set_ana_state", "nvmf_subsystem_set_ns_ana_group"}; !slices.Equal(f.calls, want) {
+		t.Errorf("pausing called %v, want %v: the group must be inaccessible before anything moves in", f.calls, want)
+	}
+	if g := groups(); g[1] != 1 || g[2] != target.PauseANAGroup {
+		t.Errorf("paused, groups are %v", g)
+	}
+	if got := f.ana[subA+" 127.0.0.1:4420"]; got != "inaccessible" {
+		t.Errorf("the pause group is %q", got)
+	}
+
+	f.calls = nil
+	if err := b.Reconcile(paused, st); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"nvmf_subsystem_set_ns_ana_group", "nvmf_subsystem_listener_set_ana_state"}; !slices.Equal(f.calls, want) {
+		t.Errorf("resuming called %v, want %v", f.calls, want)
+	}
+	if g := groups(); g[2] != 1 || f.ana[subA+" 127.0.0.1:4420"] != "optimized" {
+		t.Errorf("resumed, groups are %v and the pause group %q", g, f.ana[subA+" 127.0.0.1:4420"])
+	}
+	// Nothing more to do.
+	f.calls = nil
+	if err := b.Reconcile(st, st.Clone()); err != nil || len(f.calls) != 0 {
+		t.Errorf("a repeat called %v, %v", f.calls, err)
 	}
 }

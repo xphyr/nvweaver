@@ -29,6 +29,8 @@ type State struct {
 	Pools      map[string]*Pool      `json:"pools,omitempty"`
 	Volumes    map[string]*Volume    `json:"volumes,omitempty"`
 	Snapshots  map[string]*Snapshot  `json:"snapshots,omitempty"`
+	// SnapshotGroups are snapshots of several volumes as of one instant. See decision 56.
+	SnapshotGroups map[string]*SnapshotGroup `json:"snapshot_groups,omitempty"`
 }
 
 // InternalPrefix starts the name of everything this service creates in a pool, which is how it
@@ -79,7 +81,25 @@ type Snapshot struct {
 	SizeBytes    int64  `json:"size_bytes"`
 	Owner        string `json:"owner,omitempty"`
 	CreatedAt    string `json:"created_at"`
+	// Group is the snapshot group it was taken in, which it's deleted with.
+	Group string `json:"group,omitempty"`
 }
+
+// SnapshotGroup is snapshots of several volumes, consistent with each other, as hosts' I/O to them was paused while
+// they were taken. See decision 56.
+type SnapshotGroup struct {
+	Name string `json:"name"`
+	// Volumes are as they were asked for, and Snapshots are theirs, in the same order.
+	Volumes   []string `json:"volumes"`
+	Snapshots []string `json:"snapshots"`
+	PausedMS  int64    `json:"paused_ms"`
+	Owner     string   `json:"owner,omitempty"`
+	CreatedAt string   `json:"created_at"`
+}
+
+// PauseANAGroup is the ANA group that paused namespaces are moved into, whose state is inaccessible on every port, so that
+// hosts queue their I/O. Every other namespace is in group 1. See decision 56.
+const PauseANAGroup = 2
 
 // TransportTCP is NVMe/TCP, the only transport so far, and the default.
 const TransportTCP = "tcp"
@@ -100,6 +120,10 @@ type Host struct {
 	DHCHAPCtrlKey string `json:"dhchap_ctrl_key,omitempty"`
 	DHCHAPHash    string `json:"dhchap_hash,omitempty"`
 	DHCHAPDHGroup string `json:"dhchap_dhgroup,omitempty"`
+	// Labels, such as the cluster and node the CSI driver labels its hosts with.
+	Labels map[string]string `json:"labels,omitempty"`
+	// Owner is the scoped token that may change its labels and delete it, besides admins. See decision 54.
+	Owner string `json:"owner,omitempty"`
 }
 
 // Subsystem is an NVM subsystem: what hosts connect to. A subsystem either
@@ -130,6 +154,9 @@ type Namespace struct {
 	// Volume names the volume this namespace exports, whose path and identity are copied here,
 	// so that backends need only treat it as any other namespace.
 	Volume string `json:"volume,omitempty"`
+	// Paused stops hosts starting I/O to it, by ANA, while a snapshot group is taken. It's never saved, so a restart,
+	// which applies the whole state, ends any pause a crash left. See decision 56.
+	Paused bool `json:"-"`
 }
 
 // NewState returns an empty state.
@@ -141,6 +168,8 @@ func NewState() *State {
 		Pools:      map[string]*Pool{},
 		Volumes:    map[string]*Volume{},
 		Snapshots:  map[string]*Snapshot{},
+
+		SnapshotGroups: map[string]*SnapshotGroup{},
 	}
 }
 
@@ -164,6 +193,9 @@ func (s *State) Normalize() {
 	}
 	if s.Snapshots == nil {
 		s.Snapshots = map[string]*Snapshot{}
+	}
+	if s.SnapshotGroups == nil {
+		s.SnapshotGroups = map[string]*SnapshotGroup{}
 	}
 	for _, p := range s.Ports {
 		if p.Transport == "" {
@@ -193,6 +225,8 @@ func (s *State) Clone() *State {
 		Pools:      make(map[string]*Pool, len(s.Pools)),
 		Volumes:    make(map[string]*Volume, len(s.Volumes)),
 		Snapshots:  make(map[string]*Snapshot, len(s.Snapshots)),
+
+		SnapshotGroups: make(map[string]*SnapshotGroup, len(s.SnapshotGroups)),
 	}
 	for k, v := range s.Ports {
 		p := *v
@@ -204,6 +238,7 @@ func (s *State) Clone() *State {
 	}
 	for k, v := range s.Hosts {
 		h := *v
+		h.Labels = maps.Clone(v.Labels)
 		c.Hosts[k] = &h
 	}
 	for k, v := range s.Subsystems {
@@ -234,6 +269,12 @@ func (s *State) Clone() *State {
 	for k, v := range s.Snapshots {
 		snap := *v
 		c.Snapshots[k] = &snap
+	}
+	for k, v := range s.SnapshotGroups {
+		g := *v
+		g.Volumes = slices.Clone(v.Volumes)
+		g.Snapshots = slices.Clone(v.Snapshots)
+		c.SnapshotGroups[k] = &g
 	}
 	c.Normalize()
 	return c
@@ -346,6 +387,16 @@ func (s *State) Validate() error {
 	for _, snap := range s.Snapshots {
 		if s.Pools[snap.Pool] == nil {
 			return invalid("snapshot %s references unknown pool %s", snap.Name, snap.Pool)
+		}
+		if snap.Group != "" && s.SnapshotGroups[snap.Group] == nil {
+			return invalid("snapshot %s references unknown snapshot group %s", snap.Name, snap.Group)
+		}
+	}
+	for _, g := range s.SnapshotGroups {
+		for _, name := range g.Snapshots {
+			if snap := s.Snapshots[name]; snap == nil || snap.Group != g.Name {
+				return invalid("snapshot group %s references snapshot %s, which isn't in it", g.Name, name)
+			}
 		}
 	}
 	mappedTo := map[string]string{}

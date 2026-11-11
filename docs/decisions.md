@@ -689,3 +689,99 @@ there, not as absolute numbers.
   mounted, as with any read-only shared filesystem, such as NFS's `nfs_t`.
 - **Rejected for now: `seLinuxMount: true` on the CSIDriver,** which has kubelet mount with each pod's own label. It isn't in
   every Kubernetes the driver supports (decision 51), and is in `TODO.md` with the driver's other SELinux work.
+
+## 54. Hosts are owned and labelled, and the driver forgets nodes that have left
+
+- **The problem:** the driver keeps each node's subsystem and host for its next volume, so they stay after the node has left
+  the cluster, and a scoped token couldn't delete a host, as hosts had no owner (decision 46). And the user, browsing nvweaver,
+  couldn't tell which host was which node of which cluster: a host held only its NQN and keys.
+- **Chosen: hosts have an `owner` and `labels`,** as subsystems and volumes do. A host a scoped token creates is its own, and
+  it may change that host's labels and delete it; DH-HMAC-CHAP keys stay an admin's. An admin may set any host's owner, which
+  is how hosts made before this are given to a cluster.
+- **Chosen: the driver labels each node's host** with `csi-cluster` and `csi-node`, the Kubernetes node's name, which it finds
+  in the node's CSINode: its driver entry's node ID is the host NQN.
+- **Chosen: the controller forgets a node that has left,** checking every 5 minutes, or as `--node-cleanup-interval` says, 0
+  to stop it. A node of this cluster's, from its subsystem's name, whose host NQN is in no CSINode for two checks in a row,
+  and whose subsystem has nothing exported, loses its subsystem, then its host, if the driver owns it. A rebooting node keeps
+  its CSINode, so it's never touched; a node removed with volumes still exported in it is logged and left, as Kubernetes
+  unpublishes those, and the next check finds it empty.
+- **Kept safe:** a check that can't read CSINodes, or finds none of the driver's, does nothing, as an empty answer is more
+  likely a broken one than a cluster with no nodes. The driver reads CSINodes with the standard library, with its service
+  account's token, so there's no Kubernetes client to add (decision 40).
+
+## 55. Changed block tracking holds what it reads, and fails on what it doesn't understand
+
+From the fourth outside review. Decision 50's choice to over-report is unchanged. These are about an answer that is too small,
+which is worse: every incremental backup built on it is wrong, and nothing says so.
+
+- **The problem:** on LVM, the thin IDs were read before the metadata snapshot was reserved, and the API held neither snapshot
+  while the storage was read. Device-mapper reuses a deleted device's ID, so a snapshot deleted in between, with another
+  taking its ID, gave the other's mappings, and an empty answer looked like "nothing changed". The XML parser also skipped
+  any element it didn't know, so a new kind of difference would have been dropped quietly. And `thin_dump --dev-id` for a
+  device that isn't there prints an empty superblock and exits 0, which read as "nothing allocated".
+- **Chosen: the API holds the snapshots while reading,** with the shared reservation that `removeSnapshot`'s exclusive
+  one clashes with, so a delete meanwhile is a 503, which clients retry. It's released before the answer is written. Each page
+  is a separate request, so a delete between pages is allowed: the next page then finds no snapshot, a 404, not another's.
+  **Left open:** a snapshot deleted between pages and made again under the same name would be read as the new one. The CSI
+  driver's snapshot names are unique, so it can't happen there; an API client that reuses names could stitch two together.
+  A page token naming the internal name would close it, and is in `TODO.md`.
+- **Chosen: on LVM, each thin ID is read after the metadata snapshot is reserved.** LVs' names are random and never reused
+  (`NewInternalName`), so a name that's there after reserving was there when the metadata was frozen, with the same ID. A
+  second lookup before reserving, to compare, would add nothing.
+- **Chosen: the parser accepts only what 1.3.4 prints for nvweaver's flags.** One `<diff>` with `same`, `different`,
+  `left_only` and `right_only`, or one `<device>`, the one asked for, with `range_mapping` and `single_mapping`. Anything
+  else is an error that names the element. `<def>` and `<ref>`, for shared mappings, appear only without `--dev-id`, which
+  nvweaver always passes. That was checked on metadata with a shared subtree, made with `thin_restore`.
+
+## 56. Consistency groups pause hosts with ANA, then snapshot each member
+
+Several volumes snapshotted as of one instant, as arrays do for a database's data and log, or a VM's disks: CSI's
+VolumeGroupSnapshot. Storage-level, so both targets and both pool types get it.
+
+- **What consistent means here:** crash-consistent across the group. If any write captured in one member's snapshot was
+  issued after another write had completed, that earlier write is captured too, whichever volumes they're on. That holds if
+  no host can start a new I/O to any member from just before the first snapshot until just after the last. Writes in flight at
+  that moment needn't drain: nothing can depend on a write that hasn't completed, and a power cut tears those too.
+- **Chosen: pause at the NVMe target with ANA.** The members' namespaces move into a spare ANA group whose state is
+  `inaccessible` on every port their subsystems are on. Each member is then snapshotted by its pool, as one snapshot is now,
+  then moved back, and the group made optimized again. Hosts with native NVMe multipath queue their I/O meanwhile, and carry
+  on, with no errors. Both targets can move an enabled namespace between groups. `inaccessible`, not `change`, because SPDK
+  accepts only `optimized`, `non_optimized` and `inaccessible`, and because a host's ANATT timer applies only to `change`.
+  See "Pausing hosts' I/O for a consistency group" in `docs/testing.md`.
+- **Rejected: suspending the volumes' device-mapper devices,** under LVM. `lvcreate` of a suspended origin failed, LVM resumed
+  one device itself, and left the thin pool's transaction ID inconsistent. It would also have done nothing for reflink pools.
+- **Rejected: freezing a reflink pool's filesystem.** A reflink copy is a write, and would wait for the thaw.
+- **Required of hosts: native NVMe multipath,** which Linux has on by default (`nvme_core.multipath=Y`), and which RHCOS, Fedora,
+  Ubuntu and Debian keep. A host without it gets I/O errors for as long as the pause lasts. nvweaver can't see a host's
+  setting, so this is documented for the API.
+- **Chosen: the CSI driver refuses a group snapshot that would pause a node that can't be paused,** chosen by the user over only
+  warning. Each node plugin works out, per protocol, whether its node can be, and records the answer in a Lease of its own,
+  `nvweaver-node-<node>` in the driver's namespace, labelled `<driver>/pause-nvme`. The controller refuses a group whose
+  members are exported to a node that says no, or says nothing, and names the node and what it lacks. A node that uses
+  none of the group's volumes doesn't block it, nor does a host that's no longer a node. **Rejected: refusing if any node in
+  the cluster lacks it,** which would let one unrelated node stop every group snapshot.
+- **A Lease, not a label on the Node,** which was proposed first: labelling Nodes needs `patch` on every Node, which would let
+  a node plugin change any node's labels, taints and more. A Lease needs only a Role on Leases in the driver's namespace,
+  and the controller can already read those. **Rejected: CSI topology from NodeGetInfo,** which kubelet would turn into node
+  labels with no RBAC, as it would end up in volumes' node affinity once the driver reports topology (`TODO.md`).
+- **Shaped for iSCSI,** which comes later (`TODO.md`). Its equivalent of ANA is ALUA: LIO can move a LUN into a target port
+  group in the "transitioning" state. Linux handles that with `scsi_dh_alua`, which may requeue I/O without dm-multipath, so iSCSI
+  hosts may need nothing. That's unverified, and is for the iSCSI work to find out. So the pause is a step per protocol, ANA or
+  ALUA, around the same snapshots, and each node reports per protocol.
+- **Kept short:** about 70 ms per LVM member, and a few ms per reflink member, in the lab. A group has at most 64 members, and the
+  pause is undone, and the group fails, if it passes 10 seconds. A failure undoes everything: the pause, then any member
+  snapshot already made.
+- **Kept safe:** one group snapshot at a time per target. A pause is a flag on each namespace, `Paused`, which the backends
+  reconcile like anything else, so a change made by another request during a pause keeps it. It's never saved, so the
+  startup reconcile, which applies everything, puts every namespace back in group 1 and removes the pause group: a crash
+  mid-pause leaves hosts waiting only until nvweaver starts again. Pausing and resuming reconcile without saving the state,
+  which keeps a save, tens of ms at thousands of volumes, out of the pause. Group 2 is the pause group on both targets.
+  SPDK's subsystems are created with ANA reporting on, which moving namespaces needs, and every namespace is put in group 1:
+  SPDK's default is a group per NSID, which would put namespace 2 in the pause group. SPDK's configuration is rebuilt at
+  each start, so existing subsystems get both then.
+- **The API:** a snapshot group is an object of its own, `/v1/snapshot-groups`, with a name, an owner, the volumes, and the
+  snapshots it made. Each member is an ordinary snapshot, with a `group` field, which can be cloned, read and compared like any
+  other, but deleted only with its group. A member that isn't exported is just snapshotted, as nothing can write to it.
+- **The CSI driver:** CSI's GroupController service, CreateVolumeGroupSnapshot, DeleteVolumeGroupSnapshot and
+  GetVolumeGroupSnapshot. It's optional, like changed block tracking (decision 51): VolumeGroupSnapshot is beta from Kubernetes
+  1.32, and the driver still supports 1.31.

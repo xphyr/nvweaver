@@ -74,8 +74,14 @@ rules:
     resources: [volumesnapshotcontents/status]
     verbs: [update, patch]
   - apiGroups: [groupsnapshot.storage.k8s.io]
-    resources: [volumegroupsnapshotclasses, volumegroupsnapshotcontents]
+    resources: [volumegroupsnapshotclasses]
     verbs: [get, list, watch]
+  - apiGroups: [groupsnapshot.storage.k8s.io]
+    resources: [volumegroupsnapshotcontents]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [groupsnapshot.storage.k8s.io]
+    resources: [volumegroupsnapshotcontents/status]
+    verbs: [update, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -113,6 +119,32 @@ subjects:
 roleRef:
   kind: Role
   name: nvweaver-csi-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+# Each node plugin says, in a Lease named for its node, whether its node can be paused for a group snapshot, which the
+# controller reads. Only Leases, in this namespace: decision 56.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nvweaver-csi-node
+  namespace: nvweaver-csi
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nvweaver-csi-node
+  namespace: nvweaver-csi
+subjects:
+  - kind: ServiceAccount
+    name: nvweaver-csi-node
+    namespace: nvweaver-csi
+roleRef:
+  kind: Role
+  name: nvweaver-csi-node
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1
@@ -192,6 +224,9 @@ spec:
         - name: driver
           image: IMAGE
           args: [--mode=node, --endpoint=unix:///csi/csi.sock, --cluster=CLUSTER]
+          env:
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
           securityContext:
             privileged: true
           volumeMounts:

@@ -175,6 +175,13 @@ func (t *Target) Reconcile(prev, next *State) error {
 	if err := t.removeStale(prev, next); err != nil {
 		return err
 	}
+	// A pause's group goes on every port first, so that namespaces can move into it. See decision 56.
+	paused := PausedAny(next)
+	if paused {
+		if err := t.pauseOn(sortedKeys(next.Ports)); err != nil {
+			return err
+		}
+	}
 	for _, nqn := range sortedKeys(next.Hosts) {
 		if !reflect.DeepEqual(prev.Hosts[nqn], next.Hosts[nqn]) {
 			if err := t.applyHost(next.Hosts[nqn]); err != nil {
@@ -197,6 +204,12 @@ func (t *Target) Reconcile(prev, next *State) error {
 			if err := t.applyPort(next.Ports[id], next); err != nil {
 				return err
 			}
+		}
+	}
+	if !paused && (PausedAny(prev) || len(prev.Ports) == 0) {
+		// Ending a pause, or starting, which also ends one a crash left: the namespaces are back in group 1 by now.
+		if err := t.pauseOff(sortedKeys(next.Ports)); err != nil {
+			return err
 		}
 	}
 	for _, nqn := range sortedKeys(next.Subsystems) {
@@ -324,6 +337,10 @@ func (t *Target) removeStale(prev, next *State) error {
 	}
 	for _, id := range sortedKeys(prev.Ports) {
 		if next.Ports[id] == nil {
+			// The kernel won't remove a port with an ANA group of its own.
+			if err := t.rmdir(t.pauseGroupDir(id)); err != nil {
+				return err
+			}
 			if err := t.rmdir(t.portDir(id)); err != nil {
 				return err
 			}
@@ -452,7 +469,13 @@ func (t *Target) applyNamespace(nqn string, n *Namespace) error {
 		}
 	}
 	if n.Enabled && !running {
-		return t.write(enable, "1")
+		if err := t.write(enable, "1"); err != nil {
+			return err
+		}
+	}
+	// This one can change while it's enabled, which is how a pause moves it without hosts losing it: decision 56.
+	if p, grp := filepath.Join(dir, "ana_grpid"), strconv.Itoa(ANAGroup(n)); t.differs(p, grp, nil) {
+		return t.write(p, grp)
 	}
 	return nil
 }

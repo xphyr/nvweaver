@@ -6,6 +6,8 @@
 #   test     volumes through the driver: filesystem and block, data kept across pods and nodes,
 #            growing, snapshots and clones, a volume shared by two nodes, and nothing left after
 #   sanity   run csi-sanity, the CSI conformance suite, against the driver on agent1, as cluster "sanity"
+#   groups   group snapshots, VolumeGroupSnapshot: consistent across volumes a pod writes to, and refused for a node
+#            that can't be paused
 #   cbt      changed block tracking, from Kubernetes 1.33: swap the driver for the Helm chart with snapshotMetadata on,
 #            and check what a backup client is told through the external-snapshot-metadata sidecar. Run it after the others
 #   remove   take the driver, and everything it made, back out
@@ -37,6 +39,8 @@ NVW_IP=10.98.0.1
 API=https://$NVW_IP:8420
 CLUSTER=lab
 NS=nvweaver-csi
+CLEANUP=15s
+PREFIX=nqn.2026-11.io.github.xphyr.nvweaver:csi:$CLUSTER
 
 die() { echo "k3s-csi: $*" >&2; exit 1; }
 nvw() { "$LAB" ssh nvweaver "$@"; }
@@ -47,7 +51,10 @@ k() { "$LAB" kubectl "$@"; }
 manifest() {
 	local minor
 	minor=$(k version -o json 2>/dev/null | jq -r '.serverVersion.minor' | tr -dc 0-9)
-	local args=(-e "s#IMAGE#$CSI_IMAGE#g" -e "s#CLUSTER#$CLUSTER#g")
+	# The node janitor runs often, so that the test of a node leaving needn't wait five minutes.
+	# Group snapshots too, which the manifest leaves off.
+	local args=(-e "s#IMAGE#$CSI_IMAGE#g" -e "s#CLUSTER#$CLUSTER#g" -e "s#--mode=controller, #&--node-cleanup-interval=$CLEANUP, #"
+		-e "s#--mode=controller, #&--group-snapshots, #")
 	if [ -n "$minor" ] && [ "$minor" -lt 34 ]; then
 		args+=(-e "s#csi-provisioner:v[0-9.]*#csi-provisioner:$OLD_PROVISIONER#" -e "s#csi-resizer:v[0-9.]*#csi-resizer:$OLD_RESIZER#")
 	fi
@@ -113,6 +120,13 @@ EOF
 	for f in rbac-snapshot-controller setup-snapshot-controller; do
 		k apply -f "$SNAP_URL/deploy/kubernetes/snapshot-controller/$f.yaml" >/dev/null || die "cannot apply $f"
 	done
+	# Its release's manifest runs controller v8.6.0, which leaves group snapshots off, though the README says they're on: a
+	# VolumeGroupSnapshot then just sits there, with no status and no error.
+	if ! k -n kube-system get deployment snapshot-controller -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q CSIVolumeGroupSnapshot; then
+		k -n kube-system patch deployment snapshot-controller --type=json \
+			-p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--feature-gates=CSIVolumeGroupSnapshot=true"}]' >/dev/null ||
+			die "cannot turn group snapshots on in the snapshot controller"
+	fi
 
 	echo "The driver"
 	k create namespace $NS --dry-run=client -o yaml | k apply -f - >/dev/null
@@ -140,6 +154,7 @@ fails=0
 ok() { echo "ok    $1"; }
 bad() { echo "FAIL  $1"; [ -n "${2:-}" ] && echo "$2" | sed 's/^/      /'; fails=$((fails + 1)); }
 expect_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "want [$2], got [$3]"; fi; }
+expect_has() { case "$3" in *"$2"*) ok "$1" ;; *) bad "$1" "[$2] not in [$3]" ;; esac; }
 
 # pvc NAME SIZE MODE [VOLUMEMODE] [extra spec lines]
 pvc() {
@@ -340,9 +355,53 @@ EOF
 	expect_eq "with every earlier line still there" 1 "$(k exec o1 -- head -1 /data/log 2>/dev/null)"
 	gone o1
 
+	echo "== each node's host, labelled, and a node leaving the cluster"
+	local nqn1 nqn2 sub1 sub2
+	nqn1=$("$LAB" ssh agent1 'cat /etc/nvme/hostnqn')
+	nqn2=$("$LAB" ssh agent2 'cat /etc/nvme/hostnqn')
+	sub1=$PREFIX:node-$(printf %s "$nqn1" | sha256sum | cut -c1-16)
+	sub2=$PREFIX:node-$(printf %s "$nqn2" | sha256sum | cut -c1-16)
+	api GET "/v1/hosts/$nqn1" >/dev/null
+	expect_eq "agent1's host belongs to the cluster's token, and says which cluster and node it is" "lab lab agent1" \
+		"$(bodyq '[.owner, .labels["csi-cluster"], .labels["csi-node"]] | join(" ")')"
+	# It was away for longer than two of the janitor's checks while it rebooted, but it was still a node.
+	expect_eq "agent1 kept its subsystem through its reboot" 200 "$(api GET "/v1/subsystems/$sub1")"
+	expect_eq "agent2 has a subsystem" 200 "$(api GET "/v1/subsystems/$sub2")"
+	expect_eq "with nothing in it now" 0 "$(bodyq '.namespaces | length')"
+	# Drained first, as a node being removed is: stopping k3s leaves its containers running, so a controller or snapshot
+	# controller on it would keep its leader lease, unseen, and nothing would replace it. Then its kubelet stops, or it
+	# would register the node again at once.
+	k drain agent2 --ignore-daemonsets --delete-emptydir-data --force --timeout=180s >/dev/null 2>&1
+	"$LAB" ssh agent2 'sudo systemctl stop k3s' >/dev/null 2>&1
+	k delete node agent2 --wait=true --timeout=120s >/dev/null
+	local code=
+	for _ in $(seq 1 40); do
+		code=$(api GET "/v1/subsystems/$sub2")
+		[ "$code" = 404 ] && break
+		sleep 3
+	done
+	expect_eq "once agent2 has left the cluster, its subsystem goes" 404 "$code"
+	expect_eq "and its host" 404 "$(api GET "/v1/hosts/$nqn2")"
+	expect_eq "while agent1's stays" 200 "$(api GET "/v1/subsystems/$sub1")"
+	"$LAB" ssh agent2 'sudo systemctl start k3s' >/dev/null 2>&1
+	local back=
+	for _ in $(seq 1 60); do
+		back=$(k get node agent2 -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+		[ "$back" = True ] && break
+		sleep 3
+	done
+	expect_eq "agent2 joins again" True "$back"
+	k -n $NS rollout status daemonset/nvweaver-csi-node --timeout=300s >/dev/null 2>&1
+	pvc again 64Mi ReadWriteOnce
+	pod a1 again agent2 'echo back > /data/f && cat /data/f'
+	expect_eq "and a pod on it uses a new volume" Succeeded "$(finished a1)"
+	api GET "/v1/hosts/$nqn2" >/dev/null
+	expect_eq "with its host made again, as the cluster's" "lab lab" "$(bodyq '[.owner, .labels["csi-cluster"]] | join(" ")')"
+	gone a1
+
 	echo "== taking everything away"
 	k delete volumesnapshot snap --wait=true --timeout=120s >/dev/null
-	k delete pvc fs clone ro shared out --wait=true --timeout=120s >/dev/null
+	k delete pvc fs clone ro shared out again --wait=true --timeout=120s >/dev/null
 	local left=
 	for _ in $(seq 1 60); do
 		api GET /v1/volumes >/dev/null
@@ -436,6 +495,145 @@ YAML
 		sleep 2
 	done
 	return 1
+}
+
+# A pod writes a counter to two block volumes in turn, each write only once the one before has finished, so at any instant
+# the first holds the second's number or one more. A group snapshot of both, restored, must too. Decision 56.
+cmd_groups() {
+	echo "== group snapshots"
+	local n
+	for n in server agent1 agent2; do
+		expect_eq "$n's node plugin says it can be paused" true \
+			"$(k -n $NS get lease "nvweaver-node-$n" -o jsonpath='{.metadata.labels.nvweaver\.xphyr\.github\.io/pause-nvme}' 2>&1)"
+	done
+	k apply -f - >/dev/null <<EOF
+apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+kind: VolumeGroupSnapshotClass
+metadata: {name: nvweaver}
+driver: nvweaver.xphyr.github.io
+deletionPolicy: Delete
+EOF
+	local v
+	for v in ga gb; do
+		pvc $v 32Mi ReadWriteOnce Block
+		k label pvc $v app=cg >/dev/null
+	done
+	k apply -f - >/dev/null <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata: {name: cgw}
+spec:
+  nodeSelector: {kubernetes.io/hostname: agent1}
+  terminationGracePeriodSeconds: 1
+  containers:
+    - name: c
+      image: registry.k8s.io/e2e-test-images/busybox:1.36.1-1
+      command: [sh, -c, "i=0; while true; i=$((i+1)); do echo $i | dd of=/dev/xa bs=4096 count=1 conv=sync oflag=direct 2>/dev/null || echo fail-a $i; echo $i | dd of=/dev/xb bs=4096 count=1 conv=sync oflag=direct 2>/dev/null || echo fail-b $i; done"]
+      volumeDevices: [{name: a, devicePath: /dev/xa}, {name: b, devicePath: /dev/xb}]
+  volumes: [{name: a, persistentVolumeClaim: {claimName: ga}}, {name: b, persistentVolumeClaim: {claimName: gb}}]
+EOF
+	k wait --for=condition=Ready pod/cgw --timeout=180s >/dev/null 2>&1
+	expect_eq "a pod writes to both" Running "$(k get pod cgw -o jsonpath='{.status.phase}')"
+	sleep 3
+	k apply -f - >/dev/null <<EOF
+apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+kind: VolumeGroupSnapshot
+metadata: {name: cg}
+spec:
+  volumeGroupSnapshotClassName: nvweaver
+  source: {selector: {matchLabels: {app: cg}}}
+EOF
+	local ready=
+	for _ in $(seq 1 60); do
+		ready=$(k get volumegroupsnapshot cg -o jsonpath='{.status.readyToUse}' 2>/dev/null)
+		[ "$ready" = true ] && break
+		sleep 2
+	done
+	expect_eq "a group snapshot of both, while it writes" true "$ready"
+	sleep 2
+	expect_eq "the pod's writes all succeeded, paused or not" "" "$(k logs cgw 2>&1 | grep fail | head -3)"
+	k delete pod cgw --wait=true --timeout=60s >/dev/null 2>&1
+	# Each member snapshot, through its content's handle, which is nvweaver's snapshot, and its volume.
+	local snap content handle vol pv claim got=0
+	for snap in $(k get volumesnapshot -o jsonpath='{range .items[?(@.metadata.ownerReferences[0].name=="cg")]}{.metadata.name}{"\n"}{end}'); do
+		content=$(k get volumesnapshot "$snap" -o jsonpath='{.status.boundVolumeSnapshotContentName}')
+		handle=$(k get volumesnapshotcontent "$content" -o jsonpath='{.status.snapshotHandle}')
+		api GET "/v1/snapshots/$handle" >/dev/null
+		vol=$(bodyq .volume)
+		pv=${vol#"$CLUSTER"-}
+		claim=$(k get pv "$pv" -o jsonpath='{.spec.claimRef.name}')
+		pvc "r-$claim" 32Mi ReadWriteOnce Block "  dataSource: {name: $snap, kind: VolumeSnapshot, apiGroup: snapshot.storage.k8s.io}"
+		got=$((got + 1))
+	done
+	expect_eq "it has a snapshot of each" 2 "$got"
+	api GET /v1/snapshot-groups >/dev/null
+	expect_eq "one group in nvweaver, which paused hosts" "1 true" "$(bodyq '"\(.items | length) \(.items[0].paused_ms > 0)"')"
+	k apply -f - >/dev/null <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata: {name: cgr}
+spec:
+  nodeSelector: {kubernetes.io/hostname: agent2}
+  restartPolicy: Never
+  containers:
+    - name: c
+      image: registry.k8s.io/e2e-test-images/busybox:1.36.1-1
+      command: [sh, -c, "echo $(dd if=/dev/xa bs=4096 count=1 2>/dev/null | tr -d '\\000\\n') $(dd if=/dev/xb bs=4096 count=1 2>/dev/null | tr -d '\\000\\n')"]
+      volumeDevices: [{name: a, devicePath: /dev/xa}, {name: b, devicePath: /dev/xb}]
+  volumes: [{name: a, persistentVolumeClaim: {claimName: r-ga}}, {name: b, persistentVolumeClaim: {claimName: r-gb}}]
+EOF
+	expect_eq "a pod reads the restored volumes" Succeeded "$(finished cgr)"
+	local a b
+	read -r a b <<<"$(k logs cgr 2>&1)"
+	if [ "${b:-0}" -gt 0 ] && [ "${a:-0}" -ge "$b" ] && [ "${a:-0}" -le $((b + 1)) ]; then
+		ok "and they're consistent with each other ($a and $b)"
+	else
+		bad "and they're consistent with each other" "ga's holds [$a], gb's [$b]: want the same, or ga's one more"
+	fi
+	gone cgr
+	k delete pvc r-ga r-gb --wait=true --timeout=120s >/dev/null
+
+	# A node that can't be paused, as its Lease says, refuses a group of volumes it uses. The node plugin says so again
+	# within the hour, but the label is put back here.
+	pod cgp ga agent2 'sleep 300' block Always
+	k wait --for=condition=Ready pod/cgp --timeout=180s >/dev/null 2>&1
+	k -n $NS label lease nvweaver-node-agent2 nvweaver.xphyr.github.io/pause-nvme=false --overwrite >/dev/null
+	k apply -f - >/dev/null <<EOF
+apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+kind: VolumeGroupSnapshot
+metadata: {name: cg2}
+spec:
+  volumeGroupSnapshotClassName: nvweaver
+  source: {selector: {matchLabels: {app: cg}}}
+EOF
+	local said=
+	for _ in $(seq 1 60); do
+		said=$(k get volumegroupsnapshotcontent -o jsonpath='{range .items[*]}{.status.error.message}{"\n"}{end}' 2>/dev/null; k get events --field-selector involvedObject.name=cg2 -o jsonpath='{range .items[*]}{.message}{"\n"}{end}' 2>/dev/null)
+		case $said in *"can't be paused"*) break ;; esac
+		sleep 2
+	done
+	expect_has "a group on a node that can't be paused is refused, naming it" "node agent2, which can't be paused" "$said"
+	api GET /v1/snapshot-groups >/dev/null
+	expect_eq "and nvweaver wasn't asked" 1 "$(bodyq '.items | length')"
+	k -n $NS label lease nvweaver-node-agent2 nvweaver.xphyr.github.io/pause-nvme=true --overwrite >/dev/null
+	k delete volumegroupsnapshot cg2 --wait=true --timeout=120s >/dev/null 2>&1
+	gone cgp
+
+	k delete volumegroupsnapshot cg --wait=true --timeout=120s >/dev/null
+	k delete pvc ga gb --wait=true --timeout=120s >/dev/null
+	local left=
+	for _ in $(seq 1 30); do
+		api GET /v1/snapshot-groups >/dev/null
+		left=$(bodyq '.items | length')
+		[ "$left" = 0 ] && break
+		sleep 2
+	done
+	expect_eq "deleting the group snapshot deletes it in nvweaver" 0 "$left"
+	api GET /v1/snapshots >/dev/null
+	expect_eq "with its snapshots" 0 "$(bodyq '.items | length')"
+	k delete volumegroupsnapshotclass nvweaver >/dev/null
+	echo "$fails failed"
+	[ "$fails" = 0 ]
 }
 
 cmd_cbt() {
@@ -580,6 +778,7 @@ case "${1:-}" in
 deploy) cmd_deploy ;;
 test) cmd_test ;;
 sanity) cmd_sanity ;;
+groups) cmd_groups ;;
 cbt) cmd_cbt ;;
 remove) cmd_remove ;;
 *)

@@ -458,6 +458,85 @@ else
 	expect_eq "and the clone keeps its data" "$SUM" "$($ENGINE exec "$TGT" sh -c "dd if=$C3_FILE bs=1048576 count=16 2>/dev/null | md5sum | cut -d' ' -f1")"
 	api "delete that clone" 204 DELETE /v1/volumes/c3
 	expect_eq "their files are gone" 0 "$($ENGINE exec "$TGT" sh -c "ls $POOL_DIR | grep -c img")"
+
+	# Snapshot groups, decision 56. The host writes a counter to two volumes in turn, each write only once the one before
+	# has finished, so at any instant the first holds the second's number or one more. Snapshots consistent with each
+	# other must too. The negative control takes two snapshots a second apart, which shows that the check can fail.
+	api "two volumes, for a snapshot group" 201 POST /v1/volumes '{"name":"ga","size_bytes":16777216}'
+	GA_NGUID=$(ini "jq -r .nguid /tmp/body" | tr -d -)
+	api "and the second" 201 POST /v1/volumes '{"name":"gb","size_bytes":16777216}'
+	GB_NGUID=$(ini "jq -r .nguid /tmp/body" | tr -d -)
+	api "map them to node 1" 201 POST "/v1/subsystems/$N1/namespaces" '{"volume":"ga"}'
+	api "both" 201 POST "/v1/subsystems/$N1/namespaces" '{"volume":"gb"}'
+	out=$(connect "$H1" "$HID1" "$N1" $P1) && ok "node 1 connects to them" || bad "node 1 connects to them" "$out"
+	wait_dev "$N1" >/dev/null
+	# By NGUID, as device names needn't follow NSIDs.
+	dev_of() { ini "for b in /sys/block/nvme*n*; do case \$b in *c[0-9]*n*) continue ;; esac; [ \"\$(tr -d - < \$b/nguid 2>/dev/null)\" = $1 ] && echo /dev/\${b##*/}; done"; }
+	GA_DEV=$(dev_of "$GA_NGUID")
+	GB_DEV=$(dev_of "$GB_NGUID")
+	case "$GA_DEV $GB_DEV" in /dev/nvme*" "/dev/nvme*) ok "the host has both ($GA_DEV and $GB_DEV)" ;; *) bad "the host has both" "[$GA_DEV] and [$GB_DEV]" ;; esac
+	expect_eq "and uses native NVMe multipath, which a pause needs" Y "$(ini 'cat /sys/module/nvme_core/parameters/multipath')"
+	$ENGINE exec -i "$INI" sh -c 'cat > /tmp/cg-writer.sh' <<'WRITER'
+#!/bin/sh
+# cg-writer.sh A B: write 1, 2, 3... to A then B, each with O_DIRECT, until /tmp/cg.stop exists. 4 KiB, as a namespace's
+# blocks can be, which a direct write must be a multiple of.
+i=0
+errors=0
+rm -f /tmp/cg.stop
+while [ ! -e /tmp/cg.stop ]; do
+	i=$((i + 1))
+	printf '%d\n' $i | dd of="$1" bs=4096 count=1 conv=sync oflag=direct status=none 2>>/tmp/cg.err || errors=$((errors + 1))
+	printf '%d\n' $i | dd of="$2" bs=4096 count=1 conv=sync oflag=direct status=none 2>>/tmp/cg.err || errors=$((errors + 1))
+	echo "$i $errors" > /tmp/cg.progress
+done
+echo "$i $errors done" > /tmp/cg.progress
+WRITER
+	ini "rm -f /tmp/cg.err /tmp/cg.progress"
+	$ENGINE exec -d "$INI" sh /tmp/cg-writer.sh "$GA_DEV" "$GB_DEV"
+	sleep 2
+	# snapval NAME: the number at the start of a snapshot's file, on the target.
+	snapval() {
+		call GET "/v1/snapshots/$1" >/dev/null
+		$ENGINE exec "$TGT" sh -c "dd if=$(ini "jq -r .device_path /tmp/body") bs=4096 count=1 2>/dev/null | tr -d '\\000\\n'"
+	}
+	for n in 1 2 3 4 5; do
+		api "snapshot group $n, while the host writes to both" 201 POST /v1/snapshot-groups "{\"name\":\"cg$n\",\"volumes\":[\"ga\",\"gb\"]}"
+		paused=$(ini "jq -r .paused_ms /tmp/body")
+		a=$(snapval "cg$n-1")
+		b=$(snapval "cg$n-2")
+		if [ "${b:-0}" -gt 0 ] && [ "${a:-0}" -ge "$b" ] && [ "${a:-0}" -le $((b + 1)) ]; then
+			ok "its snapshots are consistent with each other ($a and $b; hosts paused $paused ms)"
+		else
+			bad "its snapshots are consistent with each other" "ga's holds [$a], gb's [$b]: want the same, or ga's one more"
+		fi
+		sleep 0.5
+	done
+	api "the negative control: a snapshot of ga" 201 POST /v1/snapshots '{"name":"apart-a","volume":"ga"}'
+	sleep 1
+	api "and of gb, a second later" 201 POST /v1/snapshots '{"name":"apart-b","volume":"gb"}'
+	a=$(snapval apart-a)
+	b=$(snapval apart-b)
+	if [ "${b:-0}" -gt "${a:-0}" ]; then ok "snapshots taken apart aren't consistent, so the check can fail ($a and $b)"; else bad "snapshots taken apart aren't consistent, so the check can fail" "ga's [$a], gb's [$b]: is the host writing?"; fi
+	ini "touch /tmp/cg.stop"
+	for _ in $(seq 1 20); do ini "grep -q done /tmp/cg.progress 2>/dev/null" && break; sleep 0.5; done
+	progress=$(ini "cat /tmp/cg.progress")
+	expect_eq "the host's writes all succeeded, paused or not" "0 done" "${progress#* }"
+	expect_eq "with no errors" "" "$(ini "sort -u /tmp/cg.err 2>/dev/null | head -3")"
+	api "a group's snapshot goes only with its group" 409 DELETE /v1/snapshots/cg1-1
+	api "the groups are listed" 200 GET /v1/snapshot-groups
+	expect_eq "five of them" 5 "$(ini "jq '.items | length' /tmp/body")"
+	for n in 1 2 3 4 5; do
+		api "delete snapshot group $n" 204 DELETE "/v1/snapshot-groups/cg$n"
+	done
+	api "and the control's" 204 DELETE /v1/snapshots/apart-a
+	api "both" 204 DELETE /v1/snapshots/apart-b
+	disconnect "$N1"
+	api "unmap ga" 204 DELETE "/v1/subsystems/$N1/namespaces/1"
+	api "unmap gb" 204 DELETE "/v1/subsystems/$N1/namespaces/2"
+	api "delete ga" 204 DELETE /v1/volumes/ga
+	api "delete gb" 204 DELETE /v1/volumes/gb
+	expect_eq "nothing is left in the pool" 0 "$($ENGINE exec "$TGT" sh -c "ls $POOL_DIR | grep -c img")"
+
 	api "remove node 1" 204 DELETE "/v1/subsystems/$N1"
 	api "remove node 2" 204 DELETE "/v1/subsystems/$N2"
 	api "forget the pool" 204 DELETE /v1/pools/p1

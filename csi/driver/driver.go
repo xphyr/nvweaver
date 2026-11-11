@@ -69,7 +69,9 @@ type Config struct {
 	MaxVolumesPerNode int64
 	// SnapshotMetadata serves changed block tracking, for the external-snapshot-metadata sidecar, which needs Kubernetes 1.33.
 	SnapshotMetadata bool
-	Log              *slog.Logger
+	// GroupSnapshots serves CSI's group snapshots, which need Kubernetes 1.32. See decision 56.
+	GroupSnapshots bool
+	Log            *slog.Logger
 }
 
 // MaxNamespaces is how many namespaces a subsystem can hold, on both targets: NVMET_MAX_NAMESPACES in the kernel's, and

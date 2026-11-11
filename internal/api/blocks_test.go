@@ -93,6 +93,31 @@ func TestSnapshotChanges(t *testing.T) {
 	e.do("GET", "/v1/snapshots/s2/changes?base=s1", nil, 500)
 }
 
+// A snapshot being read can't be deleted meanwhile: on LVM, its thin ID could then be another device's by the time the
+// tools read it, and a backup would be told the wrong changes. The delete is a 503, which clients retry.
+func TestSnapshotsBeingReadArentDeleted(t *testing.T) {
+	e := newEnv(t)
+	e.pool()
+	e.do("POST", "/v1/volumes", obj{"name": "v", "size_bytes": 1 << 20}, 201)
+	e.do("POST", "/v1/snapshots", obj{"name": "s1", "volume": "v"}, 201)
+	e.do("POST", "/v1/snapshots", obj{"name": "s2", "volume": "v"}, 201)
+	e.pools.blocks = storage.Blocks{BlockSize: 4096}
+	deleting := func(names ...string) func() {
+		return func() {
+			for _, n := range names {
+				e.do("DELETE", "/v1/snapshots/"+n, nil, 503)
+			}
+		}
+	}
+	e.pools.reading = deleting("s1", "s2")
+	e.do("GET", "/v1/snapshots/s2/changes?base=s1", nil, 200)
+	e.pools.reading = deleting("s1")
+	e.do("GET", "/v1/snapshots/s1/allocated", nil, 200)
+	// Held only while reading.
+	e.pools.reading = nil
+	e.do("DELETE", "/v1/snapshots/s1", nil, 204)
+}
+
 // Reading is open to scoped tokens, as all reads are: decision 46.
 func TestScopedTokensReadChanges(t *testing.T) {
 	e := newScopedEnv(t)

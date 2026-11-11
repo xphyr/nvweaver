@@ -26,6 +26,9 @@ controller:
   replicas: 1
   # The nvweaver port volumes are offered on, unless a StorageClass sets port.
   port: 1
+  # How often the controller labels each node's host in nvweaver with its cluster and node, and forgets nodes that have left
+  # the cluster, once nothing is exported to them. 0 stops it. Decision 54.
+  nodeCleanupInterval: 5m
   priorityClassName: system-cluster-critical
   resources: {}
   nodeSelector: {}
@@ -93,6 +96,13 @@ volumeSnapshotClass:
   create: true
   name: nvweaver
   deletionPolicy: Delete
+
+# Group snapshots: VolumeGroupSnapshot, several volumes snapshotted as of one instant, consistent with each other. Off unless
+# asked for. It needs Kubernetes 1.32 or later, with the group snapshot CRDs, v1beta2, and nodes using native NVMe multipath:
+# nvweaver pauses hosts' I/O to the volumes while it takes one, and refuses a group on a node that can't be paused. See
+# csi/README.md and decision 56.
+groupSnapshots:
+  enabled: false
 
 # Changed block tracking, for backups: the external-snapshot-metadata sidecar, which backup tools reach over TLS for what
 # changed between two snapshots. Off unless asked for. It needs Kubernetes 1.33 or later, and the SnapshotMetadataService

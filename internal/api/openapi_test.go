@@ -135,7 +135,7 @@ func TestSpecDescribesResponses(t *testing.T) {
 	}
 	const sub = "nqn.2026-11.net.example:s"
 	const host = "nqn.2026-11.net.example:h"
-	send("POST", "/v1/hosts", `{"nqn":"`+host+`","dhchap_key":"k","dhchap_ctrl_key":"c","dhchap_hash":"hmac(sha256)","dhchap_dhgroup":"null"}`, 201)
+	send("POST", "/v1/hosts", `{"nqn":"`+host+`","dhchap_key":"k","dhchap_ctrl_key":"c","dhchap_hash":"hmac(sha256)","dhchap_dhgroup":"null","labels":{"csi-node":"n1"},"owner":"lab"}`, 201)
 	send("POST", "/v1/ports", `{"id":1,"address":"127.0.0.1","inline_data_size":8192}`, 201)
 	send("POST", "/v1/subsystems", `{"nqn":"`+sub+`","allowed_hosts":["`+host+`"],"ports":[1],"owner":"lab"}`, 201)
 	send("POST", "/v1/subsystems/"+sub+"/namespaces", `{"file":{"name":"a","size_bytes":4096}}`, 201)
@@ -145,6 +145,9 @@ func TestSpecDescribesResponses(t *testing.T) {
 	send("POST", "/v1/subsystems/"+sub+"/namespaces", `{"nsid":2,"volume":"v"}`, 201)
 	send("POST", "/v1/snapshots", `{"name":"s","volume":"w","owner":"lab"}`, 201)
 	send("POST", "/v1/snapshots", `{"name":"t","volume":"w"}`, 201)
+	// v is exported, so its namespace is paused for this.
+	send("POST", "/v1/snapshot-groups", `{"name":"g","volumes":["v","w"],"owner":"lab"}`, 201)
+	send("POST", "/v1/snapshot-groups", `{"name":"h","volumes":["w"]}`, 201)
 
 	// A passthrough subsystem is the only way to get passthru_device, which needs a real
 	// controller to create, so it is allowed to be absent here.
@@ -169,7 +172,9 @@ func TestSpecDescribesResponses(t *testing.T) {
 		{"Pool", send("GET", "/v1/pools/p", "", 200)},
 		{"Volume", send("GET", "/v1/volumes/v", "", 200)},
 		{"VolumePage", send("GET", "/v1/volumes?limit=1", "", 200)},
-		{"Snapshot", send("GET", "/v1/snapshots/s", "", 200)},
+		{"Snapshot", send("GET", "/v1/snapshots/g-1", "", 200)},
+		{"SnapshotGroup", send("GET", "/v1/snapshot-groups/g", "", 200)},
+		{"SnapshotGroupPage", send("GET", "/v1/snapshot-groups?limit=1", "", 200)},
 		{"SnapshotPage", send("GET", "/v1/snapshots?limit=1", "", 200)},
 		{"Health", send("GET", "/healthz", "", 200)},
 		{"Error", send("GET", "/v1/ports/9", "", 404)},

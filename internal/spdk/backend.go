@@ -55,7 +55,7 @@ func (b *Backend) Name() string { return "spdk" }
 
 // Capabilities implements target.Backend.
 func (b *Backend) Capabilities() target.Capabilities {
-	return target.Capabilities{IdentifiesConnectedHosts: true, Transports: []string{target.TransportTCP}}
+	return target.Capabilities{IdentifiesConnectedHosts: true, SnapshotGroups: true, Transports: []string{target.TransportTCP}}
 }
 
 // aioPerNamespace is how much of fs.aio-max-nr each namespace uses, on each core.
@@ -157,6 +157,8 @@ type liveNamespace struct {
 	BdevName string `json:"bdev_name"`
 	NGUID    string `json:"nguid"`
 	UUID     string `json:"uuid"`
+	// ANAGroup is listed when the subsystem has ANA reporting on. 0 when it isn't listed.
+	ANAGroup uint32 `json:"anagrpid,omitempty"`
 }
 
 type liveSubsystem struct {
@@ -303,6 +305,9 @@ func (b *Backend) reconcileAll(next *target.State) error {
 	if err := b.applyListeners(next, next, live, bound); err != nil {
 		return err
 	}
+	if err := b.applyPauses(next, next, live); err != nil {
+		return err
+	}
 	if err := b.applyDiscovery(next, live[discoveryNQN], bound); err != nil {
 		return err
 	}
@@ -418,6 +423,9 @@ func (b *Backend) reconcileChanges(prev, next *target.State) error {
 		bound[addr] = true
 	}
 	if err := b.applyListeners(scope, next, live, bound); err != nil {
+		return err
+	}
+	if err := b.applyPauses(scope, next, live); err != nil {
 		return err
 	}
 	if !maps.Equal(attachedAddresses(prev), attachedAddresses(next)) {
@@ -711,6 +719,8 @@ func (b *Backend) applySubsystems(scope, all *target.State, live map[string]*liv
 				"model_number":   want.Model,
 				"allow_any_host": want.AllowAnyHost,
 				"max_namespaces": target.MaxNSID,
+				// Needed to move namespaces between ANA groups, which is how a snapshot group pauses hosts: decision 56.
+				"ana_reporting": true,
 			}, nil)
 			if err != nil {
 				return err
@@ -787,10 +797,67 @@ func (b *Backend) applyNamespaces(want *target.Subsystem, cur *liveSubsystem) er
 				"bdev_name": bdevName(want.NQN, nsid, ns.DevicePath),
 				"uuid":      ns.UUID,
 				"nguid":     normID(ns.NGUID),
+				// SPDK's default is a group per NSID, which would put namespace 2 in the pause group.
+				"anagrpid": 1,
 			},
 		}, nil)
 		if err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// applyPauses puts the namespaces of the subsystems in scope in the ANA group they belong in: the pause group, which is
+// made inaccessible on the subsystem's listeners first, or group 1. live may predate namespaces just added, which are in
+// group 1. SPDK pauses a namespace for a moment to move it. See decision 56.
+func (b *Backend) applyPauses(scope, all *target.State, live map[string]*liveSubsystem) error {
+	for _, nqn := range sortedKeys(scope.Subsystems) {
+		want := scope.Subsystems[nqn]
+		in := map[uint32]uint32{}
+		if cur := live[nqn]; cur != nil {
+			for _, ns := range cur.Namespaces {
+				in[ns.NSID] = ns.ANAGroup
+			}
+		}
+		group := func(nsid uint32) uint32 {
+			if g := in[nsid]; g != 0 {
+				return g
+			}
+			return 1
+		}
+		paused, wasPaused := false, false
+		for _, ns := range want.Namespaces {
+			paused = paused || ns.Enabled && ns.Paused
+			wasPaused = wasPaused || group(ns.NSID) == target.PauseANAGroup
+		}
+		setState := func(state string) error {
+			for _, id := range want.Ports {
+				if err := b.call("nvmf_subsystem_listener_set_ana_state", map[string]any{
+					"nqn": nqn, "listen_address": listenerOf(all.Ports[id]), "ana_state": state, "anagrpid": target.PauseANAGroup,
+				}, nil); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if paused {
+			if err := setState("inaccessible"); err != nil {
+				return err
+			}
+		}
+		for _, nsid := range sortedKeys(want.Namespaces) {
+			ns := want.Namespaces[nsid]
+			if g := uint32(target.ANAGroup(ns)); ns.Enabled && group(nsid) != g {
+				if err := b.call("nvmf_subsystem_set_ns_ana_group", map[string]any{"nqn": nqn, "nsid": nsid, "anagrpid": g}, nil); err != nil {
+					return err
+				}
+			}
+		}
+		if !paused && wasPaused {
+			if err := setState("optimized"); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

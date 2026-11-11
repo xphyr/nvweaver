@@ -14,12 +14,14 @@ the third outside review's findings. In this order now:
 
 1. **Changed block tracking:** done, for the storage, API, CLI and CSI driver, with the chart's sidecar. See phase 7. Still to
    do: the manifests, and checking whether Velero or Kasten use it yet
-2. **Cleaning up after a node leaves,** moved up by the user on 2026-11-10: hosts owned by the token that made them, as
-   subsystems are, so the driver may delete its own; and the controller deleting the subsystem and host of a node whose
-   CSINode is gone, once nothing is exported in it. The driver also labels each host with its cluster and Kubernetes node,
-   and the web interface shows them, as the user couldn't tell which host was which. See phase 7
-3. **Consistency groups:** CSI's VolumeGroupSnapshot, several volumes snapshotted at one instant, as arrays do for a database's
-   data and log volumes or a VM's disks. Storage-level, so both targets get it
+2. **Cleaning up after a node leaves:** done. Hosts have owners and labels, the controller labels each node's host with its
+   cluster and node, and forgets a node whose CSINode has gone once nothing is exported to it. The web interface shows hosts'
+   cluster, node and owner, and the overview lists problems. Decision 54. Still to do: give `nvw`'s existing hosts to its token
+3. **Consistency groups:** built on 2026-11-10, decision 56: snapshot groups in the API, CLI and web interface, which pause
+   hosts with ANA on both targets, and the CSI driver's VolumeGroupSnapshot, which refuses a group that would pause a node
+   without native multipath. Tested on both targets and pool types, and in the k3s lab on 1.37 and 1.31. Still
+   to do: the KubeVirt guest-agent freeze test on `nvw`, deleting groups in the web interface, and the CSI driver on
+   OpenShift and Arm
 4. **The CSI driver's gaps against arrays' drivers,** agreed on 2026-11-10, fitted in around 3: topology and capacity
    reporting, volume health, and SELinux mount labelling. See phase 7
 5. **iSCSI as a second protocol,** then every feature that works on NVMe checked on iSCSI too: the API, the CLI, the web
@@ -117,7 +119,8 @@ and CLI once, against the result.
 - [x] Add reflink file pools, on XFS or btrfs, which need no LVM. Ext4 doesn't support reflink
 - [x] Add the volume model: volumes own their identity, and map into subsystems
 - [x] Add snapshots and clones, on reflink. Checked as real files on XFS, including under load: see `docs/testing.md`
-- [ ] Leave room in the API for group snapshots, without building them yet
+- [x] Group snapshots: `/v1/snapshot-groups`, consistent across volumes, as hosts are paused with ANA while they're taken.
+      Decision 56
 - [x] Add `transport` to ports, accepting only `tcp` for now, and `capabilities.transports`, before the CLI and CSI driver are written against the API. See "Transports" in `docs/storage-api.md`
 - [ ] Later: creating pools from raw disks, behind an explicit confirmation
 
@@ -173,10 +176,11 @@ Production-like scale is a requirement, so measure this before building on it.
 
 Built ahead of what was left of phases 3 and 5, by choice, so that there was something to see.
 
-- [ ] **LVM snapshots show as `missing` when they're only inactive,** as their state comes from whether the device node exists,
-      and the driver's snapshots are kept inactive (activation-skip). Found by the user browsing nvweaver-1: every snapshot
-      showed as missing. Ask LVM, once per pool for a listing, and report inactive ones as there
-- [ ] Show active problems on the overview: warnings, and objects really missing once the above is fixed
+- [x] **LVM snapshots showed as `missing` when they were only inactive,** as their state came from whether the device node
+      existed, and the driver's snapshots are kept inactive (activation-skip). Found by the user browsing a lab server. LVM is
+      now asked, once per pool for a listing, at most every 30 seconds
+- [x] Show active problems on the overview: pool warnings, and volumes and snapshots that aren't online
+- [x] Hosts show the cluster, Kubernetes node and owner the CSI driver gave them, as the user couldn't tell which was which
 - [x] Read-only screens, embedded in the binary, tested in a real browser. See decision 37
 - [x] Sign in with a username and password, from a users file in bcrypt. See decision 40
 - [x] Try signing in over real TLS, in a browser. It has a real certificate that the browser is told to accept, as trusting a CA isn't what's being tested
@@ -227,6 +231,10 @@ are in `CLAUDE.review.md`, which isn't in the repository.
     - [x] Driver: optional, off unless asked for, and only from Kubernetes 1.33, the sidecar's minimum. The `SnapshotMetadata` service, the `external-snapshot-metadata` sidecar with its TLS and token audiences, and a
           `SnapshotMetadataService` object, by the Helm chart. Tested end to end in the k3s lab with the sidecar project's example
           client: `k3s-csi.sh cbt`
+    - [x] The fourth outside review: snapshots held while they're read, thin IDs read once the metadata is frozen, and thin tools'
+          output it doesn't understand, or for a device that isn't there, an error. Decision 55
+    - [ ] Pages of `/allocated` and `/changes` tied to the snapshot's internal name, so that one deleted between pages and made
+          again under the same name isn't stitched in. The driver's names are unique, so only API clients that reuse names see it
     - [ ] Changed block tracking with the manifests too, not only the Helm chart
     - [ ] Check whether Velero, Kasten or other backup tools use it yet, and try one
     - [ ] Test it on OpenShift, which needs `nvw` on 4.20 (Kubernetes 1.33) or later; it's on 4.22, so it can be tried now
@@ -256,8 +264,12 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [x] A Helm chart, as another way to install: `csi/deploy/helm/nvweaver-csi`, linted and rendered by `make lint`, tested on OpenShift
   - [ ] Publish the chart with releases, such as to an OCI registry, and test it in the k3s lab too
   - [ ] DH-HMAC-CHAP for nodes: a key per node, from a Secret, set on its host
-  - [ ] Delete a node's subsystem and host when the node leaves the cluster (step 2 of "Next"). They stay while the driver runs, for its next volume.
-        A scoped token can delete the subsystem but not the host, as hosts have no owner and only an admin may delete one
+  - [x] Delete a node's subsystem and host when the node leaves the cluster, once nothing is exported to it: the controller's
+        node janitor, every `--node-cleanup-interval`. Hosts have owners, so a scoped token may delete its own. Decision 54
+  - [x] Group snapshots, VolumeGroupSnapshot: optional (`--group-snapshots`, the chart's `groupSnapshots.enabled`), each node
+        saying in a Lease whether it can be paused, and the controller refusing a group that would pause one that can't.
+        Tested in the k3s lab: `k3s-csi.sh groups`. Decision 56
+  - [ ] Group snapshots on OpenShift, `nvw` and `snoarm`, and a KubeVirt VM's disks with its guest agent's freeze
   - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver, such as one with a storage network,
         and so the scheduler sees a pool that's full. Arrays' drivers all report capacity
   - [x] ReadOnlyMany filesystems on SELinux nodes: found on OpenShift, where pods using them never started, as a read-only
@@ -314,6 +326,9 @@ are in `CLAUDE.review.md`, which isn't in the repository.
       `transport` on ports. Pools, volumes and snapshots should carry over: see decision 33
   - [x] Probe whether it's really feasible, driving LIO and SPDK by hand in VMs: it is, on both. See "iSCSI: is it feasible?" in `docs/testing.md`
   - [ ] Decide how to handle a volume's identity differing between LIO and SPDK, which can't be made to match
+  - [ ] Pausing for snapshot groups with ALUA, LIO's equivalent of ANA: a LUN moved into a target port group in the
+        "transitioning" state. Find out what Linux hosts need for that: `scsi_dh_alua` may requeue I/O without dm-multipath.
+        Each node then reports for iSCSI too. Decision 56
   - [ ] Have `mapped_to` cover both protocols, so that a volume is only ever exported once: nothing below stops two
   - [ ] Try what the probe didn't: CHAP, multipath, growing on SPDK, a direct login by a stranger on SPDK, `spdk_tgt` in place of `iscsi_tgt`, Arm, and more power-cut rounds
   - [ ] Weigh the cost of four combinations of target and protocol in the test suite
@@ -342,9 +357,8 @@ To decide later: these matter if tests should match enterprise array behaviour c
       class of its own. 25 of 25 checks, CBT included, once decision 53 fixed ReadOnlyMany on SELinux nodes. See "The CSI driver
       on Arm" in `docs/testing.md`
 - [ ] A KubeVirt VM on that cluster, on the nvweaver class
-- [ ] `nvw`'s class names no pool, so adopting a second pool on nvweaver-1 stopped it making volumes (found 2026-11-10, after
-      the scale pool was adopted the day before; the scale pool was forgotten again). Recreate the class with `pool: csi`, which
-      means deleting it, as its parameters can't change; it's KubeVirt's default
+- [x] `nvw`'s class names no pool, so adopting a second pool on nvweaver-1 stopped it making volumes (found 2026-11-10).
+      Recreated with `pool: csi`, through Helm
 - [ ] The k3s lab doesn't relabel volumes for SELinux, which is how decision 53's bug got past it: run k3s with SELinux
       (`--selinux`) so the lab sees what OpenShift does
 - [ ] Native Arm VMs on that cluster, on its DHCP VLAN, to run `e2e.sh` and `vm-e2e.sh` with nvweaver as the target on both

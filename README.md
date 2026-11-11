@@ -127,10 +127,15 @@ nvweaver namespace create nqn.2026-11.lab.example:vol1 --volume vol1
 nvweaver snapshot create snap1 --volume vol1
 nvweaver volume create clone1 --from-snapshot snap1
 nvweaver snapshot changes snap2 --base snap1  # what changed between them, for an incremental backup
+nvweaver snapshot-group create db --volume data --volume log  # both as of one instant, as db-1 and db-2
 nvweaver volume list -o json                  # JSON, for scripts
 ```
 
 Run `nvweaver help` for every command, and `--help` after one for its flags. Sizes take K, M, G, T or P, which are powers of 1024.
+
+A **snapshot group** is consistent across its volumes: nvweaver pauses hosts' I/O to them, with NVMe ANA, while it takes
+each one's snapshot, for about 70 ms per volume on LVM. Hosts must use native NVMe multipath, Linux's default
+(`nvme_core.multipath=Y`), to wait out the pause; one without it gets I/O errors meanwhile. See decision 56.
 
 - **Exit status:** 0 on success, 1 if the request failed, and 2 if the command itself was wrong. A busy API is retried for up to a minute.
 - **Tokens and DH-HMAC-CHAP keys** are only read from files or the environment, never from the command line, where other users of the machine could see them.
@@ -378,7 +383,7 @@ This is for isolated lab networks.
 - NVMe/TCP traffic is unencrypted. TLS for NVMe/TCP is not implemented here.
 - Host NQNs are claims, not proof of identity. Use DH-HMAC-CHAP if that matters.
 - **Scoped tokens** let several Kubernetes clusters, or other programs, share one nvweaver without touching each other's storage.
-  Each may read everything, but may only change the volumes, snapshots and subsystems it created, which carry its name as
+  Each may read everything, but may only change the volumes, snapshots, snapshot groups, subsystems and hosts it created, which carry its name as
   their `owner`, shown in the CLI and the web interface. It can't touch pools, ports, host keys, raw devices or files. Make one
   with `nvweaver token new NAME --token-file NAME.token >> tokens`, keep the `tokens` file mode 0600, and set
   `NVWEAVER_TOKENS_FILE` to it. Tokens are read again when the file changes, so one can be revoked by removing its line. The

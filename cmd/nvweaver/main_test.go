@@ -16,6 +16,7 @@ import (
 
 	"nvweaver/internal/api"
 	"nvweaver/internal/auth"
+	"nvweaver/internal/client"
 	"nvweaver/internal/target"
 	"nvweaver/internal/target/targettest"
 )
@@ -95,7 +96,15 @@ func TestAWholeExportThroughTheRealAPI(t *testing.T) {
 	if out := x.ok("port", "create", "--id", "3", "--address", "127.0.0.1", "--service", "4420"); !strings.Contains(out, "127.0.0.1") {
 		t.Errorf("port create: %s", out)
 	}
-	x.ok("host", "create", host)
+	x.ok("host", "create", host, "--label", "csi-cluster=a")
+	// An admin gives a host to a cluster's token, as one made before hosts had owners needs.
+	if out := x.ok("host", "update", host, "--owner", "lab", "--label", "csi-node=n1"); !strings.Contains(out, "lab") {
+		t.Errorf("host update: %s", out)
+	}
+	var h client.Host
+	if err := json.Unmarshal([]byte(x.ok("host", "get", host, "-o", "json")), &h); err != nil || h.Owner != "lab" || len(h.Labels) != 1 || h.Labels["csi-node"] != "n1" {
+		t.Errorf("host came back as %+v (%v)", h, err)
+	}
 	// Flags after, before and between arguments all work.
 	if out := x.ok("subsystem", "create", sub, "--allow-host", host, "--port", "3"); !strings.Contains(out, host) {
 		t.Errorf("subsystem create: %s", out)
@@ -265,6 +274,9 @@ func TestRequestsSent(t *testing.T) {
 			`POST /v1/volumes {"name":"c","size_bytes":1073741824,"source":{"volume":"v"}}`},
 		{"grow", []string{"volume", "update", "v", "--size", "20G"}, `PATCH /v1/volumes/v {"size_bytes":21474836480}`},
 		{"snapshot", []string{"snapshot", "create", "s", "--volume", "v"}, `POST /v1/snapshots {"name":"s","volume":"v"}`},
+		{"snapshot group, in order", []string{"snapshot-group", "create", "g", "--volume", "log", "--volume", "data"},
+			`POST /v1/snapshot-groups {"name":"g","volumes":["log","data"]}`},
+		{"delete a snapshot group", []string{"snapshot-group", "delete", "g"}, `DELETE /v1/snapshot-groups/g`},
 		{"delete keeps its file", []string{"namespace", "delete", "n", "1"}, `DELETE /v1/subsystems/n/namespaces/1`},
 		{"delete with its file", []string{"namespace", "delete", "n", "1", "--delete-file"}, `DELETE /v1/subsystems/n/namespaces/1?delete_file=true`},
 		{"port 0 is a real ID", []string{"port", "create", "--id", "0", "--address", "::1"}, `POST /v1/ports {"id":0,"address":"::1"}`},

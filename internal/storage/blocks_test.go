@@ -42,7 +42,7 @@ const thinDumpXML = `<superblock uuid="" time="3" transaction="9" flags="0" vers
 `
 
 func TestThinToolsOutputIsRead(t *testing.T) {
-	b, err := thinRanges(thinDeltaXML, map[string][2]string{"different": {"begin", "length"}, "left_only": {"begin", "length"}, "right_only": {"begin", "length"}})
+	b, err := thinRanges(thinDeltaXML, thinDelta)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestThinToolsOutputIsRead(t *testing.T) {
 	if b.BlockSize != k || !slices.Equal(b.Ranges, []Range{{4 * k, 2 * k}, {10 * k, 4 * k}}) {
 		t.Errorf("delta: %d, %v", b.BlockSize, b.Ranges)
 	}
-	b, err = thinRanges(thinDumpXML, map[string][2]string{"range_mapping": {"origin_begin", "length"}, "single_mapping": {"origin_block", ""}})
+	b, err = thinRanges(thinDumpXML, thinDump("7"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,11 +58,49 @@ func TestThinToolsOutputIsRead(t *testing.T) {
 	if b.BlockSize != m || !slices.Equal(b.Ranges, []Range{{0, 4 * m}, {9 * m, m}}) {
 		t.Errorf("dump: %d, %v", b.BlockSize, b.Ranges)
 	}
-	if _, err := thinRanges(`<superblock version="2"><diff/></superblock>`, nil); err == nil {
-		t.Error("no block size was accepted")
+	// Nothing changed, and nothing mapped: as 1.3.4 prints them, empty answers that are right.
+	for out, f := range map[string]thinFormat{
+		"<superblock data_block_size=\"128\">\n  <diff left=\"3\" right=\"4\">\n  </diff>\n</superblock>": thinDelta,
+		"<superblock data_block_size=\"128\">\n  <device dev_id=\"3\">\n  </device>\n</superblock>":       thinDump("3"),
+	} {
+		if b, err := thinRanges(out, f); err != nil || len(b.Ranges) != 0 {
+			t.Errorf("empty: %v, %v", b.Ranges, err)
+		}
 	}
-	if _, err := thinRanges(`<superblock data_block_size="128"><different begin="x" length="1"/></superblock>`, map[string][2]string{"different": {"begin", "length"}}); err == nil {
-		t.Error("a bad number was accepted")
+}
+
+// What the thin tools say that isn't understood is an error, never skipped: skipping could leave out a change. Each of
+// these has a range the parser does know, so an answer with no error would have looked like a real one.
+func TestThinToolsOutputNotUnderstoodIsAnError(t *testing.T) {
+	const sb = `<superblock data_block_size="128">`
+	for name, c := range map[string]struct {
+		out string
+		f   thinFormat
+	}{
+		"an unknown kind of difference": {sb + `<diff left="1" right="2"><different begin="0" length="1"/><moved begin="1" length="1"/></diff></superblock>`, thinDelta},
+		"an unknown kind of mapping":    {sb + `<device dev_id="7"><range_mapping origin_begin="0" length="1"/><shared_mapping origin_block="3"/></device></superblock>`, thinDump("7")},
+		"shared mappings, by reference": {sb + `<def name="a"><single_mapping origin_block="1"/></def><device dev_id="7"><ref name="a"/><single_mapping origin_block="0"/></device></superblock>`, thinDump("7")},
+		"something inside a range":      {sb + `<diff><different begin="0" length="1"><different begin="5" length="1"/></different></diff></superblock>`, thinDelta},
+		"a dump in place of a delta":    {sb + `<device dev_id="7"><range_mapping origin_begin="0" length="1"/></device></superblock>`, thinDelta},
+		"two diffs":                     {sb + `<diff><different begin="0" length="1"/></diff><diff/></superblock>`, thinDelta},
+		"another device":                {sb + `<device dev_id="8"><range_mapping origin_begin="0" length="1"/></device></superblock>`, thinDump("7")},
+		// thin_dump --dev-id for a device that isn't there prints this, and succeeds.
+		"no device":        {sb + "\n</superblock>", thinDump("9")},
+		"no diff":          {sb + `</superblock>`, thinDelta},
+		"a missing count":  {sb + `<diff><different begin="4"/></diff></superblock>`, thinDelta},
+		"a bad number":     {sb + `<diff><different begin="x" length="1"/></diff></superblock>`, thinDelta},
+		"no block size":    {`<superblock version="2"><diff/></superblock>`, thinDelta},
+		"not a superblock": {`<metadata data_block_size="128"><diff/></metadata>`, thinDelta},
+		"a negative count": {sb + `<diff><different begin="4" length="-1"/></diff></superblock>`, thinDelta},
+	} {
+		b, err := thinRanges(c.out, c.f)
+		if err == nil || len(b.Ranges) != 0 {
+			t.Errorf("%s: %v, %v", name, b.Ranges, err)
+		}
+	}
+	_, err := thinRanges(`<superblock data_block_size="128"><diff><moved begin="1" length="1"/></diff></superblock>`, thinDelta)
+	if err == nil || !strings.Contains(err.Error(), "<moved>") {
+		t.Errorf("the error doesn't name the element: %v", err)
 	}
 }
 
@@ -78,12 +116,15 @@ func TestLVMChangesComeFromAMetadataSnapshot(t *testing.T) {
 	if len(b.Ranges) != 2 {
 		t.Errorf("ranges %v", b.Ranges)
 	}
+	// The IDs are read once the metadata is frozen, as an ID read before could be another device's by then.
 	want := []string{
 		"dmsetup message my--vg-pool0-tpool 0 reserve_metadata_snap",
+		"lvs --reportformat json --units b --nosuffix -o thin_id my-vg/nvw-a",
+		"lvs --reportformat json --units b --nosuffix -o thin_id my-vg/nvw-b",
 		"thin_delta -m --snap1 7 --snap2 8 /dev/mapper/my--vg-pool0_tmeta",
 		"dmsetup message my--vg-pool0-tpool 0 release_metadata_snap",
 	}
-	if got := f.calls[2:]; !slices.Equal(got, want) {
+	if got := f.calls; !slices.Equal(got, want) {
 		t.Errorf("ran:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 
@@ -132,6 +173,50 @@ func TestLVMAllocatedComesFromThinDump(t *testing.T) {
 	f.replies["lvs"] = lvsJSON(`"thin_id": ""`)
 	if _, err := d.Allocated("nvw-a"); err == nil {
 		t.Error("an LV with no thin ID was accepted")
+	}
+}
+
+// Device-mapper reuses a deleted thin device's ID. A snapshot deleted between reading its ID and reserving the metadata
+// snapshot, with another taking its ID, must be an error, not the other's mappings: an empty or wrong answer makes every
+// backup built on it wrong. LVs' names are never reused, so a name that's still there after reserving was there when the
+// metadata was frozen.
+func TestAThinIDReusedMeanwhileIsntRead(t *testing.T) {
+	const otherDump = `<superblock data_block_size="128"><device dev_id="7"></device></superblock>`
+	for _, call := range []string{"allocated", "changed, the base gone", "changed, the snapshot gone"} {
+		d, f := lvmDriver("vg")
+		f.replies["lvs --reportformat json --units b --nosuffix -o thin_id vg/nvw-a"] = lvsJSON(`"thin_id": "7"`)
+		f.replies["lvs --reportformat json --units b --nosuffix -o thin_id vg/nvw-b"] = lvsJSON(`"thin_id": "8"`)
+		f.replies["thin_dump"] = otherDump
+		f.replies["thin_delta"] = `<superblock data_block_size="128"><diff left="7" right="8"></diff></superblock>`
+		gone := map[string]string{"allocated": "vg/nvw-a", "changed, the base gone": "vg/nvw-a", "changed, the snapshot gone": "vg/nvw-b"}[call]
+		reserved := false
+		tool, run := d.tool, d.run
+		d.tool = func(prog string, args ...string) (string, error) {
+			if slices.Contains(args, "reserve_metadata_snap") {
+				reserved = true
+			}
+			return tool(prog, args...)
+		}
+		d.run = func(args ...string) (string, error) {
+			if reserved && slices.Contains(args, gone) {
+				f.calls = append(f.calls, strings.Join(args, " ")+", gone")
+				return "", errors.New(`Failed to find logical volume "` + gone + `"`)
+			}
+			return run(args...)
+		}
+		var err error
+		var b Blocks
+		if call == "allocated" {
+			b, err = d.Allocated("nvw-a")
+		} else {
+			b, err = d.Changed("nvw-a", "nvw-b")
+		}
+		if err == nil {
+			t.Errorf("%s: the reused ID was read, giving %v", call, b.Ranges)
+		}
+		if last := f.calls[len(f.calls)-1]; !strings.HasSuffix(last, "release_metadata_snap") {
+			t.Errorf("%s: not released: %v", call, f.calls)
+		}
 	}
 }
 

@@ -31,6 +31,10 @@ func (s *Identity) GetPluginCapabilities(context.Context, *csi.GetPluginCapabili
 		caps = append(caps, &csi.PluginCapability{Type: &csi.PluginCapability_Service_{Service: &csi.PluginCapability_Service{
 			Type: csi.PluginCapability_Service_SNAPSHOT_METADATA_SERVICE}}})
 	}
+	if s.cfg.GroupSnapshots && s.api != nil {
+		caps = append(caps, &csi.PluginCapability{Type: &csi.PluginCapability_Service_{Service: &csi.PluginCapability_Service{
+			Type: csi.PluginCapability_Service_GROUP_CONTROLLER_SERVICE}}})
+	}
 	return &csi.GetPluginCapabilitiesResponse{Capabilities: caps}, nil
 }
 

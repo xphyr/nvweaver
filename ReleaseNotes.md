@@ -17,8 +17,22 @@ The major differences between versions. For every change, see the commit history
 - **The CSI driver serves changed block tracking to backup tools,** through Kubernetes' external-snapshot-metadata sidecar,
   from Kubernetes 1.33. It's off unless the Helm chart's `snapshotMetadata.enabled` is set. See `csi/README.md`.
 
+- **Snapshot groups:** several volumes snapshotted as of one instant, consistent with each other, with
+  `POST /v1/snapshot-groups` and `nvweaver snapshot-group`. nvweaver pauses hosts' I/O to the volumes with NVMe ANA while it
+  takes them, for a few ms per volume, on both targets and both pool types. **Hosts need native NVMe multipath**, Linux's
+  default, to wait out the pause. The CSI driver serves them as `VolumeGroupSnapshot`, off unless asked for, and refuses a
+  group that would pause a node without it. The web interface shows each snapshot's group. See decision 56.
+- **The CSI driver forgets nodes that leave the cluster:** once nothing is exported to a departed node, its subsystem and
+  host in nvweaver are deleted. Hosts have owners now, as volumes do, so a cluster's scoped token may change and delete its own;
+  hosts made before have none, and need an admin to give them to the cluster's token: see `csi/README.md`. See decision 54.
+- **Hosts have labels,** and the CSI driver labels each node's host with its cluster and Kubernetes node. The web interface's
+  host list shows them, and the owner. `nvweaver host create` and `host update` take `--label` and `--owner`.
+- **The web interface's overview lists problems:** pool warnings, and volumes and snapshots whose storage is missing.
+
 ### Fixed
 
+- **LVM snapshots no longer show as `missing`** in the API and web interface when they're only inactive, as the CSI driver's
+  are.
 - **ReadOnlyMany filesystems work on SELinux nodes, such as OpenShift's.** Pods using one never started, as a read-only
   filesystem can't be relabelled for each pod; they're mounted with one label now. See decision 53.
 - **The CSI driver mounts ReadOnlyMany filesystems read-only** on every node. Before, each node mounted them read-write,

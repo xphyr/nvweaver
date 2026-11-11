@@ -17,6 +17,7 @@ type Capabilities struct {
 	WildcardListen           bool     `json:"wildcard_listen"`
 	IdentifiesConnectedHosts bool     `json:"identifies_connected_hosts"`
 	ListsAllConnections      bool     `json:"lists_all_connections"`
+	SnapshotGroups           bool     `json:"snapshot_groups"`
 	Transports               []string `json:"transports"`
 }
 
@@ -77,28 +78,34 @@ type PortUpdate struct {
 
 // Host is an initiator's identity. The API never returns its keys.
 type Host struct {
-	NQN              string `json:"nqn"`
-	HasDHCHAPKey     bool   `json:"has_dhchap_key"`
-	HasDHCHAPCtrlKey bool   `json:"has_dhchap_ctrl_key"`
-	DHCHAPHash       string `json:"dhchap_hash,omitempty"`
-	DHCHAPDHGroup    string `json:"dhchap_dhgroup,omitempty"`
+	NQN              string            `json:"nqn"`
+	HasDHCHAPKey     bool              `json:"has_dhchap_key"`
+	HasDHCHAPCtrlKey bool              `json:"has_dhchap_ctrl_key"`
+	DHCHAPHash       string            `json:"dhchap_hash,omitempty"`
+	DHCHAPDHGroup    string            `json:"dhchap_dhgroup,omitempty"`
+	Labels           map[string]string `json:"labels,omitempty"`
+	Owner            string            `json:"owner,omitempty"`
 }
 
 // HostCreate creates a host.
 type HostCreate struct {
-	NQN           string `json:"nqn"`
-	DHCHAPKey     string `json:"dhchap_key,omitempty"`
-	DHCHAPCtrlKey string `json:"dhchap_ctrl_key,omitempty"`
-	DHCHAPHash    string `json:"dhchap_hash,omitempty"`
-	DHCHAPDHGroup string `json:"dhchap_dhgroup,omitempty"`
+	NQN           string            `json:"nqn"`
+	DHCHAPKey     string            `json:"dhchap_key,omitempty"`
+	DHCHAPCtrlKey string            `json:"dhchap_ctrl_key,omitempty"`
+	DHCHAPHash    string            `json:"dhchap_hash,omitempty"`
+	DHCHAPDHGroup string            `json:"dhchap_dhgroup,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	Owner         string            `json:"owner,omitempty"` // admins only
 }
 
-// HostUpdate changes what's set.
+// HostUpdate changes what's set. Labels replaces them all.
 type HostUpdate struct {
-	DHCHAPKey     *string `json:"dhchap_key,omitempty"`
-	DHCHAPCtrlKey *string `json:"dhchap_ctrl_key,omitempty"`
-	DHCHAPHash    *string `json:"dhchap_hash,omitempty"`
-	DHCHAPDHGroup *string `json:"dhchap_dhgroup,omitempty"`
+	DHCHAPKey     *string            `json:"dhchap_key,omitempty"`
+	DHCHAPCtrlKey *string            `json:"dhchap_ctrl_key,omitempty"`
+	DHCHAPHash    *string            `json:"dhchap_hash,omitempty"`
+	DHCHAPDHGroup *string            `json:"dhchap_dhgroup,omitempty"`
+	Labels        *map[string]string `json:"labels,omitempty"`
+	Owner         *string            `json:"owner,omitempty"` // admins only
 }
 
 // Subsystem is what hosts connect to.
@@ -286,6 +293,8 @@ type Snapshot struct {
 	CreatedAt    string `json:"created_at"`
 	State        string `json:"state"`
 	Owner        string `json:"owner,omitempty"`
+	// Group is the snapshot group it was taken in, which it's deleted with.
+	Group string `json:"group,omitempty"`
 }
 
 // SnapshotPage is one page of snapshots. NextAfter is empty on the last.
@@ -314,4 +323,29 @@ type SnapshotCreate struct {
 	Name   string `json:"name"`
 	Volume string `json:"volume"`
 	Owner  string `json:"owner,omitempty"`
+}
+
+// SnapshotGroup is snapshots of several volumes, consistent with each other: hosts' I/O to them was paused for
+// PausedMS while they were taken. Snapshots are the Volumes' snapshots, in the same order.
+type SnapshotGroup struct {
+	Name      string   `json:"name"`
+	Volumes   []string `json:"volumes"`
+	Snapshots []string `json:"snapshots"`
+	CreatedAt string   `json:"created_at"`
+	PausedMS  int64    `json:"paused_ms"`
+	Owner     string   `json:"owner,omitempty"`
+}
+
+// SnapshotGroupPage is one page of snapshot groups. NextAfter is empty on the last.
+type SnapshotGroupPage struct {
+	Items     []SnapshotGroup `json:"items"`
+	NextAfter string          `json:"next_after,omitempty"`
+}
+
+// SnapshotGroupCreate asks for a snapshot of each volume, as of one instant. Its snapshots are named <Name>-1,
+// <Name>-2 and so on, in the order of Volumes.
+type SnapshotGroupCreate struct {
+	Name    string   `json:"name"`
+	Volumes []string `json:"volumes"`
+	Owner   string   `json:"owner,omitempty"`
 }

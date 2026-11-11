@@ -106,8 +106,13 @@ func seed(ctx context.Context, c *client.Client, poolDir, archiveDir string, vol
 		return err
 	}
 	hosts := []string{prefix + "node-a", prefix + "node-b", prefix + "node-c"}
-	for _, h := range hosts {
-		if _, err := c.CreateHost(ctx, client.HostCreate{NQN: h}); err != nil {
+	for i, h := range hosts {
+		in := client.HostCreate{NQN: h}
+		if i == 0 {
+			// As the CSI driver labels a node's host: decision 54.
+			in.Labels, in.Owner = map[string]string{"csi-cluster": "cluster-a", "csi-node": "worker-1"}, "cluster-a"
+		}
+		if _, err := c.CreateHost(ctx, in); err != nil {
 			return err
 		}
 	}
@@ -145,6 +150,12 @@ func seed(ctx context.Context, c *client.Client, poolDir, archiveDir string, vol
 			return err
 		}
 		if _, err := c.CreateVolume(ctx, client.VolumeCreate{Name: "vol-0001-copy", Source: &client.VolumeSource{Snapshot: "vol-0001-nightly"}}); err != nil {
+			return err
+		}
+	}
+	if volumes >= 4 {
+		// A group of two exported volumes, as of one instant: decision 56.
+		if _, err := c.CreateSnapshotGroup(ctx, client.SnapshotGroupCreate{Name: "db", Volumes: []string{"vol-0003", "vol-0004"}}); err != nil {
 			return err
 		}
 	}

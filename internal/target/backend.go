@@ -21,6 +21,8 @@ type Capabilities struct {
 	IdentifiesConnectedHosts bool `json:"identifies_connected_hosts"`
 	// ListsAllConnections can list every connection at once, rather than one subsystem's. See decision 43.
 	ListsAllConnections bool `json:"lists_all_connections"`
+	// SnapshotGroups can pause hosts' I/O with ANA, for snapshot groups consistent across volumes. See decision 56.
+	SnapshotGroups bool `json:"snapshot_groups"`
 	// Transports lists the NVMe transports a port can use.
 	Transports []string `json:"transports"`
 }
@@ -71,6 +73,7 @@ func (t *Target) Capabilities() Capabilities {
 		PerHostDHCHAPParams: true,
 		WildcardListen:      true,
 		ListsAllConnections: true,
+		SnapshotGroups:      true,
 		Transports:          []string{TransportTCP},
 	}
 }

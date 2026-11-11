@@ -736,6 +736,145 @@ their background `lab.sh ssh` loops running on the build host, on connections to
 committed when it was reserved, and nvweaver's snapshots are committed when taken), btrfs, Arm, SPDK's own snapshots, which
 nvweaver doesn't use, and real disks.
 
+**The fourth outside review, decision 55.** Unit tests only, each failing before its fix:
+
+- `TestAThinIDReusedMeanwhileIsntRead` makes an LV go after its ID was read, with another taking ID 7. Before the fix, the old
+  code returned the other device's ranges, empty here, with no error, for both `Changed` cases.
+- `TestSnapshotsBeingReadArentDeleted` deleted a snapshot mid-read with a 204 before the fix; now it's a 503.
+- `TestThinToolsOutputNotUnderstoodIsAnError` covers 14 kinds of bad output. A scratch run of the old parser over two of
+  them showed the misses: it skipped an unknown `<moved>` and returned the rest, and it read `thin_dump`'s empty superblock
+  for a missing device as nothing allocated.
+- The new parser was also run over 1.3.4's real output, made with `thin_restore` on files. The metadata had a subtree shared
+  between two devices, as snapshots have. `thin_dump --dev-id` expanded it, with no `<def>` or `<ref>`; without `--dev-id` it
+  printed both. `thin_delta` printed `same` and `left_only`, and an empty `<diff>` for two empty devices. All were read
+  correctly, and the missing device was an error.
+
+`cbt-check.sh` wasn't run again, as the reviewer agreed it can't make a reused ID or a bad tool answer. `run-all.sh`, with
+these and decision 54's changes, on 2026-11-10: vm-e2e 949, webui-real 93, kernel 311, spdk 327, systemd 76, all passed,
+none failed, and nothing was left behind.
+
+### Nodes leaving the cluster, and hosts' labels
+
+Decision 54, on 2026-11-10. `k3s-csi.sh test` runs the janitor every 15 seconds, and checks:
+
+- agent1's host is owned by the cluster's token, labelled `csi-cluster=lab` and `csi-node=agent1`;
+- agent1 keeps its subsystem through its reboot, which takes longer than two of the janitor's checks;
+- once agent2 is drained, its k3s stopped and its node deleted, its empty subsystem and its host go, while agent1's stay;
+- agent2 joins again, and a pod there gets a new volume, with its host made again as the cluster's.
+
+It passed on k3s 1.37.2 and 1.31.14: 44 checks each, and csi-sanity 75 passed, 0 failed, on both.
+
+The unit tests cover what the lab doesn't:
+
+- a departed node with volumes still exported is kept until they're unpublished;
+- another cluster's subsystems are never touched;
+- the janitor does nothing when the CSINode list fails or comes back empty;
+- a host it doesn't own is reported and left;
+- a scoped token can change and delete only its own hosts, never their keys.
+
+`TestHostsAreOwned` failed before the API change.
+
+**LVM snapshots showed as `missing` on a lab server** because they're inactive and have no device node. `TestInactiveLVMSnapshotsArentMissing` checks that LVM's list decides, and that 102 states cost at most two `lvs`. Before the change, the old check called such a snapshot missing.
+
+**The web interface:** the browser test checks the overview's Problems section, and a CSI node's host showing its cluster, node and owner. It passed with 247 checks, and the screenshots were looked at.
+
+**Not checked:** what a departed node's connection does. Stopping k3s doesn't disconnect the node, so agent2 was most likely
+still connected when its subsystem went. With `--ctrl-loss-tmo` at -1, it would retry for ever, and reconnect once it joined
+again; the test didn't look. Not tested on OpenShift yet.
+
+### Pausing hosts' I/O for a consistency group
+
+The experiments behind decision 56, on 2026-11-10, in the lab VMs. Raw configfs and raw SPDK RPCs were used, not nvweaver.
+The target had four namespaces: two XFS reflink files and two LVM thin LVs. The initiator wrote 4 KiB with `O_DIRECT` to each
+in turn and logged every write. The target moved some namespaces into a second ANA group, set its state, took snapshots,
+held, and moved them back.
+
+| Target, state, hold | Host | Longest pause | `dd` errors |
+|---|---|---|---|
+| kernel, `change`, 3 s, all four | multipath | 3.05 s | none |
+| kernel, `change`, 15 s, past the 10 s ANATT | multipath | 15.03 s | none, and no controller reset |
+| kernel, `inaccessible`, 15 s | multipath | 15.03 s | none |
+| kernel, `change`, as short as possible, all four | multipath | 0.18 s, 4 snapshots in 154 ms | none |
+| kernel, `change`, 3 s, the two LVs | multipath | 3.04 s | none |
+| kernel, `change`, 3 s | **no multipath** | none: writes failed at once | I/O errors |
+| SPDK 26.09, `inaccessible`, 3 s, all four | multipath | 3.2 s | none |
+| SPDK 26.09, `inaccessible`, as short as possible | multipath | 0.36 s, 4 snapshots in 136 ms | none |
+
+- With native multipath, the host logs "no usable path - requeuing I/O" and waits. Udev's reads on the hidden path devices
+  (`nvme0c0nN`) log I/O errors, which multipath retries; nothing reaches the application.
+- Moving a namespace between ANA groups works while it's enabled, on both targets. SPDK takes 8 ms per namespace, as it
+  pauses the namespace to move it. A new kernel ANA group starts inaccessible, so set its state before moving anything in.
+- An LVM thin snapshot took about 65 ms, and a reflink copy of a 1 GiB file about 5 ms.
+- **Not proven by these:** that the snapshots are consistent with each other. That needs dependent writes across volumes,
+  checked in the snapshots, and is planned for `vm-e2e.sh`.
+- **The writer's status column was wrong** in the first three rounds: it logged `$?` after `$(date)`, the pitfall below.
+  The `dd` error output was the evidence, and the fourth round logged `dd`'s own status.
+
+### Snapshot groups
+
+Decision 56, on 2026-11-10. `e2e.sh` checks that a group's snapshots are consistent with each other, on a reflink pool,
+on both targets. The host writes a counter to two volumes in turn with `O_DIRECT`, each write only once the one before it
+has finished, so at any instant the first holds the second's number or one more. The check reads the numbers at the start
+of each snapshot's file, on the target.
+
+| Target | Five groups, while the host wrote | Hosts paused | Snapshots a second apart, the negative control | Host's writes |
+|---|---|---|---|---|
+| kernel | 500/499, 840/839, 1184/1184, 1525/1524, 1892/1892 | 3 to 4 ms | 2241 and 2501: caught | none failed |
+| SPDK 26.09 | 365/365, 593/593, 832/832, 1062/1062, 1300/1300 | 55 to 68 ms | 1518 and 1703: caught | none failed |
+
+kernel: 348 passed, SPDK: 364 passed, none failed, and nothing was left in the VM. SPDK pauses longer as it pauses each
+namespace to move it between groups, twice, which the kernel doesn't.
+
+The first run of this check failed all nine of its checks on both targets, the negative control too, so it proved
+nothing. Its 512-byte direct writes were refused by the 4 KiB namespaces, so the snapshots held nothing, and `dd`'s
+statistics filled its error log. A negative control that can't fail is what showed that it wasn't testing anything.
+
+Unit tests cover:
+- both targets moving namespaces into and out of an inaccessible ANA group, in order, without disabling them;
+- a pause ended by a restart, as it's never saved, and a port removed while it has a pause group;
+- the API holding hosts paused for every snapshot, and not for volumes that aren't exported;
+- undoing everything when a snapshot fails, or the pause passes its limit;
+- one group at a time, the volumes held meanwhile, requests checked, and scoped tokens kept to their own;
+- crashes at each point, and a delete that fails partway carrying on;
+- the driver refusing a group that would pause a node that can't be paused, while a node using none of the volumes
+  doesn't matter, and each node's Lease.
+
+The browser test checks a group's snapshot showing its group, with no Delete of its own: 248 passed.
+
+**Through Kubernetes, `k3s-csi.sh groups`,** on fresh labs on k3s 1.37.2 and 1.31.14, 14 checks each, none failed:
+- every node's Lease said it could be paused;
+- a VolumeGroupSnapshot of two block volumes was taken while a pod wrote the counter to both;
+- the member snapshots, restored to new claims, held 1043 and 1042 on 1.37, and 1267 and 1266 on 1.31;
+- with one node's Lease set to "can't be paused", a group of volumes it used was refused, naming it, and nvweaver
+  wasn't asked;
+- deleting the VolumeGroupSnapshot deleted the group and its snapshots in nvweaver.
+
+The full CSI suite and csi-sanity passed on both, with group snapshots on in the driver.
+
+**On the way, two things that weren't nvweaver's:**
+- The snapshot controller that external-snapshotter 8.7.0's manifest runs, 8.6.0, has group snapshots off, though its
+  README says on. A VolumeGroupSnapshot then sat there with no status and no error; see the pitfalls.
+- The node-leaving test (decision 54) stopped k3s on the node and deleted it, which leaves its containers running. On
+  one 1.37 lab, a snapshot controller was on that node, and kept its leader lease, unseen: a VolumeSnapshot's deletion
+  then never started, and nothing more was provisioned. It passed on the other labs, where nothing that elects a leader
+  was there. The test now drains the node first, as removing one would, and passed with a snapshot controller on it.
+  Turning the group gate on was suspected first; the same snapshot deleted with it on, off and on again showed it
+  wasn't.
+
+**On LVM, `vm-e2e.sh`'s `group_tests`,** with the host in its own VM, three groups each, read through clones as LVM keeps
+snapshots inactive. `GROUP_ONLY=nvmet` and `=spdk`, 36 passed each, none failed:
+
+| Target | Three groups | Hosts paused | Negative control | Host's writes |
+|---|---|---|---|---|
+| kernel | 499/499, 845/845, 1196/1195 | 91 to 115 ms | 1551 and 1836: caught | none failed |
+| SPDK 26.09 | 413/413, 684/684, 967/966 | 160 to 167 ms | 1251 and 1470: caught | none failed |
+
+`run-all.sh` with all of this, on 2026-11-11: vm-e2e 1004, webui-real 93, kernel 348, spdk 364, systemd 76, all passed, none
+failed, and nothing was left behind.
+
+**Not tested yet:** groups on Arm, and on OpenShift; a group of more than two volumes with a host writing; and a host
+without native multipath through the CSI driver, which only the unit tests and a Lease edited by hand cover.
+
 ### The CSI driver at scale
 
 `csi/test/scale` drives the driver's controller, the code Kubernetes calls, against a real nvweaver, with 16 calls at once
@@ -874,6 +1013,8 @@ useful to compare. A throughput figure from these tests isn't a claim about a fa
 | SPDK with `-s 256` | Bdev pool allocation fails during startup | 256 MB is too little; the default is 1024 |
 | SPDK listening on a wildcard address | Every host rejected | Refused: decision 7 |
 | Passthrough of a controller on the same kernel | Host logs "ignoring nsid 1 because of duplicate IDs" | A single-machine limit, not a bug. Check with Identify |
+| `dmsetup suspend` on thin LVs, then `lvcreate -s` of each, to pause a consistency group | `lvcreate` failed ("decrement suspended device counter below zero"), LVM resumed one LV itself, and the thin pool was left with an unexpected transaction ID, so later snapshots failed | Never suspend LVM's devices behind its back. Pause at the NVMe target instead: decision 56 |
+| ANA state `change` on SPDK | Refused: SPDK 26.09 accepts only `optimized`, `non_optimized` and `inaccessible` | Use `inaccessible` on both targets |
 
 ## Misleading symptoms
 
@@ -929,6 +1070,12 @@ Checks that passed while proving nothing. Watch for these patterns:
 
 ## Test pitfalls
 
+- **Stopping k3s on a node leaves its containers running.** A test that then deletes the node leaves any leader that was
+  there renewing its lease, so its replacement never takes over. Drain the node first.
+- **A VolumeGroupSnapshot that nothing answers:** external-snapshotter 8.7.0's manifest runs snapshot-controller 8.6.0, which
+  has group snapshots off, though the README says they're on by default. The object then has no status, no events, and
+  nothing in any log, and the driver is never called. `k3s-csi.sh deploy` turns them on.
+
 - **A write to a host's NVMe device that can't finish ignores `timeout -s KILL`.** It's uninterruptible until the host gives up on
   the controller, 600 seconds by default. Run it in the background and check whether it finished, then disconnect.
 - **`echo n > file` empties the file before writing,** so a reader at that moment gets nothing. Write elsewhere and `mv` it.
@@ -951,6 +1098,8 @@ Checks that passed while proving nothing. Watch for these patterns:
   `ControlMaster` connection. The cause wasn't confirmed, and network changes were being made around the same time.
 - **A power cut straight after `podman load`** loses the image, as nothing has synced it, and the service can't start. This looks
   like the service failing. The power-loss test syncs the target first. `POWER_ONLY="spdk reflink 8"` repeats just that test.
+- **The k3s lab's agents run `k3s.service`, not `k3s-agent`,** as `k3s-lab.sh` writes its own unit. Stopping `k3s-agent` does
+  nothing, quietly, and a deleted node registers again at once.
 - **`pkill -f` over SSH** can match the shell running it, whose command line contains the same text, and end the session.
 - **LVM's warnings don't fail anything.** Inside the unit's sandbox it created volumes correctly while being unable to back
   up its metadata or lock itself in memory, and every test passed until a direct check of the backup file. The unit now

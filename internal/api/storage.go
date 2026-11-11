@@ -897,8 +897,8 @@ type snapshotPage struct {
 	NextAfter string         `json:"next_after,omitempty"`
 }
 
-func viewSnapshot(snap *target.Snapshot) snapshotView {
-	return snapshotView{Snapshot: snap, State: storageState(snap.DevicePath)}
+func (s *Server) viewSnapshot(snap *target.Snapshot) snapshotView {
+	return snapshotView{Snapshot: snap, State: s.m.snapshotState(snap)}
 }
 
 func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) error {
@@ -920,7 +920,7 @@ func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) error {
 				page.NextAfter = page.Items[limit-1].Name
 				break
 			}
-			page.Items = append(page.Items, viewSnapshot(snap))
+			page.Items = append(page.Items, s.viewSnapshot(snap))
 		}
 		writeJSON(w, http.StatusOK, page)
 		return nil
@@ -1003,11 +1003,18 @@ func writeBlockRanges(w http.ResponseWriter, r *http.Request, b storage.Blocks, 
 
 func (s *Server) getSnapshotAllocated(w http.ResponseWriter, r *http.Request) error {
 	name := r.PathValue("snapshot")
+	// Held while the storage is read, so that it can't be deleted meanwhile: on LVM, a deleted device's thin ID is reused.
+	res := s.m.reserve()
+	defer res.release()
+	if err := res.shared(snapshotKey(name)); err != nil {
+		return err
+	}
 	snap, driver, err := s.snapshotForBlocks(name)
 	if err != nil {
 		return err
 	}
 	b, err := driver.Allocated(snap.InternalName)
+	res.release()
 	if err != nil {
 		return fmt.Errorf("snapshot %s: %w", name, err)
 	}
@@ -1018,6 +1025,15 @@ func (s *Server) getSnapshotChanges(w http.ResponseWriter, r *http.Request) erro
 	name, baseName := r.PathValue("snapshot"), r.URL.Query().Get("base")
 	if baseName == "" {
 		return target.Invalid("base is needed: the snapshot to compare with")
+	}
+	// Both held while the storage is read, as for allocated.
+	res := s.m.reserve()
+	defer res.release()
+	if err := res.shared(snapshotKey(name)); err != nil {
+		return err
+	}
+	if err := res.shared(snapshotKey(baseName)); err != nil {
+		return err
 	}
 	snap, driver, err := s.snapshotForBlocks(name)
 	if err != nil {
@@ -1039,6 +1055,7 @@ func (s *Server) getSnapshotChanges(w http.ResponseWriter, r *http.Request) erro
 		return target.Invalid("snapshots %s and %s aren't of the same volume (%s and %s)", baseName, name, base.Volume, snap.Volume)
 	}
 	b, err := driver.Changed(base.InternalName, snap.InternalName)
+	res.release()
 	if err != nil {
 		return fmt.Errorf("snapshots %s and %s: %w", baseName, name, err)
 	}
@@ -1070,7 +1087,7 @@ func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) error {
 	if created {
 		code = http.StatusCreated
 	}
-	writeJSON(w, code, viewSnapshot(snap))
+	writeJSON(w, code, s.viewSnapshot(snap))
 	return nil
 }
 
@@ -1155,7 +1172,7 @@ func (s *Server) getSnapshot(w http.ResponseWriter, r *http.Request) error {
 		if snap == nil {
 			return notFound("no such snapshot %s", name)
 		}
-		writeJSON(w, http.StatusOK, viewSnapshot(snap))
+		writeJSON(w, http.StatusOK, s.viewSnapshot(snap))
 		return nil
 	})
 }
@@ -1184,6 +1201,9 @@ func (s *Server) removeSnapshot(name, scope string) error {
 	}
 	if err := mayChange(scope, snap.Owner, "snapshot "+name); err != nil {
 		return err
+	}
+	if snap.Group != "" {
+		return target.NewConflict("snapshot %s belongs to snapshot group %s, and goes only with it: delete the group", name, snap.Group)
 	}
 	return s.removeStorage(res, snap.Pool, snap.InternalName, func(st *target.State) error {
 		delete(st.Snapshots, name)
