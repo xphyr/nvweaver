@@ -55,6 +55,7 @@ type fakePools struct {
 	blocks    storage.Blocks
 	blocksErr error
 	asked     []string
+	reading   func() // runs while Allocated or Changed reads the storage
 }
 
 func (f *fakePools) driver(p *target.Pool) (storage.Driver, error) {
@@ -68,12 +69,18 @@ type fakeDriver struct{ *fakePools }
 
 func (d fakeDriver) Check() error { return d.checkErr }
 func (d fakeDriver) Allocated(internal string) (storage.Blocks, error) {
+	if d.reading != nil {
+		d.reading()
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.asked = []string{internal}
 	return d.blocks, d.blocksErr
 }
 func (d fakeDriver) Changed(base, internal string) (storage.Blocks, error) {
+	if d.reading != nil {
+		d.reading()
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.asked = []string{base, internal}

@@ -1003,11 +1003,18 @@ func writeBlockRanges(w http.ResponseWriter, r *http.Request, b storage.Blocks, 
 
 func (s *Server) getSnapshotAllocated(w http.ResponseWriter, r *http.Request) error {
 	name := r.PathValue("snapshot")
+	// Held while the storage is read, so that it can't be deleted meanwhile: on LVM, a deleted device's thin ID is reused.
+	res := s.m.reserve()
+	defer res.release()
+	if err := res.shared(snapshotKey(name)); err != nil {
+		return err
+	}
 	snap, driver, err := s.snapshotForBlocks(name)
 	if err != nil {
 		return err
 	}
 	b, err := driver.Allocated(snap.InternalName)
+	res.release()
 	if err != nil {
 		return fmt.Errorf("snapshot %s: %w", name, err)
 	}
@@ -1018,6 +1025,15 @@ func (s *Server) getSnapshotChanges(w http.ResponseWriter, r *http.Request) erro
 	name, baseName := r.PathValue("snapshot"), r.URL.Query().Get("base")
 	if baseName == "" {
 		return target.Invalid("base is needed: the snapshot to compare with")
+	}
+	// Both held while the storage is read, as for allocated.
+	res := s.m.reserve()
+	defer res.release()
+	if err := res.shared(snapshotKey(name)); err != nil {
+		return err
+	}
+	if err := res.shared(snapshotKey(baseName)); err != nil {
+		return err
 	}
 	snap, driver, err := s.snapshotForBlocks(name)
 	if err != nil {
@@ -1039,6 +1055,7 @@ func (s *Server) getSnapshotChanges(w http.ResponseWriter, r *http.Request) erro
 		return target.Invalid("snapshots %s and %s aren't of the same volume (%s and %s)", baseName, name, base.Volume, snap.Volume)
 	}
 	b, err := driver.Changed(base.InternalName, snap.InternalName)
+	res.release()
 	if err != nil {
 		return fmt.Errorf("snapshots %s and %s: %w", baseName, name, err)
 	}

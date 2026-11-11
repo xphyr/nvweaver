@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -99,47 +100,73 @@ func (d *lvmThinDriver) thinID(internal string) (string, error) {
 }
 
 // Allocated implements Driver, from the snapshot's mappings in thin_dump.
+//
+// Each thin ID is read after the metadata snapshot is reserved, as device-mapper reuses a deleted device's ID: read before,
+// a snapshot deleted meanwhile, with another taking its ID, would give the other's mappings. LVs' names are never reused,
+// so one still there after reserving was there when the metadata was frozen, with the same ID.
 func (d *lvmThinDriver) Allocated(internal string) (Blocks, error) {
-	id, err := d.thinID(internal)
-	if err != nil {
-		return Blocks{}, err
-	}
-	var out string
+	var out, id string
 	if err := d.withMetadataSnap(func(meta string) error {
+		var err error
+		if id, err = d.thinID(internal); err != nil {
+			return err
+		}
 		out, err = d.tool("thin_dump", "-m", "--dev-id", id, meta)
 		return err
 	}); err != nil {
 		return Blocks{}, err
 	}
-	return thinRanges(out, map[string][2]string{"range_mapping": {"origin_begin", "length"}, "single_mapping": {"origin_block", ""}})
+	return thinRanges(out, thinDump(id))
 }
 
-// Changed implements Driver, from thin_delta: blocks mapped differently, or on one side only.
+// Changed implements Driver, from thin_delta: blocks mapped differently, or on one side only. The IDs are read as
+// Allocated reads them.
 func (d *lvmThinDriver) Changed(base, internal string) (Blocks, error) {
-	a, err := d.thinID(base)
-	if err != nil {
-		return Blocks{}, err
-	}
-	b, err := d.thinID(internal)
-	if err != nil {
-		return Blocks{}, err
-	}
 	var out string
 	if err := d.withMetadataSnap(func(meta string) error {
+		a, err := d.thinID(base)
+		if err != nil {
+			return err
+		}
+		b, err := d.thinID(internal)
+		if err != nil {
+			return err
+		}
 		out, err = d.tool("thin_delta", "-m", "--snap1", a, "--snap2", b, meta)
 		return err
 	}); err != nil {
 		return Blocks{}, err
 	}
-	return thinRanges(out, map[string][2]string{"different": {"begin", "length"}, "left_only": {"begin", "length"}, "right_only": {"begin", "length"}})
+	return thinRanges(out, thinDelta)
 }
 
-// thinRanges reads thin_dump's or thin_delta's XML: the superblock gives the block size in sectors, and the elements
-// named in want give a first block and a count, or with no count attribute, one block. Anything else, such as thin_delta's
-// "same", is skipped.
-func thinRanges(out string, want map[string][2]string) (Blocks, error) {
+// thinFormat is what's expected of thin_dump's or thin_delta's XML: one element under the superblock holding the ranges,
+// and what may be in it. Anything else is an error that names it, as skipping an element that means "this changed" would
+// tell a backup that nothing did. thin_dump for a device that isn't there prints an empty superblock and succeeds, so the
+// one element must be there, and for a dump, be the device asked about.
+type thinFormat struct {
+	container string               // diff or device
+	devID     string               // the device's dev_id, for a dump
+	ranges    map[string][2]string // children that are ranges: the first block's attribute, and the count's, or "" for one
+	skip      []string             // children that aren't, such as thin_delta's same
+}
+
+func thinDump(devID string) thinFormat {
+	return thinFormat{container: "device", devID: devID,
+		ranges: map[string][2]string{"range_mapping": {"origin_begin", "length"}, "single_mapping": {"origin_block", ""}}}
+}
+
+var thinDelta = thinFormat{container: "diff", skip: []string{"same"},
+	ranges: map[string][2]string{"different": {"begin", "length"}, "left_only": {"begin", "length"}, "right_only": {"begin", "length"}}}
+
+// thinRanges reads thin_dump's or thin_delta's XML, as device-mapper-persistent-data 1.3.4 prints it: the superblock gives
+// the block size in sectors, and the ranges give a first block and a count. Without --dev-id, thin_dump prints <def> and
+// <ref> for shared mappings, which aren't expected here, as nvweaver always names the device.
+func thinRanges(out string, f thinFormat) (Blocks, error) {
 	var b Blocks
 	var ranges []Range
+	var path []string // the open elements
+	containers := 0
 	dec := xml.NewDecoder(strings.NewReader(out))
 	for {
 		tok, err := dec.Token()
@@ -149,47 +176,86 @@ func thinRanges(out string, want map[string][2]string) (Blocks, error) {
 		if err != nil {
 			return Blocks{}, fmt.Errorf("parse the thin tools' output: %w", err)
 		}
+		if _, ok := tok.(xml.EndElement); ok {
+			path = path[:len(path)-1]
+			continue
+		}
 		el, ok := tok.(xml.StartElement)
 		if !ok {
 			continue
 		}
-		attr := func(name string) (int64, error) {
-			for _, a := range el.Attr {
-				if a.Name.Local == name {
-					return strconv.ParseInt(a.Value, 10, 64)
+		name := el.Name.Local
+		parent := ""
+		if len(path) > 0 {
+			parent = path[len(path)-1]
+		}
+		path = append(path, name)
+		attrText := func(a string) (string, bool) {
+			for _, at := range el.Attr {
+				if at.Name.Local == a {
+					return at.Value, true
 				}
 			}
-			return 0, fmt.Errorf("<%s> has no %s", el.Name.Local, name)
+			return "", false
 		}
-		if el.Name.Local == "superblock" {
+		attr := func(a string) (int64, error) {
+			v, ok := attrText(a)
+			if !ok {
+				return 0, fmt.Errorf("the thin tools' <%s> has no %s", name, a)
+			}
+			return strconv.ParseInt(v, 10, 64)
+		}
+		switch {
+		case len(path) == 1:
+			if name != "superblock" {
+				return Blocks{}, fmt.Errorf("the thin tools' output starts with <%s>, not <superblock>", name)
+			}
 			sectors, err := attr("data_block_size")
 			if err != nil || sectors <= 0 {
 				return Blocks{}, fmt.Errorf("parse the thin tools' block size: %v", err)
 			}
 			b.BlockSize = sectors * 512
-			continue
-		}
-		names, ok := want[el.Name.Local]
-		if !ok {
-			continue
-		}
-		if b.BlockSize == 0 {
-			return Blocks{}, errors.New("the thin tools gave ranges before their block size")
-		}
-		first, err := attr(names[0])
-		if err != nil {
-			return Blocks{}, err
-		}
-		count := int64(1)
-		if names[1] != "" {
-			if count, err = attr(names[1]); err != nil {
+		case len(path) == 2:
+			if name != f.container {
+				return Blocks{}, fmt.Errorf("unexpected <%s> in the thin tools' output, where <%s> was expected", name, f.container)
+			}
+			if containers++; containers > 1 {
+				return Blocks{}, fmt.Errorf("more than one <%s> in the thin tools' output", name)
+			}
+			if f.devID != "" {
+				if id, _ := attrText("dev_id"); id != f.devID {
+					return Blocks{}, fmt.Errorf("the thin tools described device %q, not %s", id, f.devID)
+				}
+			}
+		case len(path) == 3 && slices.Contains(f.skip, name):
+		case len(path) == 3 && f.ranges[name] != [2]string{}:
+			names := f.ranges[name]
+			first, err := attr(names[0])
+			if err != nil {
 				return Blocks{}, err
 			}
+			count := int64(1)
+			if names[1] != "" {
+				if count, err = attr(names[1]); err != nil {
+					return Blocks{}, err
+				}
+			}
+			if first < 0 || count < 0 {
+				return Blocks{}, fmt.Errorf("the thin tools' <%s> has a negative block or count", name)
+			}
+			ranges = append(ranges, Range{Offset: first * b.BlockSize, Length: count * b.BlockSize})
+		default:
+			return Blocks{}, fmt.Errorf("unexpected <%s> in <%s> in the thin tools' output, which may mean a change that would be missed", name, parent)
 		}
-		ranges = append(ranges, Range{Offset: first * b.BlockSize, Length: count * b.BlockSize})
 	}
 	if b.BlockSize == 0 {
 		return Blocks{}, errors.New("the thin tools gave no superblock")
+	}
+	if containers == 0 {
+		if f.devID != "" {
+			return Blocks{}, fmt.Errorf("the thin tools have no device %s", f.devID)
+		}
+		return Blocks{}, fmt.Errorf("the thin tools gave no <%s>", f.container)
 	}
 	b.Ranges = mergeRanges(ranges)
 	return b, nil

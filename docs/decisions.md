@@ -708,3 +708,27 @@ there, not as absolute numbers.
 - **Kept safe:** a check that can't read CSINodes, or finds none of the driver's, does nothing, as an empty answer is more
   likely a broken one than a cluster with no nodes. The driver reads CSINodes with the standard library, with its service
   account's token, so there's no Kubernetes client to add (decision 40).
+
+## 55. Changed block tracking holds what it reads, and fails on what it doesn't understand
+
+From the fourth outside review. Decision 50's choice to over-report is unchanged. These are about an answer that is too small,
+which is worse: every incremental backup built on it is wrong, and nothing says so.
+
+- **The problem:** on LVM, the thin IDs were read before the metadata snapshot was reserved, and the API held neither snapshot
+  while the storage was read. Device-mapper reuses a deleted device's ID, so a snapshot deleted in between, with another
+  taking its ID, gave the other's mappings, and an empty answer looked like "nothing changed". The XML parser also skipped
+  any element it didn't know, so a new kind of difference would have been dropped quietly. And `thin_dump --dev-id` for a
+  device that isn't there prints an empty superblock and exits 0, which read as "nothing allocated".
+- **Chosen: the API holds the snapshots while reading,** with the shared reservation that `removeSnapshot`'s exclusive
+  one clashes with, so a delete meanwhile is a 503, which clients retry. It's released before the answer is written. Each page
+  is a separate request, so a delete between pages is allowed: the next page then finds no snapshot, a 404, not another's.
+  **Left open:** a snapshot deleted between pages and made again under the same name would be read as the new one. The CSI
+  driver's snapshot names are unique, so it can't happen there; an API client that reuses names could stitch two together.
+  A page token naming the internal name would close it, and is in `TODO.md`.
+- **Chosen: on LVM, each thin ID is read after the metadata snapshot is reserved.** LVs' names are random and never reused
+  (`NewInternalName`), so a name that's there after reserving was there when the metadata was frozen, with the same ID. A
+  second lookup before reserving, to compare, would add nothing.
+- **Chosen: the parser accepts only what 1.3.4 prints for nvweaver's flags.** One `<diff>` with `same`, `different`,
+  `left_only` and `right_only`, or one `<device>`, the one asked for, with `range_mapping` and `single_mapping`. Anything
+  else is an error that names the element. `<def>` and `<ref>`, for shared mappings, appear only without `--dev-id`, which
+  nvweaver always passes. That was checked on metadata with a shared subtree, made with `thin_restore`.

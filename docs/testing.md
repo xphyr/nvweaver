@@ -736,6 +736,23 @@ their background `lab.sh ssh` loops running on the build host, on connections to
 committed when it was reserved, and nvweaver's snapshots are committed when taken), btrfs, Arm, SPDK's own snapshots, which
 nvweaver doesn't use, and real disks.
 
+**The fourth outside review, decision 55.** Unit tests only, each failing before its fix:
+
+- `TestAThinIDReusedMeanwhileIsntRead` makes an LV go after its ID was read, with another taking ID 7. Before the fix, the old
+  code returned the other device's ranges, empty here, with no error, for both `Changed` cases.
+- `TestSnapshotsBeingReadArentDeleted` deleted a snapshot mid-read with a 204 before the fix; now it's a 503.
+- `TestThinToolsOutputNotUnderstoodIsAnError` covers 14 kinds of bad output. A scratch run of the old parser over two of
+  them showed the misses: it skipped an unknown `<moved>` and returned the rest, and it read `thin_dump`'s empty superblock
+  for a missing device as nothing allocated.
+- The new parser was also run over 1.3.4's real output, made with `thin_restore` on files. The metadata had a subtree shared
+  between two devices, as snapshots have. `thin_dump --dev-id` expanded it, with no `<def>` or `<ref>`; without `--dev-id` it
+  printed both. `thin_delta` printed `same` and `left_only`, and an empty `<diff>` for two empty devices. All were read
+  correctly, and the missing device was an error.
+
+`cbt-check.sh` wasn't run again, as the reviewer agreed it can't make a reused ID or a bad tool answer. `run-all.sh`, with
+these and decision 54's changes, on 2026-11-10: vm-e2e 949, webui-real 93, kernel 311, spdk 327, systemd 76, all passed,
+none failed, and nothing was left behind.
+
 ### Nodes leaving the cluster, and hosts' labels
 
 Decision 54, on 2026-11-10. `k3s-csi.sh test` runs the janitor every 15 seconds, and checks:

@@ -227,6 +227,10 @@ are in `CLAUDE.review.md`, which isn't in the repository.
     - [x] Driver: optional, off unless asked for, and only from Kubernetes 1.33, the sidecar's minimum. The `SnapshotMetadata` service, the `external-snapshot-metadata` sidecar with its TLS and token audiences, and a
           `SnapshotMetadataService` object, by the Helm chart. Tested end to end in the k3s lab with the sidecar project's example
           client: `k3s-csi.sh cbt`
+    - [x] The fourth outside review: snapshots held while they're read, thin IDs read once the metadata is frozen, and thin tools'
+          output it doesn't understand, or for a device that isn't there, an error. Decision 55
+    - [ ] Pages of `/allocated` and `/changes` tied to the snapshot's internal name, so that one deleted between pages and made
+          again under the same name isn't stitched in. The driver's names are unique, so only API clients that reuse names see it
     - [ ] Changed block tracking with the manifests too, not only the Helm chart
     - [ ] Check whether Velero, Kasten or other backup tools use it yet, and try one
     - [ ] Test it on OpenShift, which needs `nvw` on 4.20 (Kubernetes 1.33) or later; it's on 4.22, so it can be tried now
