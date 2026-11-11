@@ -367,6 +367,19 @@ node, and delete those subsystems in nvweaver, as nodes keep using a connection 
 driver makes them again, on the new port, for each node's next volume. On OpenShift, apply the StorageProfile again too, as
 recreating the class resets it. A way to do this without the manual steps is in `TODO.md`.
 
+### Two nvweavers in one cluster
+
+One cluster can use two nvweavers, such as one on a storage server and one on a Synology, with a second instance of the
+driver: install the chart again, as another release in a namespace of its own. Give the second one, so that nothing clashes:
+- **its own `driverName`,** such as `syn.nvweaver.xphyr.github.io`, which its StorageClasses then name;
+- **its own `nqnPrefix`,** such as `nqn.2026-11.io.github.xphyr.nvweaver:syn`. Otherwise both make a subsystem for each node
+  under the same name, on two servers, and a host takes one name reached at two addresses for two paths to the same
+  subsystem, and mixes them up;
+- **its own `node.livenessPort`,** such as 9898, as the node plugins use the host's network;
+- **its own class names,** in `storageClasses` and `volumeSnapshotClass`, and a scoped token from the other nvweaver.
+
+Tested on OpenShift 4.22 with nvweaver-1 and a Synology's DSM side by side. See `docs/testing.md`.
+
 ### Driver flags
 
 Set in `deploy/nvweaver-csi.yaml`, on the `driver` containers.

@@ -63,7 +63,7 @@ spec:
             - {name: registration, mountPath: /registration}
         - name: liveness
           image: {{ .Values.sidecars.livenessProbe.image }}
-          args: [--csi-address=/csi/csi.sock, --http-endpoint=:9899]
+          args: [--csi-address=/csi/csi.sock, --http-endpoint=:{{ .Values.node.livenessPort }}]
           volumeMounts: [{name: plugin, mountPath: /csi}]
       volumes:
         - {name: plugin, hostPath: {path: {{ $plugin }}, type: DirectoryOrCreate}}

@@ -44,6 +44,9 @@ node:
   maxVolumesPerNode: 1024
   # The kubelet's directory on the nodes.
   kubeletDir: /var/lib/kubelet
+  # The liveness sidecar's port, on the node's own network, as the node plugin uses the host's. Change it if something else
+  # on the nodes uses it, such as a second instance of this driver.
+  livenessPort: 9899
   priorityClassName: system-node-critical
   resources: {}
   nodeSelector: {}

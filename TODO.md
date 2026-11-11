@@ -338,7 +338,9 @@ tests.
       is 24.0.2. See "A Synology's DSM, for SPDK first" in `docs/testing.md`
 - [x] The least privilege SPDK runs with: none. The SPDK Quadlet's settings worked unchanged on DSM, with a host connecting,
       snapshots, clones and a snapshot group: host networking, every capability dropped, `no-new-privileges`, no devices
-- [ ] The same on the user's real Synology, an x86 model, and its storage network
+- [x] The storage network: `nvw` used the Virtual DSM's nvweaver over the SAN, through a second instance of the CSI
+      driver, on 2026-11-11. See `docs/testing.md`
+- [ ] The same on the user's real Synology, an x86 model
 - [ ] An Arm Synology: the user has none, so it waits for a contributor who has. SPDK and the images already run on Arm
       elsewhere (`snoarm`, the CM4), but DSM's Arm kernels are older, and untested
 - [ ] Make SPDK and reflink the defaults where nothing says otherwise, and say so in the README, keeping the kernel target,

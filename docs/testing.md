@@ -887,6 +887,27 @@ every file owned by that user, the TLS key, users file and `.env` mode 0600, the
   worked. A users file with the wrong permissions, their own slip, was the only thing to fix.
 - Not tried yet: a real Synology, an Arm model, and the storage network.
 
+### OpenShift, through a second driver, to SPDK on a Synology's DSM, over the SAN
+
+On `nvw`, OpenShift 4.22, on 2026-11-11: `dist/synology/compose.yaml` on the Virtual DSM, set up as its guide says, with the
+API on the routed network, TLS, and a scoped token for `nvw`, and its NVMe/TCP port on the storage network. A second
+instance of the CSI driver, with its own driver name, NQN prefix, liveness port and classes, beside the one for
+nvweaver-1, which carried on undisturbed. Every node's Lease said it could be paused.
+- A filesystem volume, written on master-0, connected from its SAN address, and read on master-1.
+- A snapshot, and a clone of it read on master-2.
+- A raw block volume, 16 MiB written directly and read back the same.
+- Deleted, nothing was left in nvweaver.
+
+**Found on the way:**
+- **The chart had the node plugin's liveness port fixed at 9899,** on the host's network, so a second instance's would have
+  failed to start. It's `node.livenessPort` now.
+- **A second instance needs its own NQN prefix,** or each node's subsystem has the same name on both servers, which a host
+  would take for two paths to one subsystem. `csi/README.md` says so.
+- **The test script's own faults:** pods pinned with `nodeName`, which skips the scheduler, so a `WaitForFirstConsumer`
+  claim never bound and nothing was provisioned; a `}` inside `${4:+...}`, which ended the expansion early; a Warning check
+  across the whole namespace, which took one pod's events for another's; and "Waiting for detach", which is normal while a
+  volume moves, taken for a failure. The waits did stop at the first sign of trouble, as they should.
+
 ### Snapshot groups
 
 Decision 56, on 2026-11-10. `e2e.sh` checks that a group's snapshots are consistent with each other, on a reflink pool,
