@@ -669,7 +669,7 @@ there, not as absolute numbers.
   1.26.11 came out, the image had it the same day, while `setup-go`'s list of releases still stopped at 1.26.10, so a pull
   request's images and binaries were built with different Go, and the SBOM check refused them, as it's meant to (decision
   on releases in `docs/releasing.md`). Nothing in the pull request had changed.
-- **Chosen, by the user: one exact release everywhere,** `1.26.10` for now: the three Containerfiles, CI's `setup-go`, and
+- **Chosen, by the user: one exact release everywhere,** `1.26.11` since v0.5.0, `1.26.10` before: the three Containerfiles, CI's `setup-go`, and
   the test images and tools. A new Go release becomes a deliberate change, made once `setup-go` lists it, in all of them at
   once, and tested like any other.
 - **Accepted:** a Go patch release, which can carry security fixes, isn't used until someone bumps it. Check for one at

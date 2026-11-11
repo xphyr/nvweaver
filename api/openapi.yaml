@@ -16,7 +16,7 @@ info:
     DH-HMAC-CHAP keys. Anything else that changes the service is `403` to it: pools, ports, changing or deleting hosts,
     passthrough, letting any host connect, and namespaces on devices or files rather than its own volumes. One scoped token
     for each Kubernetes cluster keeps clusters that share a service from touching each other's volumes.
-  version: 0.4.0
+  version: 0.5.0
   license:
     name: MIT
     identifier: MIT

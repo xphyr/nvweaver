@@ -1,6 +1,6 @@
 # A disposable machine for test/systemd-e2e.sh: real systemd as PID 1, with the
 # service put in place by the real "make install".
-FROM docker.io/library/golang:1.26.10-alpine AS build
+FROM docker.io/library/golang:1.26.11-alpine AS build
 RUN apk add --no-cache make
 WORKDIR /src
 COPY go.mod go.sum Makefile README.md LICENSE THIRD_PARTY_NOTICES.md ./

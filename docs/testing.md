@@ -1052,6 +1052,20 @@ first time and found every module the notices list for it, and the Go runtime. I
 Go, failed there, as the tarball was built with Fedora's Go, which reports `go1.26.10-X:nodwarf5`, while the images used the Go
 container's `go1.26.10`. That's the check doing its job: the release builds the tarball with `setup-go` in CI, as for v0.3.0.
 
+### Before v0.5.0
+
+On 2026-11-11, with images built with Go 1.26.11 from the release branch, on x86-64 VMs:
+- **The upgrade from v0.4.0, `test/vm/upgrade.sh`, new for this release,** 68 of 68 on each run, on both backends. The published
+  0.4.0 images made a port, a host, a subsystem, a reflink and an LVM pool, a volume, a snapshot and a clone, and a file
+  namespace, and a host wrote to the volumes. This version started on that data with no errors or warnings, kept every
+  object as it was, the host read its data back the same, and a snapshot group of both pools' volumes worked on it. Its
+  first version could have passed with nothing recorded, as an error both times compares equal: it now checks that what it
+  recorded holds every object.
+- `run-all.sh`: `vm-e2e.sh` 1004, the browser against real targets 93, kernel `e2e.sh` 348, SPDK `e2e.sh` 364, systemd 76,
+  all passing.
+- The k3s lab on 1.37.2: `k3s-csi.sh test` 44, `groups` 14, `cbt` 13, and `csi-sanity` 75 of 75; on 1.31.14, `test` 44,
+  `groups` 14 and `csi-sanity` 75. All passing, and nothing was left behind.
+
 ## Not tested
 
 Deferred until hardware is available, as tracked in `TODO.md`:

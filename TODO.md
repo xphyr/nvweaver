@@ -42,7 +42,8 @@ share a host NQN; a guest writing while it live-migrates; publishing the Helm ch
 
 - [ ] Keep the Go version in one file that the Containerfiles (by a build argument) and CI read, so that a bump is one line
       (decision 52). Until then it's in the three Containerfiles, `ci.yml`'s four `setup-go` steps, and the test images
-- [ ] Bump Go to 1.26.11 once `setup-go` lists it, everywhere at once, and check for a new patch release before each release
+- [x] Bump Go to 1.26.11 once `setup-go` lists it, everywhere at once: done for v0.5.0, decision 52
+- [ ] Check for a new Go patch release before each release, and bump it the same way
 - [x] Create a GitHub workflow for building and releasing code (`docs/releasing.md`)
   - [x] Lint and unit tests on every push
   - [x] End-to-end suites in VMs on every push
@@ -79,7 +80,8 @@ share a host NQN; a guest writing while it live-migrates; publishing the Helm ch
 - [ ] Find out why the workflow's token was refused writing to `nvweaver-buildcache` from about 21:50 UTC on 2026-11-09, with the
       repository holding Admin access to it: `denied: permission_denied: write_package`. Writing it is best-effort now, so `main`'s CI
       only warns, and releases don't write it
-- [ ] Test that a new version reads the previous release's saved state, before each release. Nothing does yet
+- [x] Test that a new version reads the previous release's saved state, before each release: `test/vm/upgrade.sh`, first run
+      for v0.5.0, and in `docs/releasing.md`
 - [x] Add a `LICENSE` (MIT)
 - [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)
 - [ ] Add container image scanning prior to image publication
@@ -350,7 +352,7 @@ tests.
       `DAC_READ_SEARCH`, to read files made in File Station. Tested with `docker compose` on the Virtual DSM. Decision 57
 - [x] Try `dist/synology/` through Container Manager's Project screens, as the guide says: the user did, on 2026-11-11, and
       it worked
-- [ ] Put `dist/synology/` in the release tarball, as `dist/systemd/` is
+- [x] Put `dist/synology/` in the release tarball, as `synology/`, with the Compose file using that release's SPDK image
 - [ ] Later, if wanted: a Helm chart for nvweaver itself, to run it inside a Kubernetes cluster
 - [ ] An end-to-end suite for the least-privilege container, so that a change needing more privileges fails a test
 - [ ] Check what SPDK's image costs on a small box: its size, its memory at idle, and its CPU with interrupt mode
