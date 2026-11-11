@@ -97,6 +97,13 @@ volumeSnapshotClass:
   name: nvweaver
   deletionPolicy: Delete
 
+# Group snapshots: VolumeGroupSnapshot, several volumes snapshotted as of one instant, consistent with each other. Off unless
+# asked for. It needs Kubernetes 1.32 or later, with the group snapshot CRDs, v1beta2, and nodes using native NVMe multipath:
+# nvweaver pauses hosts' I/O to the volumes while it takes one, and refuses a group on a node that can't be paused. See
+# csi/README.md and decision 56.
+groupSnapshots:
+  enabled: false
+
 # Changed block tracking, for backups: the external-snapshot-metadata sidecar, which backup tools reach over TLS for what
 # changed between two snapshots. Off unless asked for. It needs Kubernetes 1.33 or later, and the SnapshotMetadataService
 # CRD installed first: see csi/README.md. Decision 50.

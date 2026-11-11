@@ -41,6 +41,7 @@ func main() {
 	maxVols := flag.Int64("max-volumes-per-node", driver.MaxNamespaces, "how many volumes a node tells Kubernetes it can take")
 	cleanup := flag.Duration("node-cleanup-interval", 5*time.Minute, "in controller mode, how often to label nodes' hosts in nvweaver and forget nodes that have left the cluster; 0 stops it")
 	metadata := flag.Bool("snapshot-metadata", false, "serve changed block tracking to the external-snapshot-metadata sidecar, for backups, in controller mode; it needs Kubernetes 1.33")
+	groups := flag.Bool("group-snapshots", false, "serve group snapshots, VolumeGroupSnapshot, in controller mode; it needs Kubernetes 1.32, and nodes with native NVMe multipath")
 	showVersion := flag.Bool("version", false, "print the version, and stop")
 	flag.Parse()
 	if *showVersion {
@@ -51,7 +52,8 @@ func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(*endpoint, *mode, *hostNQN, *cleanup, driver.Config{
 		Name: *name, Version: version, Cluster: *cluster, NQNPrefix: *prefix, Port: *port,
-		CtrlLossTmo: *lossTmo, ReconnectDelay: *reconnect, MaxVolumesPerNode: *maxVols, SnapshotMetadata: *metadata, Log: log,
+		CtrlLossTmo: *lossTmo, ReconnectDelay: *reconnect, MaxVolumesPerNode: *maxVols, SnapshotMetadata: *metadata,
+		GroupSnapshots: *groups, Log: log,
 	}, log); err != nil {
 		log.Error("stopped", "err", err)
 		os.Exit(1)
@@ -82,6 +84,10 @@ func run(endpoint, mode, hostNQNFile string, cleanup time.Duration, cfg driver.C
 		if cfg.SnapshotMetadata {
 			csi.RegisterSnapshotMetadataServer(srv, driver.NewSnapshotMetadata(c))
 		}
+		if cfg.GroupSnapshots {
+			nodes, pausable := groupNodes(cfg)
+			csi.RegisterGroupControllerServer(srv, driver.NewGroupController(cfg, c, nodes, pausable))
+		}
 	}
 	if mode == "node" || mode == "all" {
 		n, err := driver.NewNode(cfg, hostNQNFile)
@@ -105,6 +111,10 @@ func run(endpoint, mode, hostNQNFile string, cleanup time.Duration, cfg driver.C
 		<-ctx.Done()
 		srv.GracefulStop()
 	}()
+	// Whether this node can be paused, for the controller's group snapshots: decision 56. NODE_NAME is from the pod.
+	if node := os.Getenv("NODE_NAME"); node != "" && (mode == "node" || mode == "all") {
+		go driver.ReportPausable(ctx, cfg, node)
+	}
 	if c, ok := api.(*client.Client); ok && cleanup > 0 {
 		// Only in a cluster: run elsewhere, as csi-sanity does, there are no CSINodes to read.
 		if nodes, err := driver.InClusterNodes(cfg.Name); err != nil {
@@ -115,6 +125,23 @@ func run(endpoint, mode, hostNQNFile string, cleanup time.Duration, cfg driver.C
 	}
 	log.Info("serving", "driver", cfg.Name, "version", cfg.Version, "mode", mode, "cluster", cfg.Cluster, "endpoint", endpoint)
 	return srv.Serve(lis)
+}
+
+// groupNodes is how the group controller finds which nodes use a volume, and whether they can be paused. Outside a
+// cluster, as csi-sanity runs it, there are no nodes to ask, so a group of exported volumes is refused there.
+func groupNodes(cfg driver.Config) (driver.NodeLister, driver.PauseReader) {
+	nodes, err := driver.InClusterNodes(cfg.Name)
+	if err != nil {
+		cfg.Log.Warn("group snapshots of exported volumes will be refused", "why", err)
+		return func(context.Context) (map[string]string, error) { return nil, err },
+			func(context.Context, string) (bool, string, error) { return false, "", err }
+	}
+	pausable, err := driver.InClusterPausable(cfg)
+	if err != nil {
+		cfg.Log.Warn("group snapshots of exported volumes will be refused", "why", err)
+		return nodes, func(context.Context, string) (bool, string, error) { return false, "", err }
+	}
+	return nodes, pausable
 }
 
 func listen(endpoint string) (net.Listener, error) {

@@ -25,6 +25,7 @@ func TestClientTypesMatchTheSpec(t *testing.T) {
 		"VolumeSource": client.VolumeSource{}, "VolumeMapping": client.VolumeMapping{}, "Volume": client.Volume{},
 		"VolumeUsage": client.VolumeUsage{}, "VolumePage": client.VolumePage{}, "VolumeCreate": client.VolumeCreate{}, "VolumeUpdate": client.VolumeUpdate{},
 		"Snapshot": client.Snapshot{}, "SnapshotPage": client.SnapshotPage{}, "SnapshotCreate": client.SnapshotCreate{},
+		"SnapshotGroup": client.SnapshotGroup{}, "SnapshotGroupPage": client.SnapshotGroupPage{}, "SnapshotGroupCreate": client.SnapshotGroupCreate{},
 		"BlockRanges": client.BlockRanges{}, "BlockRange": client.BlockRange{},
 	}
 	for schema, props := range s.schemas {
@@ -254,6 +255,31 @@ func TestClientReachesEveryOperation(t *testing.T) {
 	}
 	must("delete clone", c.DeleteVolume(ctx, "c"))
 	must("delete snapshot", c.DeleteSnapshot(ctx, "s"))
+
+	group, err := c.CreateSnapshotGroup(ctx, client.SnapshotGroupCreate{Name: "g", Volumes: []string{"v"}})
+	must("create snapshot group", err)
+	if len(group.Snapshots) != 1 || group.Snapshots[0] != "g-1" {
+		t.Errorf("snapshot group came back as %+v", group)
+	}
+	member, err := c.GetSnapshot(ctx, "g-1")
+	must("get a group's snapshot", err)
+	if member.Group != "g" {
+		t.Errorf("a group's snapshot came back as %+v", member)
+	}
+	if err := c.DeleteSnapshot(ctx, "g-1"); !client.IsConflict(err) {
+		t.Errorf("deleting a group's snapshot on its own: got %v", err)
+	}
+	groups, err := c.ListSnapshotGroups(ctx)
+	must("list snapshot groups", err)
+	if len(groups) != 1 {
+		t.Errorf("got %d snapshot groups", len(groups))
+	}
+	_, err = c.GetSnapshotGroup(ctx, "g")
+	must("get snapshot group", err)
+	must("delete snapshot group", c.DeleteSnapshotGroup(ctx, "g"))
+	if _, err := c.GetSnapshot(ctx, "g-1"); !client.IsNotFound(err) {
+		t.Errorf("a deleted group's snapshot: got %v", err)
+	}
 	must("delete volume", c.DeleteVolume(ctx, "v"))
 	must("delete pool", c.DeletePool(ctx, "p"))
 

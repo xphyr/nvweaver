@@ -592,3 +592,45 @@ func (c *Client) CreateSnapshot(ctx context.Context, in SnapshotCreate) (*Snapsh
 func (c *Client) DeleteSnapshot(ctx context.Context, name string) error {
 	return c.request(ctx, http.MethodDelete, p("v1", "snapshots", name), nil, nil, nil)
 }
+
+// SnapshotGroupsPage returns one page of snapshot groups. A limit of 0 uses the API's default.
+func (c *Client) SnapshotGroupsPage(ctx context.Context, limit int, after string) (*SnapshotGroupPage, error) {
+	out := &SnapshotGroupPage{}
+	if err := c.request(ctx, http.MethodGet, "/v1/snapshot-groups", pageQuery("", "", limit, after), nil, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListSnapshotGroups returns every snapshot group, following pages.
+func (c *Client) ListSnapshotGroups(ctx context.Context) ([]SnapshotGroup, error) {
+	var all []SnapshotGroup
+	after := ""
+	for {
+		page, err := c.SnapshotGroupsPage(ctx, 0, after)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page.Items...)
+		if page.NextAfter == "" {
+			return all, nil
+		}
+		after = page.NextAfter
+	}
+}
+
+// GetSnapshotGroup returns one snapshot group.
+func (c *Client) GetSnapshotGroup(ctx context.Context, name string) (*SnapshotGroup, error) {
+	return get[SnapshotGroup](ctx, c, p("v1", "snapshot-groups", name))
+}
+
+// CreateSnapshotGroup snapshots several volumes as of one instant, pausing hosts' I/O to them meanwhile. Asking again
+// with the same settings returns the existing group.
+func (c *Client) CreateSnapshotGroup(ctx context.Context, in SnapshotGroupCreate) (*SnapshotGroup, error) {
+	return send[SnapshotGroup](ctx, c, http.MethodPost, "/v1/snapshot-groups", in)
+}
+
+// DeleteSnapshotGroup removes a snapshot group and its snapshots.
+func (c *Client) DeleteSnapshotGroup(ctx context.Context, name string) error {
+	return c.request(ctx, http.MethodDelete, p("v1", "snapshot-groups", name), nil, nil, nil)
+}

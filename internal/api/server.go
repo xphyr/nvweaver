@@ -135,6 +135,8 @@ var scopedMay = map[string]bool{
 	"DELETE /v1/volumes/{volume}":                   true,
 	"POST /v1/snapshots":                            true,
 	"DELETE /v1/snapshots/{snapshot}":               true,
+	"POST /v1/snapshot-groups":                      true,
+	"DELETE /v1/snapshot-groups/{group}":            true,
 }
 
 func adminOnly(h handler) handler {
@@ -260,6 +262,10 @@ func (s *Server) Handler() http.Handler {
 	route("GET /v1/snapshots/{snapshot}/allocated", s.getSnapshotAllocated)
 	route("GET /v1/snapshots/{snapshot}/changes", s.getSnapshotChanges)
 	route("DELETE /v1/snapshots/{snapshot}", s.deleteSnapshot)
+	route("GET /v1/snapshot-groups", s.listSnapshotGroups)
+	route("POST /v1/snapshot-groups", s.createSnapshotGroup)
+	route("GET /v1/snapshot-groups/{group}", s.getSnapshotGroup)
+	route("DELETE /v1/snapshot-groups/{group}", s.deleteSnapshotGroup)
 
 	route("GET /v1/subsystems/{nqn}/namespaces", s.listNamespaces)
 	route("POST /v1/subsystems/{nqn}/namespaces", s.createNamespace)

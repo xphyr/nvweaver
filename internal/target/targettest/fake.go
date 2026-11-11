@@ -134,10 +134,22 @@ func (f *FS) Write(p, v string) error {
 		return syscall.EINVAL
 	case filepath.Base(p) == "enable" && v == "1" && f.attrs[dir+"/device_path"] == "":
 		return syscall.EINVAL
+	case filepath.Base(p) == "ana_grpid" && v != "1" && !f.anaGroupExists(v):
+		// The kernel puts a namespace only in a group that some port has.
+		return syscall.EINVAL
 	}
 	f.Writes++
 	f.attrs[p] = v
 	return nil
+}
+
+func (f *FS) anaGroupExists(grp string) bool {
+	for d := range f.dirs {
+		if strings.Contains(d, "/ports/") && strings.HasSuffix(d, "/ana_groups/"+grp) {
+			return true
+		}
+	}
+	return false
 }
 
 // Symlink implements target.ConfigFS.

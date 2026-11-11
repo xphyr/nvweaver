@@ -2,16 +2,11 @@ package driver
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
-	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -169,45 +164,23 @@ type csiNodeDriver struct {
 }
 
 // InClusterNodes lists the nodes that have this driver, from their CSINodes, with the pod's service account, as kubelet
-// registers each node's driver and its node ID there. It uses only the standard library: see decision 40.
+// registers each node's driver and its node ID there.
 func InClusterNodes(driverName string) (NodeLister, error) {
-	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
-	if host == "" || port == "" {
-		return nil, fmt.Errorf("not in a Kubernetes pod: KUBERNETES_SERVICE_HOST and _PORT aren't set")
-	}
-	const sa = "/var/run/secrets/kubernetes.io/serviceaccount/"
-	ca, err := os.ReadFile(sa + "ca.crt")
+	k, err := inCluster()
 	if err != nil {
 		return nil, err
 	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(ca) {
-		return nil, fmt.Errorf("no certificates in %sca.crt", sa)
-	}
-	hc := &http.Client{Timeout: 30 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}
-	base := "https://" + net.JoinHostPort(host, port) + "/apis/storage.k8s.io/v1/csinodes"
+	return k.nodes(driverName), nil
+}
+
+func (k *kube) nodes(driverName string) NodeLister {
 	return func(ctx context.Context) (map[string]string, error) {
-		// Read each time, as the kubelet rotates the token.
-		token, err := os.ReadFile(sa + "token")
-		if err != nil {
-			return nil, err
-		}
 		out := map[string]string{}
 		next := ""
 		for {
 			q := url.Values{"limit": {"500"}}
 			if next != "" {
 				q.Set("continue", next)
-			}
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"?"+q.Encode(), nil)
-			if err != nil {
-				return nil, err
-			}
-			req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
-			resp, err := hc.Do(req)
-			if err != nil {
-				return nil, err
 			}
 			var list struct {
 				Metadata struct {
@@ -222,12 +195,7 @@ func InClusterNodes(driverName string) (NodeLister, error) {
 					} `json:"spec"`
 				} `json:"items"`
 			}
-			err = json.NewDecoder(resp.Body).Decode(&list)
-			_ = resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				return nil, fmt.Errorf("listing CSINodes: %s", resp.Status)
-			}
-			if err != nil {
+			if err := k.do(ctx, http.MethodGet, "/apis/storage.k8s.io/v1/csinodes?"+q.Encode(), nil, &list); err != nil {
 				return nil, fmt.Errorf("listing CSINodes: %w", err)
 			}
 			for _, n := range list.Items {
@@ -239,5 +207,5 @@ func InClusterNodes(driverName string) (NodeLister, error) {
 				return out, nil
 			}
 		}
-	}, nil
+	}
 }

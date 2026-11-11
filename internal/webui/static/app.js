@@ -806,9 +806,10 @@ function deleteSnapshotDialog(snap) {
   });
 }
 
+// A snapshot in a group goes only with its group, so it has no Delete of its own.
 const snapshotActions = (s) => el("div", { class: "row-actions" },
   el("button", { onclick: () => cloneDialog(s.name, "snapshot") }, "Clone"),
-  el("button", { class: "danger-quiet", onclick: () => deleteSnapshotDialog(s) }, "Delete"));
+  s.group ? null : el("button", { class: "danger-quiet", onclick: () => deleteSnapshotDialog(s) }, "Delete"));
 
 // --- Screens. Each returns what to show, and is called again to refresh. ---
 
@@ -990,6 +991,7 @@ async function snapshots() {
       { title: "Pool", cell: (s) => link(s.pool, "volumes", s.pool), text: (s) => s.pool },
       { title: "Size", num: true, cell: (s) => humanSize(s.size_bytes) },
       { title: "Taken", cell: (s) => humanTime(s.created_at) },
+      { title: "Group", cell: (s) => s.group || "-", text: (s) => s.group || "" },
       ownerColumn,
       { title: "", cell: snapshotActions },
     ], items, { empty: "No snapshots yet. Open a volume to take one.", state: stateOf("snapshots"), more: more ? loadMore : undefined }),

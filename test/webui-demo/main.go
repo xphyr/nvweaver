@@ -153,6 +153,12 @@ func seed(ctx context.Context, c *client.Client, poolDir, archiveDir string, vol
 			return err
 		}
 	}
+	if volumes >= 4 {
+		// A group of two exported volumes, as of one instant: decision 56.
+		if _, err := c.CreateSnapshotGroup(ctx, client.SnapshotGroupCreate{Name: "db", Volumes: []string{"vol-0003", "vol-0004"}}); err != nil {
+			return err
+		}
+	}
 	if _, err := c.CreateSubsystem(ctx, client.SubsystemCreate{NQN: prefix + "shared", AllowAnyHost: true, Ports: []int{1}}); err != nil {
 		return err
 	}

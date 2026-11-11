@@ -37,10 +37,10 @@ below it, never through this process.
 | `internal/auth` | Signing in: the users file, bcrypt, sessions in memory and limiting guesses; scoped tokens and their file (decision 46) |
 | `internal/webui` | The browser interface: static files embedded in the binary, which only use the public API |
 | `internal/client` | Go client for the API, for the command line utility and CSI driver |
-| `csi/` | The CSI driver, a module of its own (decision 44): controller (`driver/controller.go`), its node janitor (`driver/nodes.go`, decision 54), node plugin (`driver/node.go`), manifests (`deploy/`), Helm chart (`deploy/helm/`) |
+| `csi/` | The CSI driver, a module of its own (decision 44): controller (`driver/controller.go`), its node janitor (`driver/nodes.go`, decision 54), group snapshots (`driver/group.go`) and whether nodes can be paused for them (`driver/pause.go`, decision 56), its Kubernetes API client (`driver/kube.go`), node plugin (`driver/node.go`), manifests (`deploy/`), Helm chart (`deploy/helm/`) |
 | `cmd/nvweaverd` | Startup: settings, backend selection, API server, shutdown |
-| `internal/api` | HTTP handlers (`server.go`), state and safety checks (`manager.go`), checking whether this machine's LVM can read exports (`lvmwatch.go`), LVM's names per pool, for whether an inactive snapshot is there (`lvnames.go`), metrics (`metrics.go`) |
-| `internal/target` | State model and validation (`model.go`), `Backend` interface (`backend.go`), kernel backend (`reconcile.go`) |
+| `internal/api` | HTTP handlers (`server.go`), state and safety checks (`manager.go`), checking whether this machine's LVM can read exports (`lvmwatch.go`), LVM's names per pool, for whether an inactive snapshot is there (`lvnames.go`), snapshot groups, which pause hosts (`groups.go`, decision 56), metrics (`metrics.go`) |
+| `internal/target` | State model and validation (`model.go`), `Backend` interface (`backend.go`), kernel backend (`reconcile.go`), pausing namespaces with ANA (`pause.go`) |
 | `internal/target/targettest` | Fake configfs that enforces the kernel's ordering rules |
 | `internal/spdk` | SPDK backend: reconcile (`backend.go`), process (`process.go`), RPC (`rpc.go`) |
 | `internal/storage` | Pool drivers, which allocate volumes as paths for the backends to export |

@@ -1202,6 +1202,9 @@ func (s *Server) removeSnapshot(name, scope string) error {
 	if err := mayChange(scope, snap.Owner, "snapshot "+name); err != nil {
 		return err
 	}
+	if snap.Group != "" {
+		return target.NewConflict("snapshot %s belongs to snapshot group %s, and goes only with it: delete the group", name, snap.Group)
+	}
 	return s.removeStorage(res, snap.Pool, snap.InternalName, func(st *target.State) error {
 		delete(st.Snapshots, name)
 		return nil

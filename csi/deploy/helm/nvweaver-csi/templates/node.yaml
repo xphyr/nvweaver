@@ -41,6 +41,9 @@ spec:
             - --ctrl-loss-tmo={{ .Values.node.ctrlLossTmo }}
             - --reconnect-delay={{ .Values.node.reconnectDelay }}
             - --max-volumes-per-node={{ .Values.node.maxVolumesPerNode }}
+          env:
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
           securityContext:
             privileged: true
           {{- with .Values.node.resources }}

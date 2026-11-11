@@ -47,6 +47,9 @@ spec:
             {{- if .Values.snapshotMetadata.enabled }}
             - --snapshot-metadata
             {{- end }}
+            {{- if .Values.groupSnapshots.enabled }}
+            - --group-snapshots
+            {{- end }}
           env:
             - name: NVWEAVER_API_URL
               valueFrom: {secretKeyRef: {name: {{ include "nvweaver-csi.secretName" . }}, key: url}}

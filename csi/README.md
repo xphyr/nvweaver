@@ -234,6 +234,52 @@ chart refuses it below 1.33, or without the CRD.
 - **What it reports:** byte ranges in whole blocks of the pool's unit, an LVM thin pool's chunk size or the filesystem's
   block size, so a little more than changed, never less. Both snapshots must be of the same volume, and still exist.
 
+### Group snapshots, consistent across volumes
+
+Optional, and off unless asked for. A `VolumeGroupSnapshot` snapshots several volumes as of one instant: a database's data
+and log volumes, or a VM's disks, restored together, are as they were at one moment, as if every host had lost power at
+once. Each member is an ordinary VolumeSnapshot, which can be restored on its own too. See decision 56.
+
+To make them consistent, **nvweaver pauses hosts' I/O to the volumes while it snapshots them**, with NVMe ANA: for about
+70 ms per volume on an LVM pool, and a few ms on a reflink pool, in the lab. A host waits out the pause only with **native
+NVMe multipath**, Linux's default (`nvme_core.multipath=Y`), which RHCOS, Fedora, Ubuntu and Debian keep. One without it
+would get I/O errors. So each node plugin checks its node, and says in a Lease, `nvweaver-node-<node>` in the driver's
+namespace, whether it can be paused; the controller **refuses a group whose volumes are attached to a node that can't be
+paused**, naming the node. A node that uses none of the group's volumes doesn't matter.
+
+```sh
+kubectl -n nvweaver-csi get leases -L nvweaver.xphyr.github.io/pause-nvme   # each node's answer
+cat /sys/module/nvme_core/parameters/multipath                              # on a node: Y
+```
+
+It needs the group snapshot CRDs, `v1beta2`, and a snapshot controller with group snapshots on: external-snapshotter 8.x,
+from Kubernetes 1.32. **Check that it's on:** external-snapshotter 8.7.0's own manifest runs snapshot-controller 8.6.0,
+which leaves it off, and a `VolumeGroupSnapshot` then just sits there, with no status and no error. Add
+`--feature-gates=CSIVolumeGroupSnapshot=true` to the snapshot controller's arguments. On OpenShift, the cluster's own
+snapshot controller decides, which hasn't been tried yet. Then install or upgrade the chart with `--set groupSnapshots.enabled=true`, or add `--group-snapshots` to
+the controller's `driver` container in `deploy/nvweaver-csi.yaml`, and make a class:
+
+```yaml
+apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+kind: VolumeGroupSnapshotClass
+metadata: {name: nvweaver}
+driver: nvweaver.xphyr.github.io
+deletionPolicy: Delete
+---
+apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+kind: VolumeGroupSnapshot
+metadata: {name: db-nightly}
+spec:
+  volumeGroupSnapshotClassName: nvweaver
+  source: {selector: {matchLabels: {app: db}}}
+```
+
+- **Limits:** at most 64 volumes in a group, one group taken at a time, and a pause that passes 10 seconds is undone, and
+  the group fails, rather than keep hosts waiting. If any snapshot fails, nothing is kept.
+- **Deleting:** a group's snapshots go with it, so delete the `VolumeGroupSnapshot`, not its members.
+- **Crash-consistent, not application-consistent:** what was in a guest's or an application's memory isn't in it. For
+  that, freeze first, as KubeVirt does with its guest agent.
+
 ### With KubeVirt or OpenShift Virtualization
 
 KubeVirt's Containerized Data Importer (CDI) keeps a StorageProfile for each StorageClass, saying what to ask for when it makes
@@ -322,6 +368,7 @@ Set in `deploy/nvweaver-csi.yaml`, on the `driver` containers.
 | `--hostnqn-file` | `/etc/nvme/hostnqn` | The node's host NQN, which is its ID. |
 | `--driver-name` | `nvweaver.xphyr.github.io` | The driver's name in Kubernetes. |
 | `--node-cleanup-interval` | `5m` | On the controller, how often to label nodes' hosts and forget nodes that have left. `0` stops it. The chart's `controller.nodeCleanupInterval`. |
+| `--group-snapshots` | off | On the controller, serve group snapshots. See [Group snapshots](#group-snapshots-consistent-across-volumes). The chart's `groupSnapshots.enabled`. |
 | `--snapshot-metadata` | off | On the controller, serve changed block tracking to the external-snapshot-metadata sidecar. See [Changed block tracking](#changed-block-tracking-for-backups). |
 
 **`--cluster`, `--nqn-prefix` and `--driver-name` can't change once volumes exist:** the driver finds its volumes by them, so
@@ -375,6 +422,8 @@ then disconnect each node with `nvme disconnect -n` and the same name.
   OWNER column shows which cluster's token made each.
 - **A volume stuck attaching:** check that the node can reach nvweaver's port, and that its host NQN isn't shared with another
   node's.
+- **A group snapshot refused with "can't be paused":** the node it names doesn't use native NVMe multipath, or its node
+  plugin hasn't said. See [Group snapshots](#group-snapshots-consistent-across-volumes).
 - **`403` in the controller's log:** the token doesn't own what it was asked to change. See
   [Moving a cluster](#moving-a-cluster-from-the-admin-token-to-a-scoped-one).
 

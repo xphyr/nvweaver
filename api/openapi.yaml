@@ -45,6 +45,10 @@ tags:
     description: Storage created outside this service, adopted to allocate volumes from.
   - name: snapshots
     description: Read-only copies of volumes at a moment in time. To use one, clone it to a new volume.
+  - name: snapshot-groups
+    description: >-
+      Snapshots of several volumes as of one instant, consistent with each other, as for a database's data and log
+      volumes, or a VM's disks. Each member is an ordinary snapshot.
   - name: volumes
     description: Storage allocated from a pool, which exists whether or not it is exported.
 security:
@@ -1030,7 +1034,7 @@ paths:
     delete:
       operationId: deleteSnapshot
       summary: Delete a snapshot and its data
-      description: Volumes cloned from it aren't affected.
+      description: Volumes cloned from it aren't affected. A snapshot in a group goes only with its group.
       tags: [snapshots]
       responses:
         '204':
@@ -1041,6 +1045,12 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: It belongs to a snapshot group. Delete the group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '503':
           $ref: '#/components/responses/Busy'
   /v1/snapshots/{snapshot}/allocated:
@@ -1122,6 +1132,131 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/Busy'
+  /v1/snapshot-groups:
+    get:
+      operationId: listSnapshotGroups
+      summary: List snapshot groups, a page at a time
+      tags: [snapshot-groups]
+      parameters:
+        - name: limit
+          in: query
+          description: The most to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 500
+        - name: after
+          in: query
+          description: Continue after this name, using `next_after` from the previous page.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A page of snapshot groups, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotGroupPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Invalid'
+    post:
+      operationId: createSnapshotGroup
+      summary: Snapshot several volumes as of one instant
+      description: >-
+        Each volume gets a snapshot, named for the group and the volume's place in `volumes`: `<group>-1`, `<group>-2` and so
+        on. They're crash-consistent with each other: what any of them holds is what all the volumes held at one moment, as
+        if every host had lost power at once. To make them so, hosts' I/O to the volumes that are exported is paused while
+        the snapshots are taken, with NVMe ANA: for about 70 ms per volume on an LVM pool, and a few ms on a reflink pool.
+        **Hosts must use native NVMe multipath** (Linux's default, `nvme_core.multipath=Y`), which waits; one without it gets
+        I/O errors for as long as the pause lasts. If any snapshot fails, or the pause passes 10 seconds, everything is
+        undone and the request fails. One group is taken at a time. The same request again succeeds with the existing
+        group, because CSI retries. See decision 56.
+      tags: [snapshot-groups]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SnapshotGroupCreate'
+      responses:
+        '200':
+          description: The group already existed, of these volumes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotGroup'
+        '201':
+          description: The new group, and its snapshots.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotGroup'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: >-
+            The name is taken, by a group of other volumes or by a snapshot with a member's name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/Invalid'
+        '503':
+          description: >-
+            Another group is being taken, a volume is in the middle of another change, or the pause passed 10 seconds and
+            was undone. Retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '507':
+          description: A pool has no room. Nothing was kept.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/snapshot-groups/{group}:
+    parameters:
+      - $ref: '#/components/parameters/SnapshotGroupName'
+    get:
+      operationId: getSnapshotGroup
+      summary: Show a snapshot group
+      tags: [snapshot-groups]
+      responses:
+        '200':
+          description: The group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotGroup'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteSnapshotGroup
+      summary: Delete a snapshot group and its snapshots
+      description: Volumes cloned from its snapshots aren't affected.
+      tags: [snapshot-groups]
+      responses:
+        '204':
+          description: The group and its snapshots are gone.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '503':
           $ref: '#/components/responses/Busy'
   /v1/subsystems/{nqn}/namespaces:
@@ -1297,6 +1432,13 @@ components:
       in: path
       required: true
       description: The snapshot's name.
+      schema:
+        type: string
+    SnapshotGroupName:
+      name: group
+      in: path
+      required: true
+      description: The snapshot group's name.
       schema:
         type: string
     RangeOffset:
@@ -1640,6 +1782,9 @@ components:
         owner:
           type: string
           description: The scoped token that created it, which may change it, as an admin may. Absent when an admin made it with no owner.
+        group:
+          type: string
+          description: The snapshot group it was taken in, and goes with. Absent for a snapshot of its own.
     BlockRanges:
       type: object
       required: [block_size, size_bytes, ranges]
@@ -1699,6 +1844,63 @@ components:
           type: string
           pattern: '^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$'
           description: For an admin, the scoped token that owns it. A scoped token always owns what it creates, and may not set this.
+    SnapshotGroup:
+      type: object
+      required: [name, volumes, snapshots, created_at, paused_ms]
+      properties:
+        name:
+          type: string
+        volumes:
+          type: array
+          description: The volumes, as they were asked for, which may no longer exist.
+          items:
+            type: string
+        snapshots:
+          type: array
+          description: Their snapshots, in the same order.
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        paused_ms:
+          type: integer
+          description: How long hosts' I/O to the volumes was paused, in milliseconds. 0 if none of them was exported.
+        owner:
+          type: string
+          description: The scoped token that created it, which may delete it, as an admin may. Absent when an admin made it with no owner.
+    SnapshotGroupPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnapshotGroup'
+        next_after:
+          type: string
+          description: Pass this as `after` for the next page. Absent on the last page.
+    SnapshotGroupCreate:
+      type: object
+      additionalProperties: false
+      required: [name, volumes]
+      properties:
+        name:
+          type: string
+          maxLength: 120
+          description: Unique among groups. Its snapshots are named from it, so no snapshot may have those names already.
+        volumes:
+          type: array
+          minItems: 1
+          maxItems: 64
+          uniqueItems: true
+          description: The volumes to snapshot. A scoped token may name only its own.
+          items:
+            type: string
+        owner:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$'
+          description: For an admin, the scoped token that owns the group and its snapshots. A scoped token always owns what it creates, and may not set this.
     NQN:
       type: string
       maxLength: 223
@@ -1751,6 +1953,7 @@ components:
         - wildcard_listen
         - identifies_connected_hosts
         - lists_all_connections
+        - snapshot_groups
         - transports
       properties:
         passthrough:
@@ -1777,6 +1980,9 @@ components:
         lists_all_connections:
           type: boolean
           description: Can list every connection at once. Otherwise `GET /v1/connections` needs `subsystem`.
+        snapshot_groups:
+          type: boolean
+          description: Can pause hosts' I/O with ANA, for snapshot groups that are consistent across volumes.
         transports:
           type: array
           description: The NVMe transports that a port can use.

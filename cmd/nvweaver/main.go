@@ -56,6 +56,7 @@ Commands:
   volume    list | get NAME | usage NAME | create NAME | update NAME | delete NAME
   snapshot  list | get NAME | create NAME | delete NAME
             allocated NAME | changes NAME --base NAME
+  snapshot-group list | get NAME | create NAME --volume V... | delete NAME
 
 Run "nvweaver <command> <action> --help" for an action's flags.
 
@@ -403,6 +404,7 @@ func (a *app) dispatch(args []string) error {
 		"volume":    {"list": a.volumeList, "get": a.volumeGet, "usage": a.volumeUsage, "create": a.volumeCreate, "update": a.volumeUpdate, "delete": a.volumeDelete},
 		"snapshot": {"list": a.snapshotList, "get": a.snapshotGet, "create": a.snapshotCreate, "delete": a.snapshotDelete,
 			"allocated": a.snapshotAllocated, "changes": a.snapshotChanges},
+		"snapshot-group": {"list": a.groupList, "get": a.groupGet, "create": a.groupCreate, "delete": a.groupDelete},
 	}[noun]
 	if !ok {
 		return usagef("unknown command %q", noun)
@@ -1408,9 +1410,9 @@ func (a *app) volumeDelete(args []string) error {
 // --- snapshots ---
 
 func snapshotRows(w io.Writer, snaps []client.Snapshot) {
-	row(w, "NAME", "VOLUME", "POOL", "SIZE", "CREATED", "OWNER")
+	row(w, "NAME", "VOLUME", "POOL", "SIZE", "CREATED", "GROUP", "OWNER")
 	for _, s := range snaps {
-		row(w, s.Name, s.Volume, s.Pool, humanSize(s.SizeBytes), s.CreatedAt, dash(s.Owner))
+		row(w, s.Name, s.Volume, s.Pool, humanSize(s.SizeBytes), s.CreatedAt, dash(s.Group), dash(s.Owner))
 	}
 }
 
@@ -1506,6 +1508,67 @@ func (a *app) blockRanges(page func(offset int64) (*client.BlockRanges, error)) 
 		}
 		_, _ = fmt.Fprintf(w, "%d ranges, %s of %s, in blocks of %s\n", len(all.Ranges), humanSize(total), humanSize(all.SizeBytes), humanSize(all.BlockSize))
 	})
+}
+
+// --- snapshot groups ---
+
+func groupRows(w io.Writer, groups []client.SnapshotGroup) {
+	row(w, "NAME", "VOLUMES", "SNAPSHOTS", "PAUSED", "CREATED", "OWNER")
+	for _, g := range groups {
+		row(w, g.Name, strings.Join(g.Volumes, ","), strings.Join(g.Snapshots, ","), fmt.Sprintf("%d ms", g.PausedMS), g.CreatedAt, dash(g.Owner))
+	}
+}
+
+func (a *app) groupList(args []string) error {
+	if _, err := a.parse(a.flags("snapshot-group list"), args); err != nil {
+		return err
+	}
+	groups, err := a.client.ListSnapshotGroups(a.ctx)
+	if err != nil {
+		return err
+	}
+	return a.emit(groups, func(w io.Writer) { groupRows(w, groups) })
+}
+
+func (a *app) showGroup(g *client.SnapshotGroup, err error) error {
+	if err != nil {
+		return err
+	}
+	return a.emit(g, func(w io.Writer) { groupRows(w, []client.SnapshotGroup{*g}) })
+}
+
+func (a *app) groupGet(args []string) error {
+	pos, err := a.parse(a.flags("snapshot-group get"), args, "NAME")
+	if err != nil {
+		return err
+	}
+	return a.showGroup(a.client.GetSnapshotGroup(a.ctx, pos[0]))
+}
+
+func (a *app) groupCreate(args []string) error {
+	fs := a.flags("snapshot-group create")
+	var volumes repeated
+	fs.Var(&volumes, "volume", "a volume to snapshot, in order: its snapshot is NAME-1, NAME-2 and so on. Repeat for each. Hosts' I/O to them is paused meanwhile, so hosts need native NVMe multipath")
+	owner := fs.String("owner", "", "the scoped token that owns it, for admins")
+	pos, err := a.parse(fs, args, "NAME")
+	if err != nil {
+		return err
+	}
+	if len(volumes) == 0 {
+		return usagef("snapshot-group create needs --volume, once for each volume")
+	}
+	return a.showGroup(a.client.CreateSnapshotGroup(a.ctx, client.SnapshotGroupCreate{Name: pos[0], Volumes: volumes, Owner: *owner}))
+}
+
+func (a *app) groupDelete(args []string) error {
+	pos, err := a.parse(a.flags("snapshot-group delete"), args, "NAME")
+	if err != nil {
+		return err
+	}
+	if err := a.client.DeleteSnapshotGroup(a.ctx, pos[0]); err != nil {
+		return err
+	}
+	return a.done("snapshot group %s and its snapshots deleted", pos[0])
 }
 
 func (a *app) snapshotDelete(args []string) error {

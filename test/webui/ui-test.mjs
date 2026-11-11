@@ -122,7 +122,12 @@ check("filtering by owner shows only that cluster's volumes", (await page.locato
 await page.fill('input[type="search"]', "");
 await visit(page, "#/snapshots");
 await page.waitForSelector("main tbody tr");
-check("snapshots come from both pools", (await page.locator("main tbody tr").count()) === 3);
+check("snapshots come from both pools", (await page.locator("main tbody tr").count()) === 5);
+const member = page.locator("main tbody tr", { hasText: "db-1" });
+check("a group's snapshot shows its group, and has no Delete of its own, as it goes with the group",
+  (await member.textContent()).includes("vol-0003") && (await member.locator("td").nth(5).textContent()) === "db" &&
+  (await member.locator("button", { hasText: "Delete" }).count()) === 0 && (await member.locator("button", { hasText: "Clone" }).count()) === 1,
+  await member.textContent());
 
 console.log("\nOne volume");
 await visit(page, "#/volumes");

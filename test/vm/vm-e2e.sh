@@ -192,6 +192,7 @@ backend_tests() { # BACKEND IMAGE [run args]
 	api "a disk can't be exported twice" 409 POST "/v1/subsystems/$NQN:$backend-file/namespaces" "{\"nsid\":2,\"device_path\":\"$NVME\"}"
 	snapshot_tests "$backend" reflink
 	snapshot_tests "$backend" lvm-thin
+	group_tests "$backend"
 	concurrent_tests "$backend" reflink
 	concurrent_tests "$backend" lvm-thin
 	disconnect_tests "$backend"
@@ -479,6 +480,84 @@ snapshot_tests() { # BACKEND POOL-TYPE
 		expect_eq "the pool's volumes are gone" 0 "$(our_lvs)"
 	fi
 	api "forget the pool" 204 DELETE /v1/pools/snap
+}
+
+# A snapshot group on an LVM pool, which e2e.sh can't make, decision 56. The host writes a counter to two volumes in
+# turn, each write only once the one before has finished, so at any instant the first holds the second's number or one
+# more; a group's snapshots must too. LVM keeps snapshots inactive, so each is read through a clone, which isn't.
+group_tests() { # BACKEND
+	local backend=$1 sub=$NQN:$1-group n a b paused dev_a dev_b
+	section "$backend, lvm-thin: a snapshot group, consistent across volumes, while the host writes"
+	api "adopt a pool" 201 POST /v1/pools "{\"name\":\"grp\",\"type\":\"lvm-thin\",\"volume_group\":\"$VG\",\"thin_pool\":\"pool0\"}"
+	api "subsystem" 201 POST /v1/subsystems "{\"nqn\":\"$sub\",\"allowed_hosts\":[\"$HOST\"],\"ports\":[1]}"
+	for n in ga gb; do
+		api "volume $n" 201 POST /v1/volumes "{\"name\":\"$n\",\"size_bytes\":67108864}"
+		api "map it" 201 POST "/v1/subsystems/$sub/namespaces" "{\"volume\":\"$n\"}"
+	done
+	local out
+	out=$(connect "$sub") && ok "host connects" || bad "host connects" "$out"
+	ini_dev "$sub" >/dev/null
+	# By NGUID, as device names needn't follow NSIDs.
+	dev_of() {
+		local nguid
+		nguid=$(t "curl -s -m 20 $API/v1/volumes/$1 | jq -r .nguid | tr -d -")
+		i "for b in /sys/block/nvme*n*; do case \$b in *c[0-9]*n*) continue ;; esac; [ \"\$(tr -d - < \$b/nguid 2>/dev/null)\" = $nguid ] && echo /dev/\${b##*/}; done"
+	}
+	dev_a=$(dev_of ga)
+	dev_b=$(dev_of gb)
+	case "$dev_a $dev_b" in /dev/nvme*" "/dev/nvme*) ok "the host has both ($dev_a and $dev_b)" ;; *) bad "the host has both" "[$dev_a] and [$dev_b]"; return ;; esac
+	"$LAB" ssh ini 'cat > /tmp/cg-writer.sh' <<'WRITER'
+#!/bin/sh
+# cg-writer.sh A B: write 1, 2, 3... to A then B, 4 KiB each with O_DIRECT, until /tmp/cg.stop exists.
+i=0
+errors=0
+rm -f /tmp/cg.stop
+while [ ! -e /tmp/cg.stop ]; do
+	i=$((i + 1))
+	printf '%d\n' $i | dd of="$1" bs=4096 count=1 conv=sync oflag=direct status=none 2>>/tmp/cg.err || errors=$((errors + 1))
+	printf '%d\n' $i | dd of="$2" bs=4096 count=1 conv=sync oflag=direct status=none 2>>/tmp/cg.err || errors=$((errors + 1))
+	echo "$i $errors" > /tmp/cg.progress
+done
+echo "$i $errors done" > /tmp/cg.progress
+WRITER
+	i "sudo rm -f /tmp/cg.err /tmp/cg.progress; sudo setsid nohup sh /tmp/cg-writer.sh $dev_a $dev_b </dev/null >/dev/null 2>&1 &"
+	sleep 2
+	# value SNAPSHOT: the number at its start, read through a clone.
+	value() {
+		t "curl -s -m 60 -o /tmp/b -X POST -d '{\"name\":\"r-$1\",\"source\":{\"snapshot\":\"$1\"}}' $API/v1/volumes" >/dev/null
+		t "sudo dd if=\$(jq -r .device_path /tmp/b) bs=4096 count=1 iflag=direct 2>/dev/null | tr -d '\\000\\n'"
+		t "curl -s -m 60 -o /dev/null -X DELETE $API/v1/volumes/r-$1"
+	}
+	for n in 1 2 3; do
+		api "snapshot group $n, while the host writes to both" 201 POST /v1/snapshot-groups "{\"name\":\"g$n\",\"volumes\":[\"ga\",\"gb\"]}"
+		paused=$(t "jq -r .paused_ms /tmp/b")
+		a=$(value "g$n-1")
+		b=$(value "g$n-2")
+		if [ "${b:-0}" -gt 0 ] && [ "${a:-0}" -ge "$b" ] && [ "${a:-0}" -le $((b + 1)) ]; then
+			ok "its snapshots are consistent with each other ($a and $b; hosts paused $paused ms)"
+		else
+			bad "its snapshots are consistent with each other" "ga's holds [$a], gb's [$b]: want the same, or ga's one more"
+		fi
+	done
+	api "the negative control: a snapshot of ga" 201 POST /v1/snapshots '{"name":"apart-a","volume":"ga"}'
+	sleep 1
+	api "and of gb, a second later" 201 POST /v1/snapshots '{"name":"apart-b","volume":"gb"}'
+	a=$(value apart-a)
+	b=$(value apart-b)
+	if [ "${b:-0}" -gt "${a:-0}" ]; then ok "snapshots taken apart aren't consistent, so the check can fail ($a and $b)"; else bad "snapshots taken apart aren't consistent, so the check can fail" "ga's [$a], gb's [$b]"; fi
+	i "touch /tmp/cg.stop"
+	for _ in $(seq 1 20); do i "grep -q done /tmp/cg.progress 2>/dev/null" && break; sleep 0.5; done
+	out=$(i "cat /tmp/cg.progress")
+	expect_eq "the host's writes all succeeded, paused or not" "0 done" "${out#* }"
+	for n in 1 2 3; do api "delete snapshot group $n" 204 DELETE "/v1/snapshot-groups/g$n"; done
+	api "delete the control's snapshots" 204 DELETE /v1/snapshots/apart-a
+	api "both" 204 DELETE /v1/snapshots/apart-b
+	disconnect "$sub"
+	api "remove the subsystem" 204 DELETE "/v1/subsystems/$sub"
+	api "delete ga" 204 DELETE /v1/volumes/ga
+	api "delete gb" 204 DELETE /v1/volumes/gb
+	expect_eq "the pool's volumes are gone" 0 "$(our_lvs)"
+	api "forget the pool" 204 DELETE /v1/pools/grp
 }
 
 # Storage work runs at the same time, without the service's lock. Lots of it at once on real storage, as a
@@ -1199,6 +1278,19 @@ if [ -n "${SNAPSHOT_ONLY:-}" ]; then
 	for _ in $(seq 1 "$only_rounds"); do
 		snapshot_tests "$only_backend" "$only_kind"
 	done
+	[ "$fail" = 0 ]
+	exit
+fi
+
+# GROUP_ONLY=BACKEND runs just the snapshot group test.
+if [ -n "${GROUP_ONLY:-}" ]; then
+	only_image=localhost/nvweaver:dev
+	[ "$GROUP_ONLY" = spdk ] && only_image=localhost/nvweaver:spdk
+	start_service "$GROUP_ONLY" "$only_image"
+	wait_api || exit 1
+	api "port on the link address" 201 POST /v1/ports "{\"id\":1,\"address\":\"$TARGET_IP\",\"service\":$PORT}"
+	api "host" 201 POST /v1/hosts "{\"nqn\":\"$HOST\"}"
+	group_tests "$GROUP_ONLY"
 	[ "$fail" = 0 ]
 	exit
 fi
