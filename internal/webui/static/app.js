@@ -806,10 +806,27 @@ function deleteSnapshotDialog(snap) {
   });
 }
 
-// A snapshot in a group goes only with its group, so it has no Delete of its own.
+const groupPath = (name) => "/v1/snapshot-groups/" + encodeURIComponent(name);
+
+// A group's snapshots go together, so the dialog says which: decision 56.
+async function deleteGroupDialog(name) {
+  const g = await api(groupPath(name));
+  openDialog({
+    title: `Delete snapshot group ${name}`,
+    intro: `This deletes all ${g.snapshots.length} of its snapshots: ${g.snapshots.join(", ")}. It can't be undone. Volumes cloned from them aren't affected.`,
+    submit: "Delete group",
+    danger: true,
+    action: () => send("DELETE", groupPath(name)),
+    done: () => { notify(`Deleted snapshot group ${name} and its snapshots.`); rerender(); },
+  });
+}
+
+// A snapshot in a group goes only with its group, so it offers to delete that instead.
 const snapshotActions = (s) => el("div", { class: "row-actions" },
   el("button", { onclick: () => cloneDialog(s.name, "snapshot") }, "Clone"),
-  s.group ? null : el("button", { class: "danger-quiet", onclick: () => deleteSnapshotDialog(s) }, "Delete"));
+  s.group
+    ? el("button", { class: "danger-quiet", onclick: () => deleteGroupDialog(s.group) }, "Delete group")
+    : el("button", { class: "danger-quiet", onclick: () => deleteSnapshotDialog(s) }, "Delete"));
 
 // --- Screens. Each returns what to show, and is called again to refresh. ---
 

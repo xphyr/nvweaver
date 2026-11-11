@@ -154,7 +154,7 @@ nvweaver passwd admin | sudo tee /etc/nvweaver/tls/users    # asks for the passw
 sudo chmod 600 /etc/nvweaver/tls/users
 ```
 
-- This directory is the one that the Quadlet's `Volume=` line mounts. Each line is `name:hash`, in bcrypt only, so `htpasswd -B` also works. Other formats, such as those in `/etc/shadow`, are refused.
+- This directory is the one that the Quadlet's `Volume=` line mounts. Each line is `name:hash`, in bcrypt only, so `htpasswd -B` also works: give it `-C 12`, the cost `nvweaver passwd` uses, as its default of 5 is far weaker. Other formats, such as those in `/etc/shadow`, are refused.
 - The file is read again when it changes, so adding someone or changing a password needs no restart. Removing someone ends their sessions. A change that can't be used keeps the users as they were, and logs an error. At startup, a file that can't be used, or that others can read, stops the service.
 - **Passwords are refused over plain HTTP, except on loopback,** as anyone on the network could read them. Set `NVWEAVER_TLS_CERT` and `NVWEAVER_TLS_KEY`, or set `NVWEAVER_ALLOW_INSECURE_LOGIN=true` to accept that risk on an isolated network.
 - Sessions end after 8 hours unused, or 24 hours at most. They're only in memory, so restarting the service signs everyone out, and hosts and data aren't affected.
@@ -256,6 +256,17 @@ Behaviour worth knowing:
 | `NVWEAVER_SPDK_HUGEPAGES` | `false` | Use hugepages already reserved on the host. |
 | `NVWEAVER_SPDK_POLLING` | `false` | Poll continuously: lower latency, but each SPDK core runs at 100% even when idle. |
 
+**Making a token** for `NVWEAVER_API_TOKEN`: any long random string will do, and a hex one needs no quoting anywhere:
+
+```sh
+openssl rand -hex 32        # 32 random bytes, 256 bits, as 64 hex characters
+```
+
+The images have `openssl` too, so it also works in the container, as `podman exec nvweaver openssl rand -hex 32`. Keep it
+somewhere only you can read, such as a mode 0600 file, and give it to the command line utility with `--token-file`. Scoped
+tokens, for a Kubernetes cluster or another program, come from `nvweaver token new NAME` instead, which also prints the
+line for the tokens file.
+
 By default, stopping the container removes the configuration from the kernel, and
 starting it restores it; connected hosts reconnect by themselves. With
 `NVWEAVER_KEEP_ON_EXIT=true` the kernel keeps serving with no container running,
@@ -296,6 +307,13 @@ sudo systemctl start nvweaver-spdk
 
 The images are `ghcr.io/xphyr/nvweaver:<version>` and `:<version>-spdk`, or `latest` and `latest-spdk`, for both x86-64 and
 arm64. Podman pulls the right one for the machine.
+
+## On a Synology, or any host without an NVMe target
+
+[`dist/synology/`](dist/synology/README.md) runs nvweaver with SPDK in a container, with Docker Compose, as a Container
+Manager Project. DSM's kernel has no NVMe target and no LVM thin pools, so SPDK serves NVMe/TCP itself, from reflink pools on
+a btrfs volume. It needs no privileges: host networking, and one capability, to read its own config files. The same
+`compose.yaml` suits any Docker host whose kernel has no NVMe target, or where the container may not be privileged.
 
 ## Running under systemd
 

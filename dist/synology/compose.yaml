@@ -1,0 +1,35 @@
+# nvweaver with SPDK, for a Synology's Container Manager, as a Project, or any Docker or Podman host whose kernel has no
+# NVMe/TCP target. See README.md beside this file. SPDK serves NVMe/TCP itself, in this container, so it needs nothing
+# from the host's kernel but networking: no privileges, no devices, and one capability. Volumes are files in a reflink pool,
+# on the btrfs volume this folder is on, with instant snapshots and clones.
+services:
+  nvweaver:
+    image: ${NVWEAVER_IMAGE:-ghcr.io/xphyr/nvweaver:latest-spdk}
+    container_name: nvweaver
+    restart: unless-stopped
+    # SPDK owns the NVMe/TCP sockets, which hosts reach on this box's own addresses.
+    network_mode: host
+    cap_drop: [ALL]
+    # The one capability it keeps: reading files it doesn't own, in its own mounts, so that the TLS key, users and tokens
+    # files can be made in File Station, owned by the user who made them, and kept private to them.
+    cap_add: [DAC_READ_SEARCH]
+    security_opt: [no-new-privileges:true]
+    # Time for SPDK to stop cleanly; hosts reconnect when it's back.
+    stop_grace_period: 30s
+    environment:
+      NVWEAVER_BACKEND: spdk
+      # The API, and the web interface at /ui/. Loopback only, unless .env sets an address, with TLS and a token or users.
+      NVWEAVER_LISTEN: ${NVWEAVER_LISTEN:-127.0.0.1:8420}
+      NVWEAVER_API_TOKEN: ${NVWEAVER_API_TOKEN:-}
+      NVWEAVER_TLS_CERT: ${NVWEAVER_TLS_CERT:-}
+      NVWEAVER_TLS_KEY: ${NVWEAVER_TLS_KEY:-}
+      NVWEAVER_USERS_FILE: ${NVWEAVER_USERS_FILE:-}
+      NVWEAVER_TOKENS_FILE: ${NVWEAVER_TOKENS_FILE:-}
+      # SPDK's memory, in MB, which it takes at start, and the CPU it runs on, such as [3]. The last one allowed by default.
+      NVWEAVER_SPDK_MEM_MB: ${NVWEAVER_SPDK_MEM_MB:-1024}
+      NVWEAVER_SPDK_CORES: ${NVWEAVER_SPDK_CORES:-}
+    volumes:
+      # The state, and the pool's files: keep it on a btrfs volume, for reflink.
+      - ./data:/var/lib/nvweaver
+      # TLS certificate and key, the users file, the tokens file, read-only.
+      - ./config:/etc/nvweaver:ro

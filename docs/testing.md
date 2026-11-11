@@ -810,6 +810,104 @@ held, and moved them back.
 - **The writer's status column was wrong** in the first three rounds: it logged `$?` after `$(date)`, the pitfall below.
   The `dd` error output was the evidence, and the fourth round logged `dd`'s own status.
 
+### A KubeVirt VM snapshot, with its guest agent's freeze
+
+On `nvw`, OpenShift 4.22.22, on 2026-11-11: a Fedora VM, its root disk a thin clone of the golden image, with two 1 GiB data
+disks, all on nvweaver. In the guest, a service wrote a counter to a file on the first data disk, synced it, then the same to
+the second, as `e2e.sh`'s check does. A `VirtualMachineSnapshot` of the running VM succeeded, with `GuestAgent` among its
+indications: it froze the filesystems, then took a VolumeSnapshot of each disk. The VM was stopped and restored in place,
+and on boot the disks held 391 and 390, consistent, and the writer carried on. One run, and with a freeze, consistency is
+expected whatever the storage does: this shows that the pieces work together on nvweaver.
+
+- **The first two snapshots failed,** "failed to open /d2: Permission denied" from `guest-fsfreeze-freeze`, and the snapshot
+  timed out. The confined guest agent may open only mount points with a mount point's label, and a filesystem made in
+  the guest has an unlabelled root. Mounting under `/mnt` wasn't enough; `restorecon -R` on the mounted filesystems was.
+  `csi/README.md` says so.
+- **The VM's root disk first waited for good.** Recreating the class on 2026-11-10 had reset its StorageProfile, so CDI
+  had turned the golden images back into claims, and deleted their snapshots. Applying the profile again brought them
+  back, but the waiting disk didn't retry: the VM had to be made again.
+- **Group snapshots couldn't be tried there.** OpenShift 4.22's `VolumeGroupSnapshot` feature gate is off in the Default
+  feature set, and the group snapshot CRDs aren't installed. Turning it on means `TechPreviewNoUpgrade`, which can't be
+  undone and stops the cluster upgrading, so it wasn't.
+
+### Group snapshots on OpenShift 5.0, on Arm
+
+On `snoarm`, OpenShift 5.0.1 on arm64, on 2026-11-11, through OpenShift's own snapshot controller, which has group
+snapshots on by default, with `v1` the only API version served. The driver's arm64 image was built from `main` at
+`9c406a7`. As in the k3s lab, a pod wrote a counter to two block volumes in turn; a VolumeGroupSnapshot of both was ready
+while it wrote, none of its writes failed, and the members, restored, held 690 and 689. The node's Lease said it could be
+paused. Nothing was left afterwards.
+
+- **The first try used `v1beta2`,** which 5.0 doesn't serve, and the test script hid `kubectl apply`'s refusal, then waited
+  for a group snapshot that didn't exist. The script now shows a refused `apply`, and stops waiting at the first sign of
+  failure: an error on the group snapshot or its content, or the driver refusing it.
+- **The second got a 404 from nvweaver,** which hadn't been upgraded, and has no snapshot groups. The driver took that for
+  a group that wasn't there. It now checks nvweaver's `snapshot_groups` capability, and refuses, saying to upgrade.
+- nvweaver-1 was upgraded to `v0.4.0-19-g9c406a7` for this, which restarted it; `nvw`'s volumes and driver carried on, with
+  no failed calls.
+- **Hosts made before hosts had owners** were then given to `nvw`'s and `snoarm`'s tokens, the exact four from their CSINodes.
+  The janitors labelled three at once, and the fourth, `nvw`'s master-1, at their next check, five minutes later: its node
+  plugin was restarting with the driver's upgrade, so the first check didn't find it, which is the miss the janitor allows
+  for. `nvw`'s driver was upgraded to an image of `main` at `9c406a7` for its janitor, without group snapshots; the
+  StorageClass, and so its StorageProfile, were kept.
+
+### A Synology's DSM, for SPDK first
+
+A first, read-only probe on 2026-11-11, as an ordinary user, of a Virtual DSM: DSM 7.4.1 in Synology's Virtual Machine
+Manager, which runs DSM's own kernel. A real Synology's model may differ, Arm ones especially.
+
+- **Linux 4.4.302, with no `nvme_core`, `nvmet` or `nvmet-tcp` at all,** which arrived in Linux 5.0. So on DSM, the kernel
+  target is out, and SPDK is the only way to serve NVMe/TCP. DSM's own iSCSI target, LIO, is loaded.
+- **No `dm_thin_pool`,** so no LVM thin pools: reflink pools only.
+- **Reflink works** on its btrfs volumes, `cp --reflink=always` in a home directory.
+- Container Manager's Docker is 24.0.2, and its socket is root's only. AppArmor, not SELinux. `aio-max-nr` is 65536, and a
+  user's memory-lock limit 64 KiB, which matters if SPDK locks memory in a container.
+
+**Then nvweaver itself, in Container Manager's Docker, with no privileges,** as the SPDK Quadlet already runs it: host
+networking, every capability dropped, `no-new-privileges`, and its data in a folder on a btrfs volume. No `--privileged`,
+no devices, no `--pid=host`. The image is 102 MB.
+- It started, and SPDK 26.09 served, in 2 seconds, without hugepages, in interrupt mode, on DSM's kernel 4.4.
+- A reflink pool on the btrfs volume, a 1 GiB volume, a snapshot and a clone of it, and an export on the routed
+  network, all worked.
+- A host on another machine, the lab's initiator VM, connected over NVMe/TCP, and wrote 64 MiB that read back the
+  same, and was the same in the volume's file on btrfs. The snapshot taken before held only zeros.
+- A snapshot group of two volumes, taken while the host wrote: hosts paused 57 ms, and all 2,726 of its writes in
+  20 s succeeded.
+
+**Then `dist/synology/compose.yaml`, with `docker compose` on the DSM,** set up as a user would through File Station:
+every file owned by that user, the TLS key, users file and `.env` mode 0600, the data folder made by them.
+- With every capability dropped, it couldn't start: "users file /etc/nvweaver/users: permission denied". Root with no
+  capabilities can't read another user's file.
+- **Running as that user, `user: "1026:100"`, failed too:** it couldn't make anything in the data folder that user had
+  made, "mkdir /var/lib/nvweaver/volumes: permission denied". Probably DSM's own ACLs on shared folders; not looked into.
+- **With `DAC_READ_SEARCH` added back, it worked:** HTTPS from the user's certificate, signing in from their users file,
+  the API token, a reflink pool in their folder, a volume, a snapshot and an export, all kept across a restart. That's the
+  Compose file's one capability now.
+- **The user followed the guide through Container Manager's Project screens** on the Virtual DSM, on 2026-11-11, and it
+  worked. A users file with the wrong permissions, their own slip, was the only thing to fix.
+- Not tried yet: a real Synology, an Arm model, and the storage network.
+
+### OpenShift, through a second driver, to SPDK on a Synology's DSM, over the SAN
+
+On `nvw`, OpenShift 4.22, on 2026-11-11: `dist/synology/compose.yaml` on the Virtual DSM, set up as its guide says, with the
+API on the routed network, TLS, and a scoped token for `nvw`, and its NVMe/TCP port on the storage network. A second
+instance of the CSI driver, with its own driver name, NQN prefix, liveness port and classes, beside the one for
+nvweaver-1, which carried on undisturbed. Every node's Lease said it could be paused.
+- A filesystem volume, written on master-0, connected from its SAN address, and read on master-1.
+- A snapshot, and a clone of it read on master-2.
+- A raw block volume, 16 MiB written directly and read back the same.
+- Deleted, nothing was left in nvweaver.
+
+**Found on the way:**
+- **The chart had the node plugin's liveness port fixed at 9899,** on the host's network, so a second instance's would have
+  failed to start. It's `node.livenessPort` now.
+- **A second instance needs its own NQN prefix,** or each node's subsystem has the same name on both servers, which a host
+  would take for two paths to one subsystem. `csi/README.md` says so.
+- **The test script's own faults:** pods pinned with `nodeName`, which skips the scheduler, so a `WaitForFirstConsumer`
+  claim never bound and nothing was provisioned; a `}` inside `${4:+...}`, which ended the expansion early; a Warning check
+  across the whole namespace, which took one pod's events for another's; and "Waiting for detach", which is normal while a
+  volume moves, taken for a failure. The waits did stop at the first sign of trouble, as they should.
+
 ### Snapshot groups
 
 Decision 56, on 2026-11-10. `e2e.sh` checks that a group's snapshots are consistent with each other, on a reflink pool,
@@ -839,7 +937,8 @@ Unit tests cover:
 - the driver refusing a group that would pause a node that can't be paused, while a node using none of the volumes
   doesn't matter, and each node's Lease.
 
-The browser test checks a group's snapshot showing its group, with no Delete of its own: 248 passed.
+The browser test checks a group's snapshot showing its group, offering only to delete the group, and the dialog naming every
+snapshot that goes with it, then the group gone: 250 passed, on 2026-11-11.
 
 **Through Kubernetes, `k3s-csi.sh groups`,** on fresh labs on k3s 1.37.2 and 1.31.14, 14 checks each, none failed:
 - every node's Lease said it could be paused;
@@ -952,6 +1051,25 @@ images, 32 of 32 including the outage and reboot, and `csi-sanity`, 75 of 75. `m
 first time and found every module the notices list for it, and the Go runtime. Its last check, that everything was built with one
 Go, failed there, as the tarball was built with Fedora's Go, which reports `go1.26.10-X:nodwarf5`, while the images used the Go
 container's `go1.26.10`. That's the check doing its job: the release builds the tarball with `setup-go` in CI, as for v0.3.0.
+
+### Before v0.5.0
+
+On 2026-11-11, with images built with Go 1.26.11 from the release branch, on x86-64 VMs:
+- **The upgrade from v0.4.0, `test/vm/upgrade.sh`, new for this release,** 68 of 68 on each run, on both backends. The published
+  0.4.0 images made a port, a host, a subsystem, a reflink and an LVM pool, a volume, a snapshot and a clone, and a file
+  namespace, and a host wrote to the volumes. This version started on that data with no errors or warnings, kept every
+  object as it was, the host read its data back the same, and a snapshot group of both pools' volumes worked on it. Its
+  first version could have passed with nothing recorded, as an error both times compares equal: it now checks that what it
+  recorded holds every object.
+- `run-all.sh`: `vm-e2e.sh` 1004, the browser against real targets 93, kernel `e2e.sh` 348, SPDK `e2e.sh` 364, systemd 76,
+  all passing.
+- The k3s lab on 1.37.2: `k3s-csi.sh test` 44, `groups` 14, `cbt` 13, and `csi-sanity` 75 of 75; on 1.31.14, `test` 44,
+  `groups` 14 and `csi-sanity` 75. All passing, and nothing was left behind.
+
+**CI's end-to-end job couldn't install QEMU** from about 14:00 UTC that day: `azure.archive.ubuntu.com`, the runners' first
+Ubuntu mirror, didn't resolve, nor from the user's own network, while other jobs' installs worked. It's a CNAME to an Azure
+Traffic Manager profile, which answers by region. `.github/apt-install.sh` now falls back to `archive.ubuntu.com` when it
+doesn't resolve. Not yet run in CI when this was written.
 
 ## Not tested
 
@@ -1100,6 +1218,8 @@ Checks that passed while proving nothing. Watch for these patterns:
   like the service failing. The power-loss test syncs the target first. `POWER_ONLY="spdk reflink 8"` repeats just that test.
 - **The k3s lab's agents run `k3s.service`, not `k3s-agent`,** as `k3s-lab.sh` writes its own unit. Stopping `k3s-agent` does
   nothing, quietly, and a deleted node registers again at once.
+- **DSM's SSH has no SFTP,** which `scp` uses now, so it fails with "Connection closed". Pipe files with
+  `ssh host 'cat > FILE' < FILE`, or use `scp -O`.
 - **`pkill -f` over SSH** can match the shell running it, whose command line contains the same text, and end the session.
 - **LVM's warnings don't fail anything.** Inside the unit's sandbox it created volumes correctly while being unable to back
   up its metadata or lock itself in memory, and every test passed until a direct check of the backup file. The unit now

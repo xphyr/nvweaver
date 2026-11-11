@@ -2,10 +2,25 @@
 
 The major differences between versions. For every change, see the commit history.
 
-## Unreleased
+## v0.5.0
+
+Snapshot groups, changed block tracking for backups, a Synology setup, and a CSI driver that cleans up after nodes that leave,
+and runs on Kubernetes 1.31 and later, and on Arm.
+
+### Upgrading
+
+- **Hosts made by an earlier CSI driver have no owner,** so the driver can't label them, or delete them when their node
+  leaves, and its log says so. Give each to its cluster's scoped token, as an admin:
+  `nvweaver host update <node's host NQN> --owner <cluster>`. See `csi/README.md`.
+- **Group snapshots need this nvweaver as well as this driver.** The driver refuses them, saying to upgrade, against an older
+  one.
+- **On SPDK, hosts will see ANA reporting change** when it restarts on this version: see "Changed".
 
 ### Added
 
+- **nvweaver on a Synology, or any host with no NVMe target:** `dist/synology/` has a Compose file for Container Manager,
+  and a guide. It runs SPDK, unprivileged, with one capability, serving reflink pools on a btrfs volume. DSM's kernel has
+  no NVMe target, so this is the way there. See decision 57.
 - **The CSI driver supports Kubernetes 1.31 and later,** such as OpenShift 4.18. Below 1.34 it needs older releases of the
   provisioner and resizer sidecars, which the Helm chart picks itself. See decision 51 and `csi/README.md`.
 - **Changed block tracking,** for backups: `GET /v1/snapshots/{snapshot}/changes?base=` reports what changed between two
@@ -18,7 +33,7 @@ The major differences between versions. For every change, see the commit history
   from Kubernetes 1.33. It's off unless the Helm chart's `snapshotMetadata.enabled` is set. See `csi/README.md`.
 
 - **Snapshot groups:** several volumes snapshotted as of one instant, consistent with each other, with
-  `POST /v1/snapshot-groups` and `nvweaver snapshot-group`. nvweaver pauses hosts' I/O to the volumes with NVMe ANA while it
+  `POST /v1/snapshot-groups`, `nvweaver snapshot-group`, and in the web interface, which can delete them. nvweaver pauses hosts' I/O to the volumes with NVMe ANA while it
   takes them, for a few ms per volume, on both targets and both pool types. **Hosts need native NVMe multipath**, Linux's
   default, to wait out the pause. The CSI driver serves them as `VolumeGroupSnapshot`, off unless asked for, and refuses a
   group that would pause a node without it. The web interface shows each snapshot's group. See decision 56.
@@ -27,6 +42,10 @@ The major differences between versions. For every change, see the commit history
   hosts made before have none, and need an admin to give them to the cluster's token: see `csi/README.md`. See decision 54.
 - **Hosts have labels,** and the CSI driver labels each node's host with its cluster and Kubernetes node. The web interface's
   host list shows them, and the owner. `nvweaver host create` and `host update` take `--label` and `--owner`.
+- **Two drivers in one cluster,** for two nvweavers, such as a server and a Synology: the chart's `node.livenessPort`, and
+  what else a second instance must change, in `csi/README.md`.
+- **A KubeVirt VM's snapshot with its guest agent's freeze** is tested, and `csi/README.md` says what an SELinux guest's data
+  disks need for it.
 - **The web interface's overview lists problems:** pool warnings, and volumes and snapshots whose storage is missing.
 
 ### Fixed
@@ -42,6 +61,11 @@ The major differences between versions. For every change, see the commit history
 
 ### Changed
 
+- **On SPDK, subsystems have ANA reporting on, with every namespace in ANA group 1.** That's how a snapshot group pauses
+  hosts. SPDK's own default was a group per namespace. Hosts with native NVMe multipath see the change and carry on.
+- **Scoped tokens may change the labels of hosts they own, and delete them,** as with volumes and subsystems. Keys stay an
+  admin's.
+- **Built with Go 1.26.11,** from 1.26.10.
 - **Publishing CSI volumes is four to five times faster at scale.** At 5,000 LVM volumes, exporting one looked up every other
   volume, and the driver made two creates on every publish that changed nothing. 5,000 publishes took 20 minutes, and now
   take 4. See decision 49 and "The CSI driver at scale" in `docs/testing.md`.

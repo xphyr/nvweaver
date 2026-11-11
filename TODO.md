@@ -9,23 +9,30 @@ here first. Each step points at its items further down.
 
 ## Next
 
-Agreed with the user on 2026-11-10. Done since the last list: scale (5,000 volumes on 100 nodes, and 1,000 connections), and
-the third outside review's findings. In this order now:
+Agreed with the user on 2026-11-10, and changed on 2026-11-11: SPDK first, and iSCSI moved down. Done since the last list:
+scale (5,000 volumes on 100 nodes, and 1,000 connections), and the third outside review's findings. In this order now:
 
 1. **Changed block tracking:** done, for the storage, API, CLI and CSI driver, with the chart's sidecar. See phase 7. Still to
    do: the manifests, and checking whether Velero or Kasten use it yet
 2. **Cleaning up after a node leaves:** done. Hosts have owners and labels, the controller labels each node's host with its
    cluster and node, and forgets a node whose CSINode has gone once nothing is exported to it. The web interface shows hosts'
-   cluster, node and owner, and the overview lists problems. Decision 54. Still to do: give `nvw`'s existing hosts to its token
-3. **Consistency groups:** built on 2026-11-10, decision 56: snapshot groups in the API, CLI and web interface, which pause
-   hosts with ANA on both targets, and the CSI driver's VolumeGroupSnapshot, which refuses a group that would pause a node
-   without native multipath. Tested on both targets and pool types, and in the k3s lab on 1.37 and 1.31. Still
-   to do: the KubeVirt guest-agent freeze test on `nvw`, deleting groups in the web interface, and the CSI driver on
-   OpenShift and Arm
+   cluster, node and owner, and the overview lists problems. Decision 54. `nvw`'s and `snoarm`'s hosts, made before hosts had
+   owners, were given to their tokens on 2026-11-11, and their drivers labelled them
+3. **Consistency groups:** done, decision 56. Snapshot groups in the API, CLI and web interface, which pause hosts with ANA
+   on both targets, and the CSI driver's VolumeGroupSnapshot, which refuses a group that would pause a node without native
+   multipath. Tested on both targets and pool types, in the k3s lab on 1.37 and 1.31, and on `snoarm`, OpenShift 5.0 on Arm,
+   on 2026-11-11. A KubeVirt VM snapshot with its guest agent's freeze passed on `nvw`, whose OpenShift 4.22 has group
+   snapshots only as Tech Preview
 4. **The CSI driver's gaps against arrays' drivers,** agreed on 2026-11-10, fitted in around 3: topology and capacity
    reporting, volume health, and SELinux mount labelling. See phase 7
-5. **iSCSI as a second protocol,** then every feature that works on NVMe checked on iSCSI too: the API, the CLI, the web
-   interface, the CSI driver, snapshots, clones, CBT and consistency groups. See "Later" for what the probe found
+5. **SPDK first, with a Synology as a supported platform,** agreed on 2026-11-11. What nvweaver has that TrueNAS and the
+   like don't is NVMe/TCP from a container, on a box that already does something else, needing nothing from the host's
+   kernel. SPDK is what makes that work where there's no `nvmet-tcp`, such as Synology's DSM. So: SPDK and reflink pools
+   become the defaults, with LVM, the kernel target and systemd kept as options for Linux hosts that have them. First,
+   probe the user's Synology. See "SPDK first" below
+6. **iSCSI, moved down on 2026-11-11.** Synology and TrueNAS already serve iSCSI well, so on a Synology it would only
+   repeat what DSM does. Worth doing only if testing against an array's iSCSI needs it. See "Later" for what the probe
+   found
 
 Smaller, to fit in: the CSI driver on Arm, on a single-node OpenShift 5.0 cluster on arm64 that the user has added, and then
 native Arm VMs there for the end-to-end suites (see "Testing without hardware"); a test that a new version reads the previous release's state; the driver refusing to run when two nodes
@@ -35,7 +42,8 @@ share a host NQN; a guest writing while it live-migrates; publishing the Helm ch
 
 - [ ] Keep the Go version in one file that the Containerfiles (by a build argument) and CI read, so that a bump is one line
       (decision 52). Until then it's in the three Containerfiles, `ci.yml`'s four `setup-go` steps, and the test images
-- [ ] Bump Go to 1.26.11 once `setup-go` lists it, everywhere at once, and check for a new patch release before each release
+- [x] Bump Go to 1.26.11 once `setup-go` lists it, everywhere at once: done for v0.5.0, decision 52
+- [ ] Check for a new Go patch release before each release, and bump it the same way
 - [x] Create a GitHub workflow for building and releasing code (`docs/releasing.md`)
   - [x] Lint and unit tests on every push
   - [x] End-to-end suites in VMs on every push
@@ -72,7 +80,8 @@ share a host NQN; a guest writing while it live-migrates; publishing the Helm ch
 - [ ] Find out why the workflow's token was refused writing to `nvweaver-buildcache` from about 21:50 UTC on 2026-11-09, with the
       repository holding Admin access to it: `denied: permission_denied: write_package`. Writing it is best-effort now, so `main`'s CI
       only warns, and releases don't write it
-- [ ] Test that a new version reads the previous release's saved state, before each release. Nothing does yet
+- [x] Test that a new version reads the previous release's saved state, before each release: `test/vm/upgrade.sh`, first run
+      for v0.5.0, and in `docs/releasing.md`
 - [x] Add a `LICENSE` (MIT)
 - [x] Include third-party license notices in the images (`THIRD_PARTY_NOTICES.md`)
 - [ ] Add container image scanning prior to image publication
@@ -207,6 +216,9 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [x] `nvme-tcp` loaded and a unique `hostnqn` on each node, by MachineConfig if RHCOS doesn't already. `nvme-tcp` was loaded already. RHCOS doesn't: every node
         had the same host NQN and host ID. `csi/deploy/openshift/` has a MachineConfig for each pool, applied to `nvw`'s master pool
   - [x] A CDI StorageProfile, `csi/deploy/openshift/storageprofile.yaml`: a VM and a live migration passed with it
+  - [ ] Stop the StorageProfile being forgotten when a class is recreated. On 2026-11-10, recreating `nvw`'s class reset it,
+        so CDI switched its golden images from snapshots to claims, deleted the snapshots, and couldn't make VM disks until
+        it was applied again. Nothing in use was lost. Consider a check that warns, or a hook that applies it
   - [x] A DataImportCron: Fedora's golden image as a snapshot, and VMs cloned from it, once nvweaver's class is KubeVirt's default
   - [ ] A guest writing while it migrates. The stall itself was measured with pods: see the reconnect delay below
 - [x] Create a Kubernetes CSI driver that works with the API to handle dynamic
@@ -269,7 +281,10 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [x] Group snapshots, VolumeGroupSnapshot: optional (`--group-snapshots`, the chart's `groupSnapshots.enabled`), each node
         saying in a Lease whether it can be paused, and the controller refusing a group that would pause one that can't.
         Tested in the k3s lab: `k3s-csi.sh groups`. Decision 56
-  - [ ] Group snapshots on OpenShift, `nvw` and `snoarm`, and a KubeVirt VM's disks with its guest agent's freeze
+  - [x] A KubeVirt VM's snapshot with its guest agent's freeze, on `nvw`: restored consistent across its disks. See
+        `docs/testing.md`
+  - [x] Group snapshots on OpenShift: on `snoarm`, 5.0 on Arm, consistent. Not `nvw`: 4.22 has them only in the Tech
+        Preview feature set
   - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver, such as one with a storage network,
         and so the scheduler sees a pool that's full. Arrays' drivers all report capacity
   - [x] ReadOnlyMany filesystems on SELinux nodes: found on OpenShift, where pods using them never started, as a read-only
@@ -315,6 +330,33 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [ ] More metrics: connections, which cost an RPC per subsystem on SPDK, reconcile timings, and the driver's own
   - [ ] The CSI driver's own metrics, from its sidecars, documented
 
+## SPDK first
+
+Agreed with the user on 2026-11-11: step 5 of "Next". Nothing here changes the API: both backends already share it, and its
+tests.
+
+- [x] Probe a Synology's DSM, on a Virtual DSM the user made for it, on 2026-11-11: DSM 7.4.1 on Linux 4.4, with no
+      `nvmet` or `dm_thin_pool`, so SPDK and reflink only; reflink works on its btrfs volumes; Container Manager's Docker
+      is 24.0.2. See "A Synology's DSM, for SPDK first" in `docs/testing.md`
+- [x] The least privilege SPDK runs with: none. The SPDK Quadlet's settings worked unchanged on DSM, with a host connecting,
+      snapshots, clones and a snapshot group: host networking, every capability dropped, `no-new-privileges`, no devices
+- [x] The storage network: `nvw` used the Virtual DSM's nvweaver over the SAN, through a second instance of the CSI
+      driver, on 2026-11-11. See `docs/testing.md`
+- [ ] The same on the user's real Synology, an x86 model
+- [ ] An Arm Synology: the user has none, so it waits for a contributor who has. SPDK and the images already run on Arm
+      elsewhere (`snoarm`, the CM4), but DSM's Arm kernels are older, and untested
+- [ ] Make SPDK and reflink the defaults where nothing says otherwise, and say so in the README, keeping the kernel target,
+      LVM and the systemd unit as documented options. A decision in `docs/decisions.md`
+- [x] A Compose file for Container Manager's Projects, the user's choice on 2026-11-11 over a Helm chart, as DSM runs Docker,
+      not Kubernetes: `dist/synology/`, with a guide. SPDK, a reflink pool on btrfs, host networking, and one capability,
+      `DAC_READ_SEARCH`, to read files made in File Station. Tested with `docker compose` on the Virtual DSM. Decision 57
+- [x] Try `dist/synology/` through Container Manager's Project screens, as the guide says: the user did, on 2026-11-11, and
+      it worked
+- [x] Put `dist/synology/` in the release tarball, as `synology/`, with the Compose file using that release's SPDK image
+- [ ] Later, if wanted: a Helm chart for nvweaver itself, to run it inside a Kubernetes cluster
+- [ ] An end-to-end suite for the least-privilege container, so that a change needing more privileges fails a test
+- [ ] Check what SPDK's image costs on a small box: its size, its memory at idle, and its CPU with interrupt mode
+
 ## Later (low priority)
 
 - [ ] Publish the `nvweaver` command line utility for macOS, on arm64 and amd64, and Windows on amd64. Only the client: the service stays Linux only. Name them as the Linux ones are, and include them in
@@ -322,7 +364,7 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [ ] Add a smoke test on hosted macOS and Windows runners, running the real binary against a fake API, as nothing has run there yet. Don't publish those builds without it. All these targets
         cross-compile, but `go test ./cmd/nvweaver` won't there, as its tests use the Linux-only `internal/target`
   - [ ] Check what differs there: file paths for `--token-file` and `--ca`, the system's certificates, and signals on Windows
-- [ ] iSCSI as a second protocol, next after consistency groups (see "Next"), once the CLI and CSI driver have settled the API. It would be new resources, such as `/v1/iscsi/targets`, not a
+- [ ] iSCSI as a second protocol, moved below "SPDK first" on 2026-11-11 (see "Next"), once the CLI and CSI driver have settled the API. It would be new resources, such as `/v1/iscsi/targets`, not a
       `transport` on ports. Pools, volumes and snapshots should carry over: see decision 33
   - [x] Probe whether it's really feasible, driving LIO and SPDK by hand in VMs: it is, on both. See "iSCSI: is it feasible?" in `docs/testing.md`
   - [ ] Decide how to handle a volume's identity differing between LIO and SPDK, which can't be made to match

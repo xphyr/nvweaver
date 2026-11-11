@@ -3,6 +3,7 @@ package driver
 import (
 	"context"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -23,10 +24,13 @@ type GroupController struct {
 	nodes    NodeLister
 	pausable PauseReader
 	locks    locks
+	// supported is set once nvweaver has said it has snapshot groups, which a version before them doesn't.
+	supported atomic.Bool
 }
 
 // GroupAPI is what the group controller uses of nvweaver's API.
 type GroupAPI interface {
+	System(ctx context.Context) (*client.System, error)
 	GetVolume(ctx context.Context, name string) (*client.Volume, error)
 	GetSubsystem(ctx context.Context, nqn string) (*client.Subsystem, error)
 	GetSnapshot(ctx context.Context, name string) (*client.Snapshot, error)
@@ -63,6 +67,9 @@ func (g *GroupController) CreateVolumeGroupSnapshot(ctx context.Context, req *cs
 		return nil, status.Errorf(codes.InvalidArgument, "group snapshot name %s is longer than %d", name, maxGroupName)
 	}
 	defer g.locks.lock("group/" + name)()
+	if err := g.checkSupported(ctx); err != nil {
+		return nil, err
+	}
 	// A retry, which may list the volumes in another order.
 	if existing, err := g.api.GetSnapshotGroup(ctx, name); err == nil {
 		if !sameVolumes(existing.Volumes, req.GetSourceVolumeIds()) {
@@ -80,6 +87,24 @@ func (g *GroupController) CreateVolumeGroupSnapshot(ctx context.Context, req *cs
 		return nil, apiError(err, "group snapshot "+name)
 	}
 	return g.response(ctx, created)
+}
+
+// checkSupported refuses a group snapshot, saying why, when nvweaver is a version without snapshot groups: it would answer
+// 404, which reads as a group that isn't there.
+func (g *GroupController) checkSupported(ctx context.Context) error {
+	if g.supported.Load() {
+		return nil
+	}
+	sys, err := g.api.System(ctx)
+	if err != nil {
+		return apiError(err, "nvweaver's system")
+	}
+	if !sys.Capabilities.SnapshotGroups {
+		return status.Errorf(codes.FailedPrecondition,
+			"nvweaver %s has no snapshot groups, which group snapshots need: upgrade it", sys.Version)
+	}
+	g.supported.Store(true)
+	return nil
 }
 
 // checkPausable refuses a group whose volumes are exported to a node that can't be paused, or won't say, naming it. A

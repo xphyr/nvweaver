@@ -40,7 +40,7 @@ lint:
 	@for f in internal/client/*.go; do case $$f in *_test.go) continue ;; esac; \
 		cmp -s $$f csi/vendor/nvweaver/$$f || { echo "csi/vendor/nvweaver/$$f is out of date: cd csi && go mod vendor"; exit 1; }; done
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(SHELLCHECK_IMAGE) -S warning \
-		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/k3s-lab.sh test/vm/k3s-csi.sh test/vm/vm-e2e.sh test/vm/run-all.sh test/vm/scale-bench.sh test/vm/cbt-check.sh test/chart-versions.sh test/webui-e2e.sh test/webui-real-e2e.sh .github/publish-images.sh
+		test/e2e.sh test/bench.sh test/systemd-e2e.sh test/vm/lab.sh test/vm/k3s-lab.sh test/vm/k3s-csi.sh test/vm/vm-e2e.sh test/vm/run-all.sh test/vm/scale-bench.sh test/vm/cbt-check.sh test/vm/upgrade.sh test/chart-versions.sh test/webui-e2e.sh test/webui-real-e2e.sh .github/publish-images.sh .github/apt-install.sh
 	podman run --rm --pull=missing -v "$$PWD:/mnt:ro,Z" --workdir /mnt $(ACTIONLINT_IMAGE)
 	podman run --rm --pull=missing -v "$$PWD:/spec:ro,Z" --workdir /spec $(REDOCLY_IMAGE) \
 		lint --skip-rule operation-4xx-response api/openapi.yaml
@@ -74,6 +74,11 @@ package: nvweaverd nvweaver nvweaver.service
 		-e 's|^Image=.*|Image=ghcr.io/xphyr/nvweaver:$(VERSION)-spdk|' \
 		-e '/^# Built locally, so there is no registry/d' -e '/^Pull=never/d' \
 		dist/systemd/nvweaver-spdk.container > build/$(PACKAGE)/nvweaver-spdk.container
+	# The Synology setup, using this release's SPDK image unless .env says otherwise.
+	install -d build/$(PACKAGE)/synology
+	sed -e 's|ghcr.io/xphyr/nvweaver:latest-spdk|ghcr.io/xphyr/nvweaver:$(VERSION)-spdk|' \
+		dist/synology/compose.yaml > build/$(PACKAGE)/synology/compose.yaml
+	install -m 0644 dist/synology/.env.example dist/synology/README.md build/$(PACKAGE)/synology/
 	tar --sort=name --owner=0 --group=0 --numeric-owner -C build -czf build/$(PACKAGE).tar.gz $(PACKAGE)
 	rm -rf build/$(PACKAGE)
 	install -m 0755 nvweaver build/$(CLI_PACKAGE)

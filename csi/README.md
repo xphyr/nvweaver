@@ -116,7 +116,7 @@ There are two ways, which install the same things: the manifests in [`deploy/`](
 chart in [`deploy/helm/nvweaver-csi`](deploy/helm/nvweaver-csi), which does those steps in one, from values: see
 [Installing with Helm](#installing-with-helm). Use one or the other on a cluster, not both.
 
-The image is published for amd64 and arm64 as `ghcr.io/xphyr/nvweaver-csi`, tagged with each release, such as `0.4.0`. To build
+The image is published for amd64 and arm64 as `ghcr.io/xphyr/nvweaver-csi`, tagged with each release, such as `0.5.0`. To build
 your own instead, from the repository's root, push it to a registry the nodes can pull from:
 
 ```sh
@@ -141,7 +141,7 @@ and dashes, that starts every volume, snapshot and subsystem name the driver mak
 Use the scoped token's name:
 
 ```sh
-sed -e 's#IMAGE#ghcr.io/xphyr/nvweaver-csi:0.4.0#' -e 's#CLUSTER#prod#' csi/deploy/nvweaver-csi.yaml | kubectl apply -f -
+sed -e 's#IMAGE#ghcr.io/xphyr/nvweaver-csi:0.5.0#' -e 's#CLUSTER#prod#' csi/deploy/nvweaver-csi.yaml | kubectl apply -f -
 kubectl -n nvweaver-csi rollout status deployment/nvweaver-csi-controller
 kubectl -n nvweaver-csi rollout status daemonset/nvweaver-csi-node
 ```
@@ -252,21 +252,24 @@ kubectl -n nvweaver-csi get leases -L nvweaver.xphyr.github.io/pause-nvme   # ea
 cat /sys/module/nvme_core/parameters/multipath                              # on a node: Y
 ```
 
-It needs the group snapshot CRDs, `v1beta2`, and a snapshot controller with group snapshots on: external-snapshotter 8.x,
-from Kubernetes 1.32. **Check that it's on:** external-snapshotter 8.7.0's own manifest runs snapshot-controller 8.6.0,
+It needs the group snapshot CRDs and a snapshot controller with group snapshots on: external-snapshotter 8.x, from
+Kubernetes 1.32, or OpenShift 5.0, which has them on by default. OpenShift 4.22 has them only in its Tech Preview feature
+set, which can't be turned off again and stops the cluster upgrading. Use the API version the cluster serves: `v1` on
+OpenShift 5.0 and with external-snapshotter 8.7's CRDs, `v1beta2` on older ones (`kubectl api-resources | grep group`).
+nvweaver itself must have snapshot groups: the driver refuses a group, saying so, against an older one. **Check that it's on:** external-snapshotter 8.7.0's own manifest runs snapshot-controller 8.6.0,
 which leaves it off, and a `VolumeGroupSnapshot` then just sits there, with no status and no error. Add
 `--feature-gates=CSIVolumeGroupSnapshot=true` to the snapshot controller's arguments. On OpenShift, the cluster's own
 snapshot controller decides, which hasn't been tried yet. Then install or upgrade the chart with `--set groupSnapshots.enabled=true`, or add `--group-snapshots` to
 the controller's `driver` container in `deploy/nvweaver-csi.yaml`, and make a class:
 
 ```yaml
-apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+apiVersion: groupsnapshot.storage.k8s.io/v1
 kind: VolumeGroupSnapshotClass
 metadata: {name: nvweaver}
 driver: nvweaver.xphyr.github.io
 deletionPolicy: Delete
 ---
-apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+apiVersion: groupsnapshot.storage.k8s.io/v1
 kind: VolumeGroupSnapshot
 metadata: {name: db-nightly}
 spec:
@@ -323,6 +326,17 @@ A VM, a live migration and a DataImportCron have passed on OpenShift 4.22. **Aft
 about 2 seconds** on nvweaver's kernel target: taking the old node off the volume briefly drops the new node's connection too,
 and the node waits its reconnect delay, `--reconnect-delay`, before carrying on. The VM sees no error.
 
+**VM snapshots, with the guest agent's freeze,** work: a `VirtualMachineSnapshot` of a running VM freezes its filesystems
+through `qemu-guest-agent`, snapshots each disk, and thaws them, and a `VirtualMachineRestore` brings them back consistent
+with each other. That's application-consistent, and needs no group snapshots. Two things to know:
+- **On an SELinux guest, such as Fedora or RHEL, a data disk's filesystem must be labelled,** or the freeze fails with
+  "failed to open /mnt/data: Permission denied", and the snapshot times out. A filesystem made by hand, and mounted, has
+  an unlabelled root, which the confined guest agent may not open. Mount it somewhere with a mount point's label, such as
+  under `/mnt`, and run `restorecon -R` on it once mounted.
+- **Recreating the StorageClass resets its StorageProfile,** as above, and CDI then turns the golden images back into
+  claims, and deletes their snapshots, until it's applied again. A VM made meanwhile waits for its root disk for good:
+  delete it and make it again once the images are back.
+
 ### StorageClass parameters
 
 | Parameter | Meaning |
@@ -352,6 +366,19 @@ volumes using it. Then remove each node's connection to its old subsystem, `nvme
 node, and delete those subsystems in nvweaver, as nodes keep using a connection that's still up rather than adding a new path. The
 driver makes them again, on the new port, for each node's next volume. On OpenShift, apply the StorageProfile again too, as
 recreating the class resets it. A way to do this without the manual steps is in `TODO.md`.
+
+### Two nvweavers in one cluster
+
+One cluster can use two nvweavers, such as one on a storage server and one on a Synology, with a second instance of the
+driver: install the chart again, as another release in a namespace of its own. Give the second one, so that nothing clashes:
+- **its own `driverName`,** such as `syn.nvweaver.xphyr.github.io`, which its StorageClasses then name;
+- **its own `nqnPrefix`,** such as `nqn.2026-11.io.github.xphyr.nvweaver:syn`. Otherwise both make a subsystem for each node
+  under the same name, on two servers, and a host takes one name reached at two addresses for two paths to the same
+  subsystem, and mixes them up;
+- **its own `node.livenessPort`,** such as 9898, as the node plugins use the host's network;
+- **its own class names,** in `storageClasses` and `volumeSnapshotClass`, and a scoped token from the other nvweaver.
+
+Tested on OpenShift 4.22 with nvweaver-1 and a Synology's DSM side by side. See `docs/testing.md`.
 
 ### Driver flags
 

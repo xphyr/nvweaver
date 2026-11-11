@@ -1,6 +1,6 @@
 # nvweaver's CSI driver: the controller and the node plugin are the same image.
 # Build from this directory, which has everything vendored, including the API client.
-FROM docker.io/library/golang:1.26.10-alpine AS build
+FROM docker.io/library/golang:1.26.11-alpine AS build
 WORKDIR /src
 COPY . .
 ARG VERSION=dev

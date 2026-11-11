@@ -6,3 +6,4 @@
 CLAUDE.local.md
 CLAUDE.review.md
 *.priv
+/dist/synology/.env
