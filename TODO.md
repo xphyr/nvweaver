@@ -23,20 +23,24 @@ scale (5,000 volumes on 100 nodes, and 1,000 connections), and the third outside
    multipath. Tested on both targets and pool types, in the k3s lab on 1.37 and 1.31, and on `snoarm`, OpenShift 5.0 on Arm,
    on 2026-11-11. A KubeVirt VM snapshot with its guest agent's freeze passed on `nvw`, whose OpenShift 4.22 has group
    snapshots only as Tech Preview
-4. **The CSI driver's gaps against arrays' drivers,** agreed on 2026-11-10, fitted in around 3: topology and capacity
-   reporting, volume health, and SELinux mount labelling. See phase 7
-5. **SPDK first, with a Synology as a supported platform,** agreed on 2026-11-11. What nvweaver has that TrueNAS and the
+4. **Several nvweavers behind one driver,** agreed on 2026-11-11, after the SAN test needed a second instance of the driver
+   for a second nvweaver: each StorageClass names its nvweaver, and volume and snapshot IDs say which one they're on, as
+   arrays' drivers do for several arrays. See phase 7
+5. **The CSI driver's gaps against arrays' drivers,** agreed on 2026-11-10: topology and capacity reporting, volume health,
+   and SELinux mount labelling. See phase 7
+6. **SPDK first, with a Synology as a supported platform,** agreed on 2026-11-11. What nvweaver has that TrueNAS and the
    like don't is NVMe/TCP from a container, on a box that already does something else, needing nothing from the host's
    kernel. SPDK is what makes that work where there's no `nvmet-tcp`, such as Synology's DSM. So: SPDK and reflink pools
    become the defaults, with LVM, the kernel target and systemd kept as options for Linux hosts that have them. First,
    probe the user's Synology. See "SPDK first" below
-6. **iSCSI, moved down on 2026-11-11.** Synology and TrueNAS already serve iSCSI well, so on a Synology it would only
+7. **iSCSI, moved down on 2026-11-11.** Synology and TrueNAS already serve iSCSI well, so on a Synology it would only
    repeat what DSM does. Worth doing only if testing against an array's iSCSI needs it. See "Later" for what the probe
    found
 
-Smaller, to fit in: the CSI driver on Arm, on a single-node OpenShift 5.0 cluster on arm64 that the user has added, and then
-native Arm VMs there for the end-to-end suites (see "Testing without hardware"); a test that a new version reads the previous release's state; the driver refusing to run when two nodes
-share a host NQN; a guest writing while it live-migrates; publishing the Helm chart.
+Smaller, to fit in: making scoped tokens in the web interface, for more clusters (see "Security"); native Arm VMs on
+`snoarm` for the end-to-end suites (see "Testing without hardware"); the driver refusing to run when two nodes share a host
+NQN; a guest writing while it live-migrates; publishing the Helm chart. Done since: the CSI driver on Arm, on `snoarm`, and a
+test that a new version reads the previous release's state, `test/vm/upgrade.sh`.
 
 ## 1. Build and release
 
@@ -294,8 +298,17 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [ ] SELinux mount labelling: `seLinuxMount: true` on the CSIDriver, so a volume is mounted with its label rather than every
         file relabelled at each pod start, which is slow on big volumes such as VM disks. Check the node passes the `context`
         option through, and test on OpenShift. Mind Kubernetes 1.31, decision 51
-  - [ ] Several nvweavers behind one driver, each StorageClass naming its API and credentials through CSI secrets, as arrays'
-        drivers do for several arrays
+  - [ ] Several nvweavers behind one driver (step 4 of "Next"), each StorageClass naming its API and credentials, through
+        CSI secrets or a named backend in the driver's own configuration, as arrays' drivers do for several arrays. Today a
+        second nvweaver needs a second instance: see "Two nvweavers in one cluster" in `csi/README.md`. What it takes:
+    - [ ] Volume and snapshot IDs that name their backend, such as `syn/nvw-pvc-...`, as deleting, publishing, growing,
+          snapshotting and changed block tracking get only the ID. An ID with no backend means the default one, so existing
+          volumes carry on
+    - [ ] Node subsystems named per backend, as a second instance needs its own NQN prefix today
+    - [ ] The node janitor, and capacity reporting when it comes, per backend
+    - [ ] Group snapshots refused across backends, as each nvweaver pauses only its own hosts
+    - [ ] One backend failing, or misconfigured, mustn't stop the others, and says which it is
+    - [ ] Tested with nvweaver-1 and a Synology behind one driver on `nvw`, as the two instances were
   - [ ] Importing a volume nvweaver already has into Kubernetes, for migrations
   - [x] `ListVolumes` and `ListSnapshots`, which `csi-sanity` and some backup tools use
   - [ ] Test on OpenShift 4.18 itself, and on Kubernetes 1.32 and 1.33, which only the chart's rendering covers
@@ -313,6 +326,11 @@ are in `CLAUDE.review.md`, which isn't in the repository.
 - [x] Scoped API tokens, so that clusters sharing one nvweaver can't delete each other's volumes: by ownership, not name prefixes,
       decision 46. Tested in the k3s lab, with the driver on a scoped token
 - [ ] Roles for people in the web interface, which decision 40 left out: everyone signed in is still an admin
+- [ ] Make scoped tokens for more clusters in the web interface, asked for by the user on 2026-11-11: a Tokens screen, for
+      admins, to make one, shown once with the CSI driver's secret ready to copy, list them, and revoke one. Today they're
+      lines from `nvweaver token new` in a file the service only reads, which the Compose and Quadlet setups mount read-only.
+      So decide first where tokens made this way live: probably nvweaver's own, hashed, in its data directory, beside the
+      file, which stays for those who manage tokens by hand. Spec first: `/v1/tokens`, admins only. A decision
 - [ ] A way to hand a cluster's existing volumes, snapshots and subsystems to its scoped token in one go, rather than one at a time
 - [ ] Hosts owned by a token, when nodes get DH-HMAC-CHAP keys, which only admins may set now
 - [ ] Document backing up nvweaver's data directory, and recovering from losing it: it's a single target, and the state is what
@@ -345,6 +363,9 @@ tests.
 - [ ] The same on the user's real Synology, an x86 model
 - [ ] An Arm Synology: the user has none, so it waits for a contributor who has. SPDK and the images already run on Arm
       elsewhere (`snoarm`, the CM4), but DSM's Arm kernels are older, and untested
+- [ ] Benchmark first, on the user's production Synology, after v0.5.0: its own iSCSI against nvweaver's NVMe/TCP on the same
+      box, from `snoarm` over the 10 Gb SAN, with `test/bench-classes.sh`, while the user runs `test/synology-capture.sh` on
+      the Synology. The user installs nvweaver there; the benchmark needs a second driver instance on `snoarm` for it
 - [ ] Make SPDK and reflink the defaults where nothing says otherwise, and say so in the README, keeping the kernel target,
       LVM and the systemd unit as documented options. A decision in `docs/decisions.md`
 - [x] A Compose file for Container Manager's Projects, the user's choice on 2026-11-11 over a Helm chart, as DSM runs Docker,

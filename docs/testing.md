@@ -1069,7 +1069,8 @@ On 2026-11-11, with images built with Go 1.26.11 from the release branch, on x86
 **CI's end-to-end job couldn't install QEMU** from about 14:00 UTC that day: `azure.archive.ubuntu.com`, the runners' first
 Ubuntu mirror, didn't resolve, nor from the user's own network, while other jobs' installs worked. It's a CNAME to an Azure
 Traffic Manager profile, which answers by region. `.github/apt-install.sh` now falls back to `archive.ubuntu.com` when it
-doesn't resolve. Not yet run in CI when this was written.
+doesn't resolve. PR 24's CI and the v0.5.0 release run both passed with it, but the mirror resolved again by then, so
+neither took the fallback: it has never run for real (see "Not tested").
 
 ## Not tested
 
@@ -1088,6 +1089,9 @@ Not tested for other reasons:
 - Scale. Nothing has been measured beyond a handful of objects
 - Moving `latest` to a multi-arch list on GitHub, which only a final release does. It passed against a local registry, on the
   runners' Podman 4.9
+- `.github/apt-install.sh`'s fallback to `archive.ubuntu.com`, as the runners' mirror resolved again before it ran
+- `test/bench-classes.sh` against a Synology, and `test/synology-capture.sh` during a benchmark: the first ran only on `nvw`,
+  comparing nvweaver with vSphere's class, and the second only for a few seconds on a Virtual DSM
 
 ## Benchmarks
 
