@@ -19,6 +19,9 @@ and ran and live-migrated a KubeVirt VM. It passed the same checks on a single-n
   A ReadOnlyMany filesystem is mounted read-only on every node.
 - **A StorageClass's `port` needs an address the nodes can route to.** A port listening on `0.0.0.0` or `::` is refused, as
   nodes told to connect there would reach themselves.
+- **Forgets nodes that leave.** The controller checks every five minutes which nodes have the driver. A node's subsystem and
+  host in nvweaver are deleted once the node has gone from the cluster and nothing is exported to it. It labels each node's host
+  with `csi-cluster` and `csi-node` too, which the web interface shows, so you can tell which host is which. See decision 54.
 - **Nodes wait out an outage.** If nvweaver stops, I/O pauses until it's back, rather than failing. Nodes keep reconnecting for
   ever by default, as there's one target and no failover.
 
@@ -318,6 +321,7 @@ Set in `deploy/nvweaver-csi.yaml`, on the `driver` containers.
 | `--nqn-prefix` | `nqn.2026-11.io.github.xphyr.nvweaver:csi` | How the NQN of each subsystem the driver makes starts. |
 | `--hostnqn-file` | `/etc/nvme/hostnqn` | The node's host NQN, which is its ID. |
 | `--driver-name` | `nvweaver.xphyr.github.io` | The driver's name in Kubernetes. |
+| `--node-cleanup-interval` | `5m` | On the controller, how often to label nodes' hosts and forget nodes that have left. `0` stops it. The chart's `controller.nodeCleanupInterval`. |
 | `--snapshot-metadata` | off | On the controller, serve changed block tracking to the external-snapshot-metadata sidecar. See [Changed block tracking](#changed-block-tracking-for-backups). |
 
 **`--cluster`, `--nqn-prefix` and `--driver-name` can't change once volumes exist:** the driver finds its volumes by them, so
@@ -333,6 +337,13 @@ nvweaver volume list -o json | jq -r '.[] | select(.name | startswith("prod-")) 
   xargs -I{} nvweaver volume update {} --owner prod
 nvweaver subsystem list -o json | jq -r '.[] | select(.nqn | contains(":csi:prod:")) | .nqn' |
   xargs -I{} nvweaver subsystem update {} --owner prod
+```
+
+**Each node's host too,** which drivers before hosts had owners made with no owner. Until then, the driver can't label them
+or delete them when their node leaves, and its log says so. A node's host NQN is in `/etc/nvme/hostnqn` on it:
+
+```sh
+nvweaver host update NODE_HOSTNQN --owner prod
 ```
 
 Snapshots can't be given away yet: delete them, or leave them for an admin to delete. A way to do all of this in one step is in
@@ -352,7 +363,7 @@ Installed with Helm, `helm uninstall nvweaver-csi -n nvweaver-csi`, then delete 
 lines.
 
 Each node's subsystem and host stay in nvweaver, as the driver keeps them for the node's next volume, and each node stays
-connected to its subsystem. Delete the subsystems, named `<nqn-prefix>:<cluster>:node-…`, with `nvweaver subsystem delete`,
+connected to its subsystem. The driver deletes them only for nodes that leave the cluster while it runs. Delete the subsystems, named `<nqn-prefix>:<cluster>:node-…`, with `nvweaver subsystem delete`,
 then disconnect each node with `nvme disconnect -n` and the same name.
 
 ## Troubleshooting

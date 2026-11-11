@@ -1929,6 +1929,14 @@ components:
       properties:
         nqn:
           $ref: '#/components/schemas/NQN'
+        labels:
+          type: object
+          description: Such as the cluster and node that the CSI driver labels its hosts with, `csi-cluster` and `csi-node`.
+          additionalProperties:
+            type: string
+        owner:
+          type: string
+          description: The scoped token that created it, which may change its labels and delete it, as an admin may. Absent when an admin made it with no owner. See decision 54.
         has_dhchap_key:
           type: boolean
         has_dhchap_ctrl_key:
@@ -1944,6 +1952,14 @@ components:
       properties:
         nqn:
           $ref: '#/components/schemas/NQN'
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        owner:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$'
+          description: For an admin, the scoped token that owns it. A scoped token always owns what it creates, and may not set this.
         dhchap_key:
           type: string
           writeOnly: true
@@ -1966,6 +1982,14 @@ components:
       type: object
       additionalProperties: false
       properties:
+        labels:
+          type: object
+          description: Replaces its labels. Its owner, or an admin.
+          additionalProperties:
+            type: string
+        owner:
+          type: string
+          description: Admins only. Gives it to a scoped token, or with `""`, to no one, which leaves it to admins.
         dhchap_key:
           type: string
           writeOnly: true

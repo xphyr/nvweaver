@@ -736,6 +736,35 @@ their background `lab.sh ssh` loops running on the build host, on connections to
 committed when it was reserved, and nvweaver's snapshots are committed when taken), btrfs, Arm, SPDK's own snapshots, which
 nvweaver doesn't use, and real disks.
 
+### Nodes leaving the cluster, and hosts' labels
+
+Decision 54, on 2026-11-10. `k3s-csi.sh test` runs the janitor every 15 seconds, and checks:
+
+- agent1's host is owned by the cluster's token, labelled `csi-cluster=lab` and `csi-node=agent1`;
+- agent1 keeps its subsystem through its reboot, which takes longer than two of the janitor's checks;
+- once agent2's k3s is stopped and its node deleted, its empty subsystem and its host go, while agent1's stay;
+- agent2 joins again, and a pod there gets a new volume, with its host made again as the cluster's.
+
+It passed on k3s 1.37.2 and 1.31.14: 44 checks each, and csi-sanity 75 passed, 0 failed, on both.
+
+The unit tests cover what the lab doesn't:
+
+- a departed node with volumes still exported is kept until they're unpublished;
+- another cluster's subsystems are never touched;
+- the janitor does nothing when the CSINode list fails or comes back empty;
+- a host it doesn't own is reported and left;
+- a scoped token can change and delete only its own hosts, never their keys.
+
+`TestHostsAreOwned` failed before the API change.
+
+**LVM snapshots showed as `missing` on a lab server** because they're inactive and have no device node. `TestInactiveLVMSnapshotsArentMissing` checks that LVM's list decides, and that 102 states cost at most two `lvs`. Before the change, the old check called such a snapshot missing.
+
+**The web interface:** the browser test checks the overview's Problems section, and a CSI node's host showing its cluster, node and owner. It passed with 247 checks, and the screenshots were looked at.
+
+**Not checked:** what a departed node's connection does. Stopping k3s doesn't disconnect the node, so agent2 was most likely
+still connected when its subsystem went. With `--ctrl-loss-tmo` at -1, it would retry for ever, and reconnect once it joined
+again; the test didn't look. Not tested on OpenShift yet.
+
 ### The CSI driver at scale
 
 `csi/test/scale` drives the driver's controller, the code Kubernetes calls, against a real nvweaver, with 16 calls at once
@@ -951,6 +980,8 @@ Checks that passed while proving nothing. Watch for these patterns:
   `ControlMaster` connection. The cause wasn't confirmed, and network changes were being made around the same time.
 - **A power cut straight after `podman load`** loses the image, as nothing has synced it, and the service can't start. This looks
   like the service failing. The power-loss test syncs the target first. `POWER_ONLY="spdk reflink 8"` repeats just that test.
+- **The k3s lab's agents run `k3s.service`, not `k3s-agent`,** as `k3s-lab.sh` writes its own unit. Stopping `k3s-agent` does
+  nothing, quietly, and a deleted node registers again at once.
 - **`pkill -f` over SSH** can match the shell running it, whose command line contains the same text, and end the session.
 - **LVM's warnings don't fail anything.** Inside the unit's sandbox it created volumes correctly while being unable to back
   up its metadata or lock itself in memory, and every test passed until a direct check of the backup file. The unit now

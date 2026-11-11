@@ -37,6 +37,8 @@ NVW_IP=10.98.0.1
 API=https://$NVW_IP:8420
 CLUSTER=lab
 NS=nvweaver-csi
+CLEANUP=15s
+PREFIX=nqn.2026-11.io.github.xphyr.nvweaver:csi:$CLUSTER
 
 die() { echo "k3s-csi: $*" >&2; exit 1; }
 nvw() { "$LAB" ssh nvweaver "$@"; }
@@ -47,7 +49,8 @@ k() { "$LAB" kubectl "$@"; }
 manifest() {
 	local minor
 	minor=$(k version -o json 2>/dev/null | jq -r '.serverVersion.minor' | tr -dc 0-9)
-	local args=(-e "s#IMAGE#$CSI_IMAGE#g" -e "s#CLUSTER#$CLUSTER#g")
+	# The node janitor runs often, so that the test of a node leaving needn't wait five minutes.
+	local args=(-e "s#IMAGE#$CSI_IMAGE#g" -e "s#CLUSTER#$CLUSTER#g" -e "s#--mode=controller, #&--node-cleanup-interval=$CLEANUP, #")
 	if [ -n "$minor" ] && [ "$minor" -lt 34 ]; then
 		args+=(-e "s#csi-provisioner:v[0-9.]*#csi-provisioner:$OLD_PROVISIONER#" -e "s#csi-resizer:v[0-9.]*#csi-resizer:$OLD_RESIZER#")
 	fi
@@ -340,9 +343,50 @@ EOF
 	expect_eq "with every earlier line still there" 1 "$(k exec o1 -- head -1 /data/log 2>/dev/null)"
 	gone o1
 
+	echo "== each node's host, labelled, and a node leaving the cluster"
+	local nqn1 nqn2 sub1 sub2
+	nqn1=$("$LAB" ssh agent1 'cat /etc/nvme/hostnqn')
+	nqn2=$("$LAB" ssh agent2 'cat /etc/nvme/hostnqn')
+	sub1=$PREFIX:node-$(printf %s "$nqn1" | sha256sum | cut -c1-16)
+	sub2=$PREFIX:node-$(printf %s "$nqn2" | sha256sum | cut -c1-16)
+	api GET "/v1/hosts/$nqn1" >/dev/null
+	expect_eq "agent1's host belongs to the cluster's token, and says which cluster and node it is" "lab lab agent1" \
+		"$(bodyq '[.owner, .labels["csi-cluster"], .labels["csi-node"]] | join(" ")')"
+	# It was away for longer than two of the janitor's checks while it rebooted, but it was still a node.
+	expect_eq "agent1 kept its subsystem through its reboot" 200 "$(api GET "/v1/subsystems/$sub1")"
+	expect_eq "agent2 has a subsystem" 200 "$(api GET "/v1/subsystems/$sub2")"
+	expect_eq "with nothing in it now" 0 "$(bodyq '.namespaces | length')"
+	# Its kubelet stops first, or it would register the node again at once.
+	"$LAB" ssh agent2 'sudo systemctl stop k3s' >/dev/null 2>&1
+	k delete node agent2 --wait=true --timeout=120s >/dev/null
+	local code=
+	for _ in $(seq 1 40); do
+		code=$(api GET "/v1/subsystems/$sub2")
+		[ "$code" = 404 ] && break
+		sleep 3
+	done
+	expect_eq "once agent2 has left the cluster, its subsystem goes" 404 "$code"
+	expect_eq "and its host" 404 "$(api GET "/v1/hosts/$nqn2")"
+	expect_eq "while agent1's stays" 200 "$(api GET "/v1/subsystems/$sub1")"
+	"$LAB" ssh agent2 'sudo systemctl start k3s' >/dev/null 2>&1
+	local back=
+	for _ in $(seq 1 60); do
+		back=$(k get node agent2 -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+		[ "$back" = True ] && break
+		sleep 3
+	done
+	expect_eq "agent2 joins again" True "$back"
+	k -n $NS rollout status daemonset/nvweaver-csi-node --timeout=300s >/dev/null 2>&1
+	pvc again 64Mi ReadWriteOnce
+	pod a1 again agent2 'echo back > /data/f && cat /data/f'
+	expect_eq "and a pod on it uses a new volume" Succeeded "$(finished a1)"
+	api GET "/v1/hosts/$nqn2" >/dev/null
+	expect_eq "with its host made again, as the cluster's" "lab lab" "$(bodyq '[.owner, .labels["csi-cluster"]] | join(" ")')"
+	gone a1
+
 	echo "== taking everything away"
 	k delete volumesnapshot snap --wait=true --timeout=120s >/dev/null
-	k delete pvc fs clone ro shared out --wait=true --timeout=120s >/dev/null
+	k delete pvc fs clone ro shared out again --wait=true --timeout=120s >/dev/null
 	local left=
 	for _ in $(seq 1 60); do
 		api GET /v1/volumes >/dev/null

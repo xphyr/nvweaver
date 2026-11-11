@@ -77,28 +77,34 @@ type PortUpdate struct {
 
 // Host is an initiator's identity. The API never returns its keys.
 type Host struct {
-	NQN              string `json:"nqn"`
-	HasDHCHAPKey     bool   `json:"has_dhchap_key"`
-	HasDHCHAPCtrlKey bool   `json:"has_dhchap_ctrl_key"`
-	DHCHAPHash       string `json:"dhchap_hash,omitempty"`
-	DHCHAPDHGroup    string `json:"dhchap_dhgroup,omitempty"`
+	NQN              string            `json:"nqn"`
+	HasDHCHAPKey     bool              `json:"has_dhchap_key"`
+	HasDHCHAPCtrlKey bool              `json:"has_dhchap_ctrl_key"`
+	DHCHAPHash       string            `json:"dhchap_hash,omitempty"`
+	DHCHAPDHGroup    string            `json:"dhchap_dhgroup,omitempty"`
+	Labels           map[string]string `json:"labels,omitempty"`
+	Owner            string            `json:"owner,omitempty"`
 }
 
 // HostCreate creates a host.
 type HostCreate struct {
-	NQN           string `json:"nqn"`
-	DHCHAPKey     string `json:"dhchap_key,omitempty"`
-	DHCHAPCtrlKey string `json:"dhchap_ctrl_key,omitempty"`
-	DHCHAPHash    string `json:"dhchap_hash,omitempty"`
-	DHCHAPDHGroup string `json:"dhchap_dhgroup,omitempty"`
+	NQN           string            `json:"nqn"`
+	DHCHAPKey     string            `json:"dhchap_key,omitempty"`
+	DHCHAPCtrlKey string            `json:"dhchap_ctrl_key,omitempty"`
+	DHCHAPHash    string            `json:"dhchap_hash,omitempty"`
+	DHCHAPDHGroup string            `json:"dhchap_dhgroup,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	Owner         string            `json:"owner,omitempty"` // admins only
 }
 
-// HostUpdate changes what's set.
+// HostUpdate changes what's set. Labels replaces them all.
 type HostUpdate struct {
-	DHCHAPKey     *string `json:"dhchap_key,omitempty"`
-	DHCHAPCtrlKey *string `json:"dhchap_ctrl_key,omitempty"`
-	DHCHAPHash    *string `json:"dhchap_hash,omitempty"`
-	DHCHAPDHGroup *string `json:"dhchap_dhgroup,omitempty"`
+	DHCHAPKey     *string            `json:"dhchap_key,omitempty"`
+	DHCHAPCtrlKey *string            `json:"dhchap_ctrl_key,omitempty"`
+	DHCHAPHash    *string            `json:"dhchap_hash,omitempty"`
+	DHCHAPDHGroup *string            `json:"dhchap_dhgroup,omitempty"`
+	Labels        *map[string]string `json:"labels,omitempty"`
+	Owner         *string            `json:"owner,omitempty"` // admins only
 }
 
 // Subsystem is what hosts connect to.

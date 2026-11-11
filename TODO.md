@@ -14,10 +14,9 @@ the third outside review's findings. In this order now:
 
 1. **Changed block tracking:** done, for the storage, API, CLI and CSI driver, with the chart's sidecar. See phase 7. Still to
    do: the manifests, and checking whether Velero or Kasten use it yet
-2. **Cleaning up after a node leaves,** moved up by the user on 2026-11-10: hosts owned by the token that made them, as
-   subsystems are, so the driver may delete its own; and the controller deleting the subsystem and host of a node whose
-   CSINode is gone, once nothing is exported in it. The driver also labels each host with its cluster and Kubernetes node,
-   and the web interface shows them, as the user couldn't tell which host was which. See phase 7
+2. **Cleaning up after a node leaves:** done. Hosts have owners and labels, the controller labels each node's host with its
+   cluster and node, and forgets a node whose CSINode has gone once nothing is exported to it. The web interface shows hosts'
+   cluster, node and owner, and the overview lists problems. Decision 54. Still to do: give `nvw`'s existing hosts to its token
 3. **Consistency groups:** CSI's VolumeGroupSnapshot, several volumes snapshotted at one instant, as arrays do for a database's
    data and log volumes or a VM's disks. Storage-level, so both targets get it
 4. **The CSI driver's gaps against arrays' drivers,** agreed on 2026-11-10, fitted in around 3: topology and capacity
@@ -173,10 +172,11 @@ Production-like scale is a requirement, so measure this before building on it.
 
 Built ahead of what was left of phases 3 and 5, by choice, so that there was something to see.
 
-- [ ] **LVM snapshots show as `missing` when they're only inactive,** as their state comes from whether the device node exists,
-      and the driver's snapshots are kept inactive (activation-skip). Found by the user browsing nvweaver-1: every snapshot
-      showed as missing. Ask LVM, once per pool for a listing, and report inactive ones as there
-- [ ] Show active problems on the overview: warnings, and objects really missing once the above is fixed
+- [x] **LVM snapshots showed as `missing` when they were only inactive,** as their state came from whether the device node
+      existed, and the driver's snapshots are kept inactive (activation-skip). Found by the user browsing a lab server. LVM is
+      now asked, once per pool for a listing, at most every 30 seconds
+- [x] Show active problems on the overview: pool warnings, and volumes and snapshots that aren't online
+- [x] Hosts show the cluster, Kubernetes node and owner the CSI driver gave them, as the user couldn't tell which was which
 - [x] Read-only screens, embedded in the binary, tested in a real browser. See decision 37
 - [x] Sign in with a username and password, from a users file in bcrypt. See decision 40
 - [x] Try signing in over real TLS, in a browser. It has a real certificate that the browser is told to accept, as trusting a CA isn't what's being tested
@@ -256,8 +256,8 @@ are in `CLAUDE.review.md`, which isn't in the repository.
   - [x] A Helm chart, as another way to install: `csi/deploy/helm/nvweaver-csi`, linted and rendered by `make lint`, tested on OpenShift
   - [ ] Publish the chart with releases, such as to an OCI registry, and test it in the k3s lab too
   - [ ] DH-HMAC-CHAP for nodes: a key per node, from a Secret, set on its host
-  - [ ] Delete a node's subsystem and host when the node leaves the cluster (step 2 of "Next"). They stay while the driver runs, for its next volume.
-        A scoped token can delete the subsystem but not the host, as hosts have no owner and only an admin may delete one
+  - [x] Delete a node's subsystem and host when the node leaves the cluster, once nothing is exported to it: the controller's
+        node janitor, every `--node-cleanup-interval`. Hosts have owners, so a scoped token may delete its own. Decision 54
   - [ ] Topology and `GetCapacity`, for clusters where not every node can reach nvweaver, such as one with a storage network,
         and so the scheduler sees a pool that's full. Arrays' drivers all report capacity
   - [x] ReadOnlyMany filesystems on SELinux nodes: found on OpenShift, where pods using them never started, as a read-only

@@ -293,7 +293,8 @@ func (c *Controller) ensureHost(ctx context.Context, node string) error {
 	if !client.IsNotFound(err) {
 		return apiError(err, "host "+node)
 	}
-	_, err = c.api.CreateHost(ctx, client.HostCreate{NQN: node})
+	// Labelled with the cluster; the node janitor adds the node's name, which only the cluster knows.
+	_, err = c.api.CreateHost(ctx, client.HostCreate{NQN: node, Labels: map[string]string{labelCluster: c.cfg.Cluster}})
 	if err == nil || client.IsConflict(err) {
 		return nil
 	}

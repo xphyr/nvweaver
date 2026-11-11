@@ -816,8 +816,22 @@ const snapshotActions = (s) => el("div", { class: "row-actions" },
 let screenState = {};
 const stateOf = (key) => (screenState[key] ||= { text: "", page: 0 });
 
+// problems lists what needs someone's attention: each pool's warnings, and volumes and snapshots whose storage is really
+// missing. The first page of each is enough for a lab's overview, and says so when there's more.
+function problems(pools, volumes, snapshots) {
+  const found = pools.flatMap((p) => (p.warnings || []).map((w) => el("div", { class: "panel-notice warn" }, link(p.name, "pools", p.name), `: ${w}`)));
+  for (const [kind, page, href] of [["Volume", volumes, "volume"], ["Snapshot", snapshots, "snapshots"]]) {
+    for (const x of (page.items || []).filter((x) => x.state && x.state !== "online")) {
+      found.push(el("div", { class: "panel-notice bad" }, `${kind} `, link(x.name, href, x.name), `: its storage is ${x.state}, at `, mono(x.device_path)));
+    }
+    if (page.next_after) found.push(el("p", { class: "muted" }, `Only the first ${page.items.length} ${kind.toLowerCase()}s were checked.`));
+  }
+  return found.length ? found : [el("p", { class: "muted" }, "None.")];
+}
+
 async function dashboard() {
-  const [sys, pools] = await Promise.all([api("/v1/system"), api("/v1/pools")]);
+  const [sys, pools, volumes, snapshots] = await Promise.all([api("/v1/system"), api("/v1/pools"),
+    api("/v1/volumes?limit=1000"), api("/v1/snapshots?limit=1000")]);
   const card = (label, value, href) => el(href ? "a" : "div", { class: "card", href }, el("div", { class: "value" }, value), el("div", { class: "label" }, label));
   return [
     el("h1", {}, "Overview"),
@@ -825,6 +839,8 @@ async function dashboard() {
     el("div", { class: "cards" },
       card("Pools", sys.pools, "#/pools"), card("Volumes", sys.volumes, "#/volumes"), card("Snapshots", sys.snapshots, "#/snapshots"),
       card("Subsystems", sys.subsystems, "#/subsystems"), card("Hosts", sys.hosts, "#/hosts"), card("Ports", sys.ports, "#/ports")),
+    el("h2", {}, "Problems"),
+    problems(pools, volumes, snapshots),
     el("h2", {}, "Pools"),
     poolTable(pools, { filter: false }),
     el("h2", {}, "This service"),
@@ -1068,7 +1084,11 @@ async function hosts() {
     el("h1", {}, "Hosts"),
     el("div", { class: "toolbar" }, el("button", { class: "primary", id: "add-host", onclick: addHostDialog }, "Add host")),
     table([
-      { title: "NQN", cell: (h) => mono(h.nqn), text: (h) => h.nqn },
+      { title: "NQN", cell: (h) => mono(h.nqn), text: (h) => `${h.nqn} ${labelsText(h.labels)} ${h.owner || ""}` },
+      // The CSI driver labels its nodes' hosts with their cluster and Kubernetes node: decision 54.
+      { title: "Cluster", cell: (h) => (h.labels || {})["csi-cluster"] || "-" },
+      { title: "Node", cell: (h) => (h.labels || {})["csi-node"] || "-" },
+      { title: "Owner", cell: (h) => h.owner || "-" },
       { title: "Authentication", cell: (h) => (h.has_dhchap_key ? pill(h.has_dhchap_ctrl_key ? "DH-HMAC-CHAP, both ways" : "DH-HMAC-CHAP", "ok") : pill("None", "quiet")) },
       { title: "Hash", cell: (h) => h.dhchap_hash || "-" },
       { title: "DH group", cell: (h) => h.dhchap_dhgroup || "-" },

@@ -26,6 +26,9 @@ controller:
   replicas: 1
   # The nvweaver port volumes are offered on, unless a StorageClass sets port.
   port: 1
+  # How often the controller labels each node's host in nvweaver with its cluster and node, and forgets nodes that have left
+  # the cluster, once nothing is exported to them. 0 stops it. Decision 54.
+  nodeCleanupInterval: 5m
   priorityClassName: system-cluster-critical
   resources: {}
   nodeSelector: {}

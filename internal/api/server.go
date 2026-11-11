@@ -123,6 +123,8 @@ var scopedMay = map[string]bool{
 	"PATCH /v1/subsystems/{nqn}":                    true,
 	"DELETE /v1/subsystems/{nqn}":                   true,
 	"PUT /v1/subsystems/{nqn}/ports/{id}":           true,
+	"PATCH /v1/hosts/{nqn}":                         true,
+	"DELETE /v1/hosts/{nqn}":                        true,
 	"DELETE /v1/subsystems/{nqn}/ports/{id}":        true,
 	"PUT /v1/subsystems/{nqn}/hosts/{host}":         true,
 	"DELETE /v1/subsystems/{nqn}/hosts/{host}":      true,
@@ -579,15 +581,17 @@ func (s *Server) deletePort(w http.ResponseWriter, r *http.Request) error {
 
 // hostView never echoes secrets back.
 type hostView struct {
-	NQN           string `json:"nqn"`
-	HasKey        bool   `json:"has_dhchap_key"`
-	HasCtrlKey    bool   `json:"has_dhchap_ctrl_key"`
-	DHCHAPHash    string `json:"dhchap_hash,omitempty"`
-	DHCHAPDHGroup string `json:"dhchap_dhgroup,omitempty"`
+	NQN           string            `json:"nqn"`
+	HasKey        bool              `json:"has_dhchap_key"`
+	HasCtrlKey    bool              `json:"has_dhchap_ctrl_key"`
+	DHCHAPHash    string            `json:"dhchap_hash,omitempty"`
+	DHCHAPDHGroup string            `json:"dhchap_dhgroup,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	Owner         string            `json:"owner,omitempty"`
 }
 
 func viewHost(h *target.Host) hostView {
-	return hostView{h.NQN, h.DHCHAPKey != "", h.DHCHAPCtrlKey != "", h.DHCHAPHash, h.DHCHAPDHGroup}
+	return hostView{h.NQN, h.DHCHAPKey != "", h.DHCHAPCtrlKey != "", h.DHCHAPHash, h.DHCHAPDHGroup, maps.Clone(h.Labels), h.Owner}
 }
 
 func (s *Server) listHosts(w http.ResponseWriter, _ *http.Request) error {
@@ -609,10 +613,16 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) error {
 	if err := target.ValidateNQN(req.NQN); err != nil {
 		return err
 	}
-	if scopeOf(r) != "" && (req.DHCHAPKey != "" || req.DHCHAPCtrlKey != "" || req.DHCHAPHash != "" || req.DHCHAPDHGroup != "") {
+	scope := scopeOf(r)
+	if scope != "" && (req.DHCHAPKey != "" || req.DHCHAPCtrlKey != "" || req.DHCHAPHash != "" || req.DHCHAPDHGroup != "") {
 		return forbidden("a scoped token may create hosts, but only an admin may set their DH-HMAC-CHAP keys")
 	}
-	err := s.m.mutate(func(st *target.State) error {
+	owner, err := ownerFor(scope, req.Owner)
+	if err != nil {
+		return err
+	}
+	req.Owner = owner
+	err = s.m.mutate(func(st *target.State) error {
 		if st.Hosts[req.NQN] != nil {
 			return target.NewConflict("host %s already exists", req.NQN)
 		}
@@ -641,12 +651,21 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) error {
 func (s *Server) updateHost(w http.ResponseWriter, r *http.Request) error {
 	nqn := r.PathValue("nqn")
 	var req struct {
-		DHCHAPKey     *string `json:"dhchap_key"`
-		DHCHAPCtrlKey *string `json:"dhchap_ctrl_key"`
-		DHCHAPHash    *string `json:"dhchap_hash"`
-		DHCHAPDHGroup *string `json:"dhchap_dhgroup"`
+		DHCHAPKey     *string            `json:"dhchap_key"`
+		DHCHAPCtrlKey *string            `json:"dhchap_ctrl_key"`
+		DHCHAPHash    *string            `json:"dhchap_hash"`
+		DHCHAPDHGroup *string            `json:"dhchap_dhgroup"`
+		Labels        *map[string]string `json:"labels"`
+		Owner         *string            `json:"owner"`
 	}
 	if err := decode(w, r, &req); err != nil {
+		return err
+	}
+	scope := scopeOf(r)
+	if scope != "" && (req.DHCHAPKey != nil || req.DHCHAPCtrlKey != nil || req.DHCHAPHash != nil || req.DHCHAPDHGroup != nil) {
+		return forbidden("only an admin may set a host's DH-HMAC-CHAP keys")
+	}
+	if err := newOwner(scope, req.Owner); err != nil {
 		return err
 	}
 	var view hostView
@@ -654,6 +673,15 @@ func (s *Server) updateHost(w http.ResponseWriter, r *http.Request) error {
 		h := st.Hosts[nqn]
 		if h == nil {
 			return notFound("no such host %s", nqn)
+		}
+		if err := mayChange(scope, h.Owner, "host "+nqn); err != nil {
+			return err
+		}
+		if req.Labels != nil {
+			h.Labels = maps.Clone(*req.Labels)
+		}
+		if req.Owner != nil {
+			h.Owner = *req.Owner
 		}
 		for _, f := range []struct {
 			src *string
@@ -684,9 +712,14 @@ func (s *Server) updateHost(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Server) deleteHost(w http.ResponseWriter, r *http.Request) error {
 	nqn := r.PathValue("nqn")
+	scope := scopeOf(r)
 	err := s.m.mutate(func(st *target.State) error {
-		if st.Hosts[nqn] == nil {
+		h := st.Hosts[nqn]
+		if h == nil {
 			return notFound("no such host %s", nqn)
+		}
+		if err := mayChange(scope, h.Owner, "host "+nqn); err != nil {
+			return err
 		}
 		for _, sub := range st.Subsystems {
 			if slices.Contains(sub.AllowedHosts, nqn) {

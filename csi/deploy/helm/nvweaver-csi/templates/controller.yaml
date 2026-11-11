@@ -43,6 +43,7 @@ spec:
             - --mode=controller
             {{- include "nvweaver-csi.driverArgs" . | nindent 12 }}
             - --port={{ .Values.controller.port }}
+            - --node-cleanup-interval={{ .Values.controller.nodeCleanupInterval }}
             {{- if .Values.snapshotMetadata.enabled }}
             - --snapshot-metadata
             {{- end }}

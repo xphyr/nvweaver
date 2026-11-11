@@ -26,6 +26,8 @@ type Manager struct {
 	mu sync.Mutex // Held for each change, so one is applied at a time.
 	// state is replaced whole, and never modified once it's here, so reads don't wait for a change.
 	state atomic.Pointer[target.State]
+	// lvs are the names each LVM pool has, read now and then, for snapshots' state: see lvnames.go.
+	lvs lvNames
 	// waiting counts the changes queued for mu.
 	waiting atomic.Int32
 	busyMu  sync.Mutex

@@ -39,6 +39,7 @@ func main() {
 	lossTmo := flag.Int("ctrl-loss-tmo", -1, "seconds a node keeps reconnecting to nvweaver before giving its volumes up; -1 is for ever, as there's no failover")
 	reconnect := flag.Int("reconnect-delay", 2, "seconds a node waits between attempts to reconnect to nvweaver, which sets how long I/O stalls when a connection drops")
 	maxVols := flag.Int64("max-volumes-per-node", driver.MaxNamespaces, "how many volumes a node tells Kubernetes it can take")
+	cleanup := flag.Duration("node-cleanup-interval", 5*time.Minute, "in controller mode, how often to label nodes' hosts in nvweaver and forget nodes that have left the cluster; 0 stops it")
 	metadata := flag.Bool("snapshot-metadata", false, "serve changed block tracking to the external-snapshot-metadata sidecar, for backups, in controller mode; it needs Kubernetes 1.33")
 	showVersion := flag.Bool("version", false, "print the version, and stop")
 	flag.Parse()
@@ -48,7 +49,7 @@ func main() {
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if err := run(*endpoint, *mode, *hostNQN, driver.Config{
+	if err := run(*endpoint, *mode, *hostNQN, *cleanup, driver.Config{
 		Name: *name, Version: version, Cluster: *cluster, NQNPrefix: *prefix, Port: *port,
 		CtrlLossTmo: *lossTmo, ReconnectDelay: *reconnect, MaxVolumesPerNode: *maxVols, SnapshotMetadata: *metadata, Log: log,
 	}, log); err != nil {
@@ -57,7 +58,7 @@ func main() {
 	}
 }
 
-func run(endpoint, mode, hostNQNFile string, cfg driver.Config, log *slog.Logger) error {
+func run(endpoint, mode, hostNQNFile string, cleanup time.Duration, cfg driver.Config, log *slog.Logger) error {
 	if err := cfg.Check(); err != nil {
 		return err
 	}
@@ -104,6 +105,14 @@ func run(endpoint, mode, hostNQNFile string, cfg driver.Config, log *slog.Logger
 		<-ctx.Done()
 		srv.GracefulStop()
 	}()
+	if c, ok := api.(*client.Client); ok && cleanup > 0 {
+		// Only in a cluster: run elsewhere, as csi-sanity does, there are no CSINodes to read.
+		if nodes, err := driver.InClusterNodes(cfg.Name); err != nil {
+			log.Info("node janitor off", "why", err)
+		} else {
+			go driver.NewJanitor(cfg, c, nodes).Run(ctx, cleanup)
+		}
+	}
 	log.Info("serving", "driver", cfg.Name, "version", cfg.Version, "mode", mode, "cluster", cfg.Cluster, "endpoint", endpoint)
 	return srv.Serve(lis)
 }

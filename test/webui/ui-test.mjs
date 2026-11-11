@@ -72,6 +72,7 @@ await page.waitForSelector(".cards");
 const overview = await page.textContent("main");
 check("the overview counts the pools and volumes", /2\s*Pools/.test(overview) && /16\s*Volumes/.test(overview), overview.slice(0, 120));
 check("and says what it's running", overview.includes("nvmet") && overview.includes("demo"));
+check("and lists problems, or says there are none", /Problems/.test(overview), overview.slice(0, 200));
 await visit(page, "#/volumes");
 await page.waitForSelector("main tbody tr");
 check("volumes are listed", (await page.locator("main tbody tr").count()) === 16);
@@ -231,6 +232,8 @@ console.log(`        (the browser reports: ${attack})`);
 await visit(page, "#/hosts");
 await page.waitForSelector("main tbody tr");
 check("a request from another site didn't take effect", !(await page.textContent("main")).includes("from-evil"));
+const nodeRow = await page.locator("main tbody tr", { hasText: "node-a" }).first().textContent();
+check("a CSI node's host shows its cluster, node and owner", nodeRow.includes("cluster-a") && nodeRow.includes("worker-1"), nodeRow);
 
 console.log("\nPages");
 // Made-up lists, so that this can have thousands, as the API would send them: 500 at a time.

@@ -736,9 +736,9 @@ func (a *app) portDelete(args []string) error {
 // --- hosts ---
 
 func hostRows(w io.Writer, hosts []client.Host) {
-	row(w, "NQN", "DHCHAP KEY", "CONTROLLER KEY", "HASH", "DH GROUP")
+	row(w, "NQN", "DHCHAP KEY", "CONTROLLER KEY", "HASH", "DH GROUP", "OWNER")
 	for _, h := range hosts {
-		row(w, h.NQN, h.HasDHCHAPKey, h.HasDHCHAPCtrlKey, dash(h.DHCHAPHash), dash(h.DHCHAPDHGroup))
+		row(w, h.NQN, h.HasDHCHAPKey, h.HasDHCHAPCtrlKey, dash(h.DHCHAPHash), dash(h.DHCHAPDHGroup), dash(h.Owner))
 	}
 }
 
@@ -779,7 +779,14 @@ func dhchapFlags(fs *flag.FlagSet) (key, ctrlKey, hash, group *string) {
 func (a *app) hostCreate(args []string) error {
 	fs := a.flags("host create")
 	keyFile, ctrlFile, hash, group := dhchapFlags(fs)
+	var labels repeated
+	fs.Var(&labels, "label", "key=value. Can be repeated")
+	owner := fs.String("owner", "", "the scoped token that owns it, for admins")
 	pos, err := a.parse(fs, args, "NQN")
+	if err != nil {
+		return err
+	}
+	parsed, err := parseLabels(labels)
 	if err != nil {
 		return err
 	}
@@ -792,19 +799,29 @@ func (a *app) hostCreate(args []string) error {
 		return err
 	}
 	return a.showHost(a.client.CreateHost(a.ctx, client.HostCreate{
-		NQN: pos[0], DHCHAPKey: key, DHCHAPCtrlKey: ctrl, DHCHAPHash: *hash, DHCHAPDHGroup: *group,
+		NQN: pos[0], DHCHAPKey: key, DHCHAPCtrlKey: ctrl, DHCHAPHash: *hash, DHCHAPDHGroup: *group, Labels: parsed, Owner: *owner,
 	}))
 }
 
 func (a *app) hostUpdate(args []string) error {
 	fs := a.flags("host update")
 	keyFile, ctrlFile, hash, group := dhchapFlags(fs)
+	clear := fs.Bool("clear-labels", false, "remove all labels")
+	var labels repeated
+	fs.Var(&labels, "label", "key=value, replacing all labels. Can be repeated")
+	owner := fs.String("owner", "", `give it to this scoped token, or with "", to admins only`)
 	pos, err := a.parse(fs, args, "NQN")
 	if err != nil {
 		return err
 	}
 	set := wasSet(fs)
 	var in client.HostUpdate
+	if set["owner"] {
+		in.Owner = owner
+	}
+	if in.Labels, err = labelUpdate(labels, *clear); err != nil {
+		return err
+	}
 	if set["dhchap-key-file"] {
 		key, err := readSecret(*keyFile)
 		if err != nil {

@@ -897,8 +897,8 @@ type snapshotPage struct {
 	NextAfter string         `json:"next_after,omitempty"`
 }
 
-func viewSnapshot(snap *target.Snapshot) snapshotView {
-	return snapshotView{Snapshot: snap, State: storageState(snap.DevicePath)}
+func (s *Server) viewSnapshot(snap *target.Snapshot) snapshotView {
+	return snapshotView{Snapshot: snap, State: s.m.snapshotState(snap)}
 }
 
 func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) error {
@@ -920,7 +920,7 @@ func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) error {
 				page.NextAfter = page.Items[limit-1].Name
 				break
 			}
-			page.Items = append(page.Items, viewSnapshot(snap))
+			page.Items = append(page.Items, s.viewSnapshot(snap))
 		}
 		writeJSON(w, http.StatusOK, page)
 		return nil
@@ -1070,7 +1070,7 @@ func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) error {
 	if created {
 		code = http.StatusCreated
 	}
-	writeJSON(w, code, viewSnapshot(snap))
+	writeJSON(w, code, s.viewSnapshot(snap))
 	return nil
 }
 
@@ -1155,7 +1155,7 @@ func (s *Server) getSnapshot(w http.ResponseWriter, r *http.Request) error {
 		if snap == nil {
 			return notFound("no such snapshot %s", name)
 		}
-		writeJSON(w, http.StatusOK, viewSnapshot(snap))
+		writeJSON(w, http.StatusOK, s.viewSnapshot(snap))
 		return nil
 	})
 }

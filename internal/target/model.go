@@ -100,6 +100,10 @@ type Host struct {
 	DHCHAPCtrlKey string `json:"dhchap_ctrl_key,omitempty"`
 	DHCHAPHash    string `json:"dhchap_hash,omitempty"`
 	DHCHAPDHGroup string `json:"dhchap_dhgroup,omitempty"`
+	// Labels, such as the cluster and node the CSI driver labels its hosts with.
+	Labels map[string]string `json:"labels,omitempty"`
+	// Owner is the scoped token that may change its labels and delete it, besides admins. See decision 54.
+	Owner string `json:"owner,omitempty"`
 }
 
 // Subsystem is an NVM subsystem: what hosts connect to. A subsystem either
@@ -204,6 +208,7 @@ func (s *State) Clone() *State {
 	}
 	for k, v := range s.Hosts {
 		h := *v
+		h.Labels = maps.Clone(v.Labels)
 		c.Hosts[k] = &h
 	}
 	for k, v := range s.Subsystems {

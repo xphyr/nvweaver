@@ -689,3 +689,22 @@ there, not as absolute numbers.
   mounted, as with any read-only shared filesystem, such as NFS's `nfs_t`.
 - **Rejected for now: `seLinuxMount: true` on the CSIDriver,** which has kubelet mount with each pod's own label. It isn't in
   every Kubernetes the driver supports (decision 51), and is in `TODO.md` with the driver's other SELinux work.
+
+## 54. Hosts are owned and labelled, and the driver forgets nodes that have left
+
+- **The problem:** the driver keeps each node's subsystem and host for its next volume, so they stay after the node has left
+  the cluster, and a scoped token couldn't delete a host, as hosts had no owner (decision 46). And the user, browsing nvweaver,
+  couldn't tell which host was which node of which cluster: a host held only its NQN and keys.
+- **Chosen: hosts have an `owner` and `labels`,** as subsystems and volumes do. A host a scoped token creates is its own, and
+  it may change that host's labels and delete it; DH-HMAC-CHAP keys stay an admin's. An admin may set any host's owner, which
+  is how hosts made before this are given to a cluster.
+- **Chosen: the driver labels each node's host** with `csi-cluster` and `csi-node`, the Kubernetes node's name, which it finds
+  in the node's CSINode: its driver entry's node ID is the host NQN.
+- **Chosen: the controller forgets a node that has left,** checking every 5 minutes, or as `--node-cleanup-interval` says, 0
+  to stop it. A node of this cluster's, from its subsystem's name, whose host NQN is in no CSINode for two checks in a row,
+  and whose subsystem has nothing exported, loses its subsystem, then its host, if the driver owns it. A rebooting node keeps
+  its CSINode, so it's never touched; a node removed with volumes still exported in it is logged and left, as Kubernetes
+  unpublishes those, and the next check finds it empty.
+- **Kept safe:** a check that can't read CSINodes, or finds none of the driver's, does nothing, as an empty answer is more
+  likely a broken one than a cluster with no nodes. The driver reads CSINodes with the standard library, with its service
+  account's token, so there's no Kubernetes client to add (decision 40).
