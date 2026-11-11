@@ -23,6 +23,14 @@ type groupAPI struct {
 	snaps   map[string]*client.Snapshot
 	groups  map[string]*client.SnapshotGroup
 	created int
+	old     bool // a version of nvweaver from before snapshot groups
+}
+
+func (a *groupAPI) System(context.Context) (*client.System, error) {
+	if a.old {
+		return &client.System{Version: "v0.4.0"}, nil
+	}
+	return &client.System{Version: "v0.5.0", Capabilities: client.Capabilities{SnapshotGroups: true}}, nil
 }
 
 func newGroupAPI() *groupAPI {
@@ -185,6 +193,24 @@ func TestAGroupSnapshotOfVolumesNotExported(t *testing.T) {
 	// But an exported one does.
 	if _, err := createGroup(g, "gs-2", "a"); status.Code(err) != codes.Unavailable {
 		t.Errorf("with the nodes unknown: %v", err)
+	}
+}
+
+// An nvweaver from before snapshot groups answers 404 to them, which would read as a group that isn't there: found on
+// snoarm, against a lab server not yet upgraded. Say so instead.
+func TestAGroupSnapshotOnAnNvweaverWithoutThem(t *testing.T) {
+	api := newGroupAPI()
+	api.old = true
+	g := groupController(api, map[string]bool{"worker-a": true}, new([]string))
+	if _, err := createGroup(g, "gs-1", "c"); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "upgrade") {
+		t.Errorf("got %v", err)
+	}
+	if api.created != 0 {
+		t.Error("nvweaver was asked anyway")
+	}
+	api.old = false
+	if _, err := createGroup(g, "gs-1", "c"); err != nil {
+		t.Errorf("once upgraded: %v", err)
 	}
 }
 

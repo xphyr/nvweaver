@@ -810,6 +810,42 @@ held, and moved them back.
 - **The writer's status column was wrong** in the first three rounds: it logged `$?` after `$(date)`, the pitfall below.
   The `dd` error output was the evidence, and the fourth round logged `dd`'s own status.
 
+### A KubeVirt VM snapshot, with its guest agent's freeze
+
+On `nvw`, OpenShift 4.22.22, on 2026-11-11: a Fedora VM, its root disk a thin clone of the golden image, with two 1 GiB data
+disks, all on nvweaver. In the guest, a service wrote a counter to a file on the first data disk, synced it, then the same to
+the second, as `e2e.sh`'s check does. A `VirtualMachineSnapshot` of the running VM succeeded, with `GuestAgent` among its
+indications: it froze the filesystems, then took a VolumeSnapshot of each disk. The VM was stopped and restored in place,
+and on boot the disks held 391 and 390, consistent, and the writer carried on. One run, and with a freeze, consistency is
+expected whatever the storage does: this shows that the pieces work together on nvweaver.
+
+- **The first two snapshots failed,** "failed to open /d2: Permission denied" from `guest-fsfreeze-freeze`, and the snapshot
+  timed out. The confined guest agent may open only mount points with a mount point's label, and a filesystem made in
+  the guest has an unlabelled root. Mounting under `/mnt` wasn't enough; `restorecon -R` on the mounted filesystems was.
+  `csi/README.md` says so.
+- **The VM's root disk first waited for good.** Recreating the class on 2026-11-10 had reset its StorageProfile, so CDI
+  had turned the golden images back into claims, and deleted their snapshots. Applying the profile again brought them
+  back, but the waiting disk didn't retry: the VM had to be made again.
+- **Group snapshots couldn't be tried there.** OpenShift 4.22's `VolumeGroupSnapshot` feature gate is off in the Default
+  feature set, and the group snapshot CRDs aren't installed. Turning it on means `TechPreviewNoUpgrade`, which can't be
+  undone and stops the cluster upgrading, so it wasn't.
+
+### Group snapshots on OpenShift 5.0, on Arm
+
+On `snoarm`, OpenShift 5.0.1 on arm64, on 2026-11-11, through OpenShift's own snapshot controller, which has group
+snapshots on by default, with `v1` the only API version served. The driver's arm64 image was built from `main` at
+`9c406a7`. As in the k3s lab, a pod wrote a counter to two block volumes in turn; a VolumeGroupSnapshot of both was ready
+while it wrote, none of its writes failed, and the members, restored, held 690 and 689. The node's Lease said it could be
+paused. Nothing was left afterwards.
+
+- **The first try used `v1beta2`,** which 5.0 doesn't serve, and the test script hid `kubectl apply`'s refusal, then waited
+  for a group snapshot that didn't exist. The script now shows a refused `apply`, and stops waiting at the first sign of
+  failure: an error on the group snapshot or its content, or the driver refusing it.
+- **The second got a 404 from nvweaver,** which hadn't been upgraded, and has no snapshot groups. The driver took that for
+  a group that wasn't there. It now checks nvweaver's `snapshot_groups` capability, and refuses, saying to upgrade.
+- nvweaver-1 was upgraded to `v0.4.0-19-g9c406a7` for this, which restarted it; `nvw`'s volumes and driver carried on, with
+  no failed calls.
+
 ### Snapshot groups
 
 Decision 56, on 2026-11-10. `e2e.sh` checks that a group's snapshots are consistent with each other, on a reflink pool,

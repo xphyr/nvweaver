@@ -252,21 +252,24 @@ kubectl -n nvweaver-csi get leases -L nvweaver.xphyr.github.io/pause-nvme   # ea
 cat /sys/module/nvme_core/parameters/multipath                              # on a node: Y
 ```
 
-It needs the group snapshot CRDs, `v1beta2`, and a snapshot controller with group snapshots on: external-snapshotter 8.x,
-from Kubernetes 1.32. **Check that it's on:** external-snapshotter 8.7.0's own manifest runs snapshot-controller 8.6.0,
+It needs the group snapshot CRDs and a snapshot controller with group snapshots on: external-snapshotter 8.x, from
+Kubernetes 1.32, or OpenShift 5.0, which has them on by default. OpenShift 4.22 has them only in its Tech Preview feature
+set, which can't be turned off again and stops the cluster upgrading. Use the API version the cluster serves: `v1` on
+OpenShift 5.0 and with external-snapshotter 8.7's CRDs, `v1beta2` on older ones (`kubectl api-resources | grep group`).
+nvweaver itself must have snapshot groups: the driver refuses a group, saying so, against an older one. **Check that it's on:** external-snapshotter 8.7.0's own manifest runs snapshot-controller 8.6.0,
 which leaves it off, and a `VolumeGroupSnapshot` then just sits there, with no status and no error. Add
 `--feature-gates=CSIVolumeGroupSnapshot=true` to the snapshot controller's arguments. On OpenShift, the cluster's own
 snapshot controller decides, which hasn't been tried yet. Then install or upgrade the chart with `--set groupSnapshots.enabled=true`, or add `--group-snapshots` to
 the controller's `driver` container in `deploy/nvweaver-csi.yaml`, and make a class:
 
 ```yaml
-apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+apiVersion: groupsnapshot.storage.k8s.io/v1
 kind: VolumeGroupSnapshotClass
 metadata: {name: nvweaver}
 driver: nvweaver.xphyr.github.io
 deletionPolicy: Delete
 ---
-apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+apiVersion: groupsnapshot.storage.k8s.io/v1
 kind: VolumeGroupSnapshot
 metadata: {name: db-nightly}
 spec:
@@ -322,6 +325,17 @@ container disk as a snapshot in nvweaver, under the DataSource `fedora`, updated
 A VM, a live migration and a DataImportCron have passed on OpenShift 4.22. **After a live migration, the VM's disk stalls for
 about 2 seconds** on nvweaver's kernel target: taking the old node off the volume briefly drops the new node's connection too,
 and the node waits its reconnect delay, `--reconnect-delay`, before carrying on. The VM sees no error.
+
+**VM snapshots, with the guest agent's freeze,** work: a `VirtualMachineSnapshot` of a running VM freezes its filesystems
+through `qemu-guest-agent`, snapshots each disk, and thaws them, and a `VirtualMachineRestore` brings them back consistent
+with each other. That's application-consistent, and needs no group snapshots. Two things to know:
+- **On an SELinux guest, such as Fedora or RHEL, a data disk's filesystem must be labelled,** or the freeze fails with
+  "failed to open /mnt/data: Permission denied", and the snapshot times out. A filesystem made by hand, and mounted, has
+  an unlabelled root, which the confined guest agent may not open. Mount it somewhere with a mount point's label, such as
+  under `/mnt`, and run `restorecon -R` on it once mounted.
+- **Recreating the StorageClass resets its StorageProfile,** as above, and CDI then turns the golden images back into
+  claims, and deletes their snapshots, until it's applied again. A VM made meanwhile waits for its root disk for good:
+  delete it and make it again once the images are back.
 
 ### StorageClass parameters
 
