@@ -883,7 +883,9 @@ every file owned by that user, the TLS key, users file and `.env` mode 0600, the
 - **With `DAC_READ_SEARCH` added back, it worked:** HTTPS from the user's certificate, signing in from their users file,
   the API token, a reflink pool in their folder, a volume, a snapshot and an export, all kept across a restart. That's the
   Compose file's one capability now.
-- Not tried yet: Container Manager's Project screens, a real Synology, an Arm model, and the storage network.
+- **The user followed the guide through Container Manager's Project screens** on the Virtual DSM, on 2026-11-11, and it
+  worked. A users file with the wrong permissions, their own slip, was the only thing to fix.
+- Not tried yet: a real Synology, an Arm model, and the storage network.
 
 ### Snapshot groups
 

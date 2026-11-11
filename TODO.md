@@ -338,14 +338,17 @@ tests.
       is 24.0.2. See "A Synology's DSM, for SPDK first" in `docs/testing.md`
 - [x] The least privilege SPDK runs with: none. The SPDK Quadlet's settings worked unchanged on DSM, with a host connecting,
       snapshots, clones and a snapshot group: host networking, every capability dropped, `no-new-privileges`, no devices
-- [ ] The same on a real Synology, and an Arm model if the user has one
+- [ ] The same on the user's real Synology, an x86 model, and its storage network
+- [ ] An Arm Synology: the user has none, so it waits for a contributor who has. SPDK and the images already run on Arm
+      elsewhere (`snoarm`, the CM4), but DSM's Arm kernels are older, and untested
 - [ ] Make SPDK and reflink the defaults where nothing says otherwise, and say so in the README, keeping the kernel target,
       LVM and the systemd unit as documented options. A decision in `docs/decisions.md`
 - [x] A Compose file for Container Manager's Projects, the user's choice on 2026-11-11 over a Helm chart, as DSM runs Docker,
       not Kubernetes: `dist/synology/`, with a guide. SPDK, a reflink pool on btrfs, host networking, and one capability,
       `DAC_READ_SEARCH`, to read files made in File Station. Tested with `docker compose` on the Virtual DSM. Decision 57
-- [ ] Try `dist/synology/` through Container Manager's Project screens, as the guide says, and fix what doesn't match
-- [ ] Put `dist/synology/` in the release, and a Synology's address in its guide from the user's real one
+- [x] Try `dist/synology/` through Container Manager's Project screens, as the guide says: the user did, on 2026-11-11, and
+      it worked
+- [ ] Put `dist/synology/` in the release tarball, as `dist/systemd/` is
 - [ ] Later, if wanted: a Helm chart for nvweaver itself, to run it inside a Kubernetes cluster
 - [ ] An end-to-end suite for the least-privilege container, so that a change needing more privileges fails a test
 - [ ] Check what SPDK's image costs on a small box: its size, its memory at idle, and its CPU with interrupt mode
