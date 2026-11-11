@@ -1066,6 +1066,11 @@ On 2026-11-11, with images built with Go 1.26.11 from the release branch, on x86
 - The k3s lab on 1.37.2: `k3s-csi.sh test` 44, `groups` 14, `cbt` 13, and `csi-sanity` 75 of 75; on 1.31.14, `test` 44,
   `groups` 14 and `csi-sanity` 75. All passing, and nothing was left behind.
 
+**CI's end-to-end job couldn't install QEMU** from about 14:00 UTC that day: `azure.archive.ubuntu.com`, the runners' first
+Ubuntu mirror, didn't resolve, nor from the user's own network, while other jobs' installs worked. It's a CNAME to an Azure
+Traffic Manager profile, which answers by region. `.github/apt-install.sh` now falls back to `archive.ubuntu.com` when it
+doesn't resolve. Not yet run in CI when this was written.
+
 ## Not tested
 
 Deferred until hardware is available, as tracked in `TODO.md`:

@@ -112,8 +112,7 @@ jobs:
           check-latest: true
       - name: Make somewhere with reflink
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends xfsprogs
+          .github/apt-install.sh xfsprogs
           truncate -s 2G "$RUNNER_TEMP/demo.xfs"
           mkfs.xfs -q "$RUNNER_TEMP/demo.xfs"
           mkdir "$RUNNER_TEMP/demo"
@@ -178,8 +177,7 @@ jobs:
       - name: Put Podman's volumes on XFS
         # The runner's ext4 has no reflink, so the pool, snapshot and clone tests would skip themselves.
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends xfsprogs
+          .github/apt-install.sh xfsprogs
           truncate -s 8G "$RUNNER_TEMP/volumes.xfs"
           mkfs.xfs -q "$RUNNER_TEMP/volumes.xfs"
           sudo mkdir -p /var/lib/containers/storage/volumes
@@ -231,9 +229,7 @@ jobs:
           sudo chmod 666 /dev/kvm
           test -w /dev/kvm
       - name: Install QEMU
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils genisoimage
+        run: .github/apt-install.sh qemu-system-x86 qemu-utils genisoimage
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: images
