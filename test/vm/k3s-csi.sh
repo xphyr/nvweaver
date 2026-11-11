@@ -356,7 +356,10 @@ EOF
 	expect_eq "agent1 kept its subsystem through its reboot" 200 "$(api GET "/v1/subsystems/$sub1")"
 	expect_eq "agent2 has a subsystem" 200 "$(api GET "/v1/subsystems/$sub2")"
 	expect_eq "with nothing in it now" 0 "$(bodyq '.namespaces | length')"
-	# Its kubelet stops first, or it would register the node again at once.
+	# Drained first, as a node being removed is: stopping k3s leaves its containers running, so a controller or snapshot
+	# controller on it would keep its leader lease, unseen, and nothing would replace it. Then its kubelet stops, or it
+	# would register the node again at once.
+	k drain agent2 --ignore-daemonsets --delete-emptydir-data --force --timeout=180s >/dev/null 2>&1
 	"$LAB" ssh agent2 'sudo systemctl stop k3s' >/dev/null 2>&1
 	k delete node agent2 --wait=true --timeout=120s >/dev/null
 	local code=

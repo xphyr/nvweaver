@@ -759,7 +759,7 @@ Decision 54, on 2026-11-10. `k3s-csi.sh test` runs the janitor every 15 seconds,
 
 - agent1's host is owned by the cluster's token, labelled `csi-cluster=lab` and `csi-node=agent1`;
 - agent1 keeps its subsystem through its reboot, which takes longer than two of the janitor's checks;
-- once agent2's k3s is stopped and its node deleted, its empty subsystem and its host go, while agent1's stay;
+- once agent2 is drained, its k3s stopped and its node deleted, its empty subsystem and its host go, while agent1's stay;
 - agent2 joins again, and a pod there gets a new volume, with its host made again as the cluster's.
 
 It passed on k3s 1.37.2 and 1.31.14: 44 checks each, and csi-sanity 75 passed, 0 failed, on both.
@@ -975,6 +975,8 @@ Checks that passed while proving nothing. Watch for these patterns:
 
 ## Test pitfalls
 
+- **Stopping k3s on a node leaves its containers running.** A test that then deletes the node leaves any leader that was
+  there renewing its lease, so its replacement never takes over. Drain the node first.
 - **A write to a host's NVMe device that can't finish ignores `timeout -s KILL`.** It's uninterruptible until the host gives up on
   the controller, 600 seconds by default. Run it in the background and check whether it finished, then disconnect.
 - **`echo n > file` empties the file before writing,** so a reader at that moment gets nothing. Write elsewhere and `mv` it.
