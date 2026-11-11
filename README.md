@@ -297,6 +297,13 @@ sudo systemctl start nvweaver-spdk
 The images are `ghcr.io/xphyr/nvweaver:<version>` and `:<version>-spdk`, or `latest` and `latest-spdk`, for both x86-64 and
 arm64. Podman pulls the right one for the machine.
 
+## On a Synology, or any host without an NVMe target
+
+[`dist/synology/`](dist/synology/README.md) runs nvweaver with SPDK in a container, with Docker Compose, as a Container
+Manager Project. DSM's kernel has no NVMe target and no LVM thin pools, so SPDK serves NVMe/TCP itself, from reflink pools on
+a btrfs volume. It needs no privileges: host networking, and one capability, to read its own config files. The same
+`compose.yaml` suits any Docker host whose kernel has no NVMe target, or where the container may not be privileged.
+
 ## Running under systemd
 
 To build from source for the kernel target, run the binary directly: the container adds nothing

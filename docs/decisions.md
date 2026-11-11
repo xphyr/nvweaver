@@ -785,3 +785,19 @@ VolumeGroupSnapshot. Storage-level, so both targets and both pool types get it.
 - **The CSI driver:** CSI's GroupController service, CreateVolumeGroupSnapshot, DeleteVolumeGroupSnapshot and
   GetVolumeGroupSnapshot. It's optional, like changed block tracking (decision 51): VolumeGroupSnapshot is beta from Kubernetes
   1.32, and the driver still supports 1.31.
+
+## 57. On a Synology, SPDK in a container, with one capability
+
+- **The problem:** a Synology's DSM runs Linux 4.4, on DSM 7.4, with no NVMe target and no LVM thin pools, and Container
+  Manager, which is Docker. The user's original aim was NVMe/TCP from a container on one. See "SPDK first" in `TODO.md`.
+- **Chosen: SPDK, with reflink pools on btrfs,** in `dist/synology/compose.yaml`, run as a Container Manager Project. SPDK
+  needs nothing from the kernel but networking: no privileges, no devices, no hugepages.
+- **Chosen: every capability dropped but `DAC_READ_SEARCH`.** With none, root in the container can't read the TLS key,
+  users and tokens files when they're made in File Station, owned by the user, and private to them. That capability lets
+  it read, not write, and only within its own mounts.
+- **Rejected: running as the folder's user,** which failed to write in a folder that user had made, probably because of
+  DSM's ACLs, and would have meant finding the right UID. **Rejected: asking for the files to be owned by root,** which
+  needs SSH and `chown`, while everything else can be done in DSM's screens. **Rejected: a Helm chart,** as DSM doesn't
+  run Kubernetes: the user's choice.
+- **Kept:** the kernel target, LVM and systemd for Linux hosts that have them. Whether SPDK becomes the default
+  everywhere is still to decide.

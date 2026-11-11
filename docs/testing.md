@@ -873,8 +873,17 @@ no devices, no `--pid=host`. The image is 102 MB.
   same, and was the same in the volume's file on btrfs. The snapshot taken before held only zeros.
 - A snapshot group of two volumes, taken while the host wrote: hosts paused 57 ms, and all 2,726 of its writes in
   20 s succeeded.
-- Not tried yet: a real Synology rather than a Virtual DSM, an Arm model, the storage network, TLS and tokens, a
-  restart, and running it as a Container Manager Project rather than `docker run`.
+
+**Then `dist/synology/compose.yaml`, with `docker compose` on the DSM,** set up as a user would through File Station:
+every file owned by that user, the TLS key, users file and `.env` mode 0600, the data folder made by them.
+- With every capability dropped, it couldn't start: "users file /etc/nvweaver/users: permission denied". Root with no
+  capabilities can't read another user's file.
+- **Running as that user, `user: "1026:100"`, failed too:** it couldn't make anything in the data folder that user had
+  made, "mkdir /var/lib/nvweaver/volumes: permission denied". Probably DSM's own ACLs on shared folders; not looked into.
+- **With `DAC_READ_SEARCH` added back, it worked:** HTTPS from the user's certificate, signing in from their users file,
+  the API token, a reflink pool in their folder, a volume, a snapshot and an export, all kept across a restart. That's the
+  Compose file's one capability now.
+- Not tried yet: Container Manager's Project screens, a real Synology, an Arm model, and the storage network.
 
 ### Snapshot groups
 
@@ -1167,6 +1176,8 @@ Checks that passed while proving nothing. Watch for these patterns:
   like the service failing. The power-loss test syncs the target first. `POWER_ONLY="spdk reflink 8"` repeats just that test.
 - **The k3s lab's agents run `k3s.service`, not `k3s-agent`,** as `k3s-lab.sh` writes its own unit. Stopping `k3s-agent` does
   nothing, quietly, and a deleted node registers again at once.
+- **DSM's SSH has no SFTP,** which `scp` uses now, so it fails with "Connection closed". Pipe files with
+  `ssh host 'cat > FILE' < FILE`, or use `scp -O`.
 - **`pkill -f` over SSH** can match the shell running it, whose command line contains the same text, and end the session.
 - **LVM's warnings don't fail anything.** Inside the unit's sandbox it created volumes correctly while being unable to back
   up its metadata or lock itself in memory, and every test passed until a direct check of the backup file. The unit now

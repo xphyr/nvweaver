@@ -6,6 +6,9 @@ The major differences between versions. For every change, see the commit history
 
 ### Added
 
+- **nvweaver on a Synology, or any host with no NVMe target:** `dist/synology/` has a Compose file for Container Manager,
+  and a guide. It runs SPDK, unprivileged, with one capability, serving reflink pools on a btrfs volume. DSM's kernel has
+  no NVMe target, so this is the way there. See decision 57.
 - **The CSI driver supports Kubernetes 1.31 and later,** such as OpenShift 4.18. Below 1.34 it needs older releases of the
   provisioner and resizer sidecars, which the Helm chart picks itself. See decision 51 and `csi/README.md`.
 - **Changed block tracking,** for backups: `GET /v1/snapshots/{snapshot}/changes?base=` reports what changed between two

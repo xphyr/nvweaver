@@ -341,9 +341,11 @@ tests.
 - [ ] The same on a real Synology, and an Arm model if the user has one
 - [ ] Make SPDK and reflink the defaults where nothing says otherwise, and say so in the README, keeping the kernel target,
       LVM and the systemd unit as documented options. A decision in `docs/decisions.md`
-- [ ] A Compose file for Container Manager's Projects, the user's choice on 2026-11-11 over a Helm chart, as DSM runs Docker,
-      not Kubernetes: SPDK, a reflink pool on a btrfs shared folder, host networking, and only the privileges the probe finds
-      it needs. With an install guide, tested on the user's Synology
+- [x] A Compose file for Container Manager's Projects, the user's choice on 2026-11-11 over a Helm chart, as DSM runs Docker,
+      not Kubernetes: `dist/synology/`, with a guide. SPDK, a reflink pool on btrfs, host networking, and one capability,
+      `DAC_READ_SEARCH`, to read files made in File Station. Tested with `docker compose` on the Virtual DSM. Decision 57
+- [ ] Try `dist/synology/` through Container Manager's Project screens, as the guide says, and fix what doesn't match
+- [ ] Put `dist/synology/` in the release, and a Synology's address in its guide from the user's real one
 - [ ] Later, if wanted: a Helm chart for nvweaver itself, to run it inside a Kubernetes cluster
 - [ ] An end-to-end suite for the least-privilege container, so that a change needing more privileges fails a test
 - [ ] Check what SPDK's image costs on a small box: its size, its memory at idle, and its CPU with interrupt mode
