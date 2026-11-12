@@ -363,9 +363,21 @@ tests.
 - [ ] The same on the user's real Synology, an x86 model
 - [ ] An Arm Synology: the user has none, so it waits for a contributor who has. SPDK and the images already run on Arm
       elsewhere (`snoarm`, the CM4), but DSM's Arm kernels are older, and untested
-- [ ] Benchmark first, on the user's production Synology, after v0.5.0: its own iSCSI against nvweaver's NVMe/TCP on the same
-      box, from `snoarm` over the 10 Gb SAN, with `test/bench-classes.sh`, while the user runs `test/synology-capture.sh` on
-      the Synology. The user installs nvweaver there; the benchmark needs a second driver instance on `snoarm` for it
+- [x] Benchmark DSM's iSCSI against nvweaver on the same box, on 2026-11-11 and 12: a hard-disk Synology (with and without
+      an SSD cache), an all-flash one, and a Virtual DSM on it. See "SPDK on Synologies" in `docs/testing.md`
+- [ ] **Honour FUA on SPDK, so the sync attribute can go (decision 28).** It costs most of nvweaver's write performance on
+      real disks. A patch carried in `Containerfile.spdk`: FUA writes made durable, ideally with `RWF_DSYNC` per write where
+      the kernel has it (4.13+), and flushes off the reactor thread. It must pass the power-cut test in the lab VMs, 8 rounds
+      of 8, before the attribute goes. Offer it upstream. Measure on the Virtual DSM, whose before/after ratios at depth carry
+      over to bare metal (its single I/Os and durability don't: its host caches its writes)
+- [ ] Make btrfs reflink pools' files no-copy-on-write (`chattr +C`, before a file's first write): copy-on-write fragments
+      them, halving sequential reads. Snapshots still work between such files; it gives up btrfs's data checksums for them,
+      as DSM does for its own LUNs. Mixed files can't be reflinked on newer kernels, so existing pools need care. A decision
+- [ ] Find the extra 0.45 ms on bare-metal SPDK's QD1 reads on a Synology, which the same reads in a Virtual DSM don't have.
+      First try polling mode, in case it's idle cores waking
+- [ ] Try two SPDK cores on a Synology: one reactor was at 85% of a core at depth in the Virtual DSM
+- [ ] Later, if wanted: cached I/O on SPDK (DSM's iSCSI reads from RAM; SPDK can't). It needs FUA honoured first, and on DSM's
+      4.4 kernel, with no io_uring, I/O threads or a loop device: a decision of its own
 - [ ] Make SPDK and reflink the defaults where nothing says otherwise, and say so in the README, keeping the kernel target,
       LVM and the systemd unit as documented options. A decision in `docs/decisions.md`
 - [x] A Compose file for Container Manager's Projects, the user's choice on 2026-11-11 over a Helm chart, as DSM runs Docker,

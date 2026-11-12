@@ -1090,8 +1090,6 @@ Not tested for other reasons:
 - Moving `latest` to a multi-arch list on GitHub, which only a final release does. It passed against a local registry, on the
   runners' Podman 4.9
 - `.github/apt-install.sh`'s fallback to `archive.ubuntu.com`, as the runners' mirror resolved again before it ran
-- `test/bench-classes.sh` against a Synology, and `test/synology-capture.sh` during a benchmark: the first ran only on `nvw`,
-  comparing nvweaver with vSphere's class, and the second only for a few seconds on a Virtual DSM
 
 ## Benchmarks
 
@@ -1112,6 +1110,46 @@ that the target isn't the bottleneck there, and little else. Raw loopback TCP on
 The control plane used about 8 MB, and at most 1 CPU tick across all NVMe/TCP tests. SPDK
 used one core, and the kernel used all of them. Kernel CPU use wasn't measured, so these
 don't show which uses less.
+
+### SPDK on Synologies, against DSM's own iSCSI (2026-11-11 and 12)
+
+`test/bench-classes.sh` from an Arm OpenShift node over a 10 Gb storage network with jumbo frames, to nvweaver 0.5.0 (SPDK, a
+reflink pool, `dist/synology/`) and to DSM's iSCSI (Synology's CSI driver) on the same box, while `test/synology-capture.sh`
+recorded the box. 16 GiB raw block volumes, filled first; seven fio jobs, 60 s each, three rounds alternating the classes;
+medians. Two boxes, both DSM 7.4.1 on Linux 4.4: a hard-disk one (8 disks in RAID 10, 32 GB, later with an NVMe read-write
+cache) and an all-flash one (11 SATA SSDs in RAID F1, 32 GB), and a Virtual DSM on the all-flash one. Eight runs in all.
+
+| 4K, QD16×4 unless said | HDD: iSCSI | HDD: nvweaver as shipped | Flash: iSCSI | Flash: as shipped | Flash: sync attribute off |
+|---|---|---|---|---|---|
+| Random read, QD1 (IOPS) | 6,448 | 84 | 4,502 | 955 | 949 |
+| Random write, QD1 (IOPS) | 6,182 | 19 | 6,205 | 358 | 1,196 |
+| Random read (IOPS) | 46,088 | 1,377 | 42,584 | 61,060 | 58,100 |
+| Random write (IOPS) | 26,791 | 78 | 36,671 | 14,452 | 38,985 |
+| 70/30 (IOPS) | 40,580 | 221 | 38,711 | 30,495 | 46,084 |
+| 128K sequential read (MB/s) | 555 | 199 | 638 | 1,028 | 1,041 |
+| 128K sequential write (MB/s) | 330 | 19 | 720 | 320 | 722 |
+
+What made the differences, each isolated by a run that changed one thing:
+
+- **DSM's iSCSI reads come from RAM.** On the hard-disk box, 8,400 reads a second at QD1 caused 31 on the disks; nvweaver,
+  with SPDK's `O_DIRECT`, reaches the disks one for one. Most of the hard-disk gap on reads is that.
+- **The sync attribute (decision 28) costs most of the write gap,** and more than a flush: on btrfs over hard disks, each
+  synchronous 4K write caused 17-89 writes on the disks (btrfs's log and tree commits, doubled by RAID 10), against 1.2-5
+  without it. Clearing it: sequential write 18 → 269 MB/s, QD1 writes 24 → 963 IOPS on hard disks; on flash, deep random
+  writes 14,452 → 38,985 and sequential writes 320 → 722 MB/s. **On flash, with it cleared, nvweaver matched or beat iSCSI
+  on every job at depth and on sequential I/O** (sequential reads at the 10 Gb link's limit). See decision 28.
+- **Copy-on-write pool files fragment under random writes:** sequential reads 199 → 415 MB/s with the pool folder set
+  `chattr +C` before its files were made. DSM makes its own LUN files that way. Reflink still works between such files
+  (checked on a Virtual DSM, Linux 4.4).
+- **An SSD read-write cache** (hard-disk box) made the forced flushes cheap: QD1 writes 24 → 540 IOPS with the attribute on.
+  It never takes sequential I/O, and while it writes back to the disks, sequential I/O suffers, nvweaver's reads most.
+- **iSCSI still leads on single I/Os** (about 150 µs writes, 210 µs reads on flash), from DSM's page cache. nvweaver's QD1
+  reads took about 1 ms on bare flash but 590 µs in the Virtual DSM on the same SSDs, both reaching the SSDs one for one: the
+  bare box's read path has about 0.45 ms more, not explained yet.
+- **A Virtual DSM gets about 70% of its host at depth** (67-84%), with or without the sync attribute, so before/after ratios
+  there carry over. Its single writes are faster than bare metal's: the host caches the virtual disk's writes (fewer reach
+  the SSDs than the guest makes), so a power-cut test there would test the hypervisor's cache mode.
+- Neither box was CPU-bound (at most 61% busy); SPDK's one reactor was at 85% of a core in the Virtual DSM at its deepest.
 
 ### Reading performance numbers
 
@@ -1151,6 +1189,11 @@ Things that looked like one problem and were another:
   from the `openssl` package.
 - **`bdev_aio_create` returning `Invalid argument`:** SPDK detects block size with an ioctl
   that fails on regular files, so files need an explicit `block_size`.
+- **A Synology's iSCSI far ahead of nvweaver on reads:** looked like the protocol. Its reads came from DSM's RAM, as the
+  box's disk counters showed; nvweaver's `O_DIRECT` reads reached the disks. Compare what reaches the disks, not only fio.
+- **A Virtual DSM faster than the box it runs on, for single writes:** the host was caching the guest's writes.
+- **A Kubernetes node Ready, and its pods Running, just after the cluster was powered on:** the API served the state from
+  before the shutdown for about a minute; the node then went Ready=False. Wait for containers started since the boot.
 
 ## Escaped a scoped run
 
@@ -1192,6 +1235,11 @@ Checks that passed while proving nothing. Watch for these patterns:
 
 ## Test pitfalls
 
+- **A pod on a class with `Immediate` binding gets a passing `FailedScheduling`,** "unbound immediate PersistentVolumeClaims",
+  until its volume is made. `bench-classes.sh` took it for a failure; it now ignores that one message. A real failure still
+  shows as `ProvisioningFailed` on the claim.
+- **`pkill -f` matches the command that runs it,** when that's a shell over SSH whose text contains the pattern: it killed the
+  session. Stop background processes by the PID they recorded.
 - **Stopping k3s on a node leaves its containers running.** A test that then deletes the node leaves any leader that was
   there renewing its lease, so its replacement never takes over. Drain the node first.
 - **A VolumeGroupSnapshot that nothing answers:** external-snapshotter 8.7.0's manifest runs snapshot-controller 8.6.0, which

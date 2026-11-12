@@ -291,6 +291,15 @@ there, not as absolute numbers.
 - **Rejected:** patching SPDK to honour FUA, which is the proper fix but needs carrying a patch, for now. It's worth reporting
   upstream. Reporting no write cache to hosts, as they'd then send no flushes at all. An option to turn this off, until
   someone needs it: a test lab can tolerate slow writes better than a corrupted filesystem that looks like a client's bug.
+- **Revisited, 2026-11-12: the cost on real disks is far higher, and FUA is worth honouring.** Benchmarks on two Synologies
+  (`docs/testing.md`, "SPDK on Synologies") cleared the attribute in one run each: on hard disks, sequential writes rose
+  from 18 to 269 MB/s and QD1 writes from 24 to 963 IOPS, as each synchronous 4K write had set off 17-89 writes on the disks
+  through btrfs's log; on flash, deep random writes rose from 14,452 to 38,985 IOPS, and nvweaver then matched or beat DSM's
+  iSCSI on every job at depth. SPDK v26.09 and its master branch still don't read FUA: `lib/nvmf` passes no FUA to the
+  block-device layer, which has no field for it, and the aio module's only per-write flag is `RWF_NOWAIT`. Its flushes are
+  an `fsync()` on the reactor thread, cheap today only because the attribute leaves nothing to flush. **Next:** a patch so
+  that FUA writes are made durable, with flushes off the reactor, tested by the power-cut test here before the attribute
+  can go. See `TODO.md`.
 - **Still open: block devices on SPDK, including LVM volumes.** They have no such attribute, and FUA is ignored there too. Those
   writes do reach the device, and passed here, but QEMU's disks don't lose unflushed writes. A real drive with a volatile
   cache might lose them on a power cut. This is untested, and documented in the README.

@@ -46,8 +46,10 @@ wait_ready() {
 	local why
 	for _ in $(seq 1 120); do
 		[ "$(k get pod "$1" -o jsonpath='{.status.phase}' 2>/dev/null)" = Running ] && return 0
+		# Not the passing ones: detaching from an earlier pod, and, with Immediate binding, scheduling before the claim is bound.
 		why=$(k get events --field-selector type=Warning -o jsonpath='{range .items[*]}{.involvedObject.name} {.reason}: {.message}{"\n"}{end}' 2>/dev/null |
-			grep -E "^($1|$2) " | grep -E 'Failed|not found|ProvisioningFailed' | grep -v 'Waiting for detach' | tail -1)
+			grep -E "^($1|$2) " | grep -E 'Failed|not found|ProvisioningFailed' |
+			grep -v -E 'Waiting for detach|unbound immediate PersistentVolumeClaims' | tail -1)
 		[ -n "$why" ] && { echo "$why"; return 1; }
 		sleep 5
 	done
