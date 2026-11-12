@@ -1,0 +1,82 @@
+diff --git a/lib/nvmf/ctrlr_bdev.c b/lib/nvmf/ctrlr_bdev.c
+index 3a14536..d85addd 100644
+--- a/lib/nvmf/ctrlr_bdev.c
++++ b/lib/nvmf/ctrlr_bdev.c
+@@ -478,10 +478,47 @@ nvmf_bdev_ctrlr_read_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
+ 	return SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS;
+ }
+ 
++/* A write with Force Unit Access must be durable before it completes. The bdev layer has no FUA flag, so the write is
++ * followed by a flush of its blocks, and the host is answered when that finishes: what Linux does for a disk without FUA.
++ */
++struct nvmf_bdev_ctrlr_fua_write {
++	struct spdk_nvmf_request	*req;
++	struct spdk_bdev_desc		*desc;
++	struct spdk_io_channel		*ch;
++	uint64_t			start_lba;
++	uint64_t			num_blocks;
++};
++
++static void
++nvmf_bdev_ctrlr_fua_write_done(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
++{
++	struct nvmf_bdev_ctrlr_fua_write *fua = cb_arg;
++	struct spdk_nvmf_request *req = fua->req;
++	struct spdk_nvme_cpl *rsp = &req->rsp->nvme_cpl;
++	int rc;
++
++	if (spdk_unlikely(!success)) {
++		free(fua);
++		nvmf_bdev_ctrlr_complete_cmd(bdev_io, success, req);
++		return;
++	}
++	spdk_bdev_free_io(bdev_io);
++	rc = spdk_bdev_flush_blocks(fua->desc, fua->ch, fua->start_lba, fua->num_blocks,
++				    nvmf_bdev_ctrlr_complete_cmd, req);
++	free(fua);
++	if (spdk_unlikely(rc)) {
++		SPDK_ERRLOG("flush after a FUA write failed to start: %d\n", rc);
++		rsp->status.sct = SPDK_NVME_SCT_GENERIC;
++		rsp->status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
++		spdk_nvmf_request_complete(req);
++	}
++}
++
+ int
+ nvmf_bdev_ctrlr_write_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
+ 			  struct spdk_io_channel *ch, struct spdk_nvmf_request *req)
+ {
++	struct nvmf_bdev_ctrlr_fua_write *fua = NULL;
+ 	struct spdk_bdev_ext_io_opts opts = {
+ 		.size = SPDK_SIZEOF(&opts, nvme_cdw13),
+ 		.memory_domain = req->memory_domain,
+@@ -517,8 +554,27 @@ nvmf_bdev_ctrlr_write_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
+ 
+ 	assert(!spdk_nvmf_request_using_zcopy(req));
+ 
+-	rc = spdk_bdev_writev_blocks_ext(desc, ch, req->iov, req->iovcnt, start_lba, num_blocks,
+-					 nvmf_bdev_ctrlr_complete_cmd, req, &opts);
++	if (cmd->cdw12_bits.write.fua && spdk_bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_FLUSH)) {
++		fua = calloc(1, sizeof(*fua));
++		if (spdk_unlikely(!fua)) {
++			rsp->status.sct = SPDK_NVME_SCT_GENERIC;
++			rsp->status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
++			return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
++		}
++		fua->req = req;
++		fua->desc = desc;
++		fua->ch = ch;
++		fua->start_lba = start_lba;
++		fua->num_blocks = num_blocks;
++		rc = spdk_bdev_writev_blocks_ext(desc, ch, req->iov, req->iovcnt, start_lba, num_blocks,
++						 nvmf_bdev_ctrlr_fua_write_done, fua, &opts);
++		if (spdk_unlikely(rc)) {
++			free(fua);
++		}
++	} else {
++		rc = spdk_bdev_writev_blocks_ext(desc, ch, req->iov, req->iovcnt, start_lba, num_blocks,
++						 nvmf_bdev_ctrlr_complete_cmd, req, &opts);
++	}
+ 	if (spdk_unlikely(rc)) {
+ 		if (rc == -ENOMEM) {
+ 			nvmf_bdev_ctrl_queue_io(req, bdev, ch, nvmf_ctrlr_process_io_cmd_resubmit, req);

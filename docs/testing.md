@@ -1151,6 +1151,25 @@ What made the differences, each isolated by a run that changed one thing:
   the SSDs than the guest makes), so a power-cut test there would test the hypervisor's cache mode.
 - Neither box was CPU-bound (at most 61% busy); SPDK's one reactor was at 85% of a core in the Virtual DSM at its deepest.
 
+### Honouring FUA on SPDK: the first experiment (2026-11-12)
+
+On branch `fua-experiment`: `spdk-patches/0001-nvmf-make-FUA-writes-durable-with-a-flush.patch`, carried in
+`Containerfile.spdk`, follows each FUA write with a flush of its blocks before answering the host, and
+`NVWEAVER_SPDK_FILE_SYNC=off` (experimental) leaves the sync attribute off (decision 28).
+
+**Safe.** `vm-e2e.sh` with `POWER_ONLY="spdk reflink 8"` and `SERVICE_ENV="-e NVWEAVER_SPDK_FILE_SYNC=off"`: unpatched, 3
+rounds of 3 corrupted the host's XFS (it wouldn't mount, and every file whose `fsync` had finished was lost), so the test
+still catches this; patched, **8 of 8 clean, 192 checks, all 410 such files intact**. The target's disk took 86-88 flushes
+for 20 host `fsync`s, against 46 unpatched: each FUA write now flushes.
+
+**Not yet fast enough.** On a Virtual DSM (`bench-classes.sh` with `DURABLE=1`, nvweaver only, medians of three rounds),
+against 0.5.0 as shipped: plain writes as fast as with no attribute (4K QD1 304 → 3,742 IOPS, QD16×4 9,980 → 27,198,
+128K sequential 318 → 764 MB/s); durable 4K writes, O_DSYNC and fsync, unchanged (about 300 IOPS at QD1, 10,000 at QD16×4);
+but **O_DSYNC 128K sequential writes at QD16 fell from 320 to 50 MB/s.** SPDK's aio flush is a blocking `fsync()` on its one
+reactor, so queued FUA writes are made durable one at a time, with the reactor idle meanwhile (16% of a CPU, against 46%).
+The next version should send FUA writes through a second `O_DSYNC` file descriptor, asynchronously, as all writes are made
+durable today: see decision 28.
+
 ### Reading performance numbers
 
 Results are limited by the hardware available, so record which path a number used:

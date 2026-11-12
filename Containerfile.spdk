@@ -22,6 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git clone --depth 1 --branch "$SPDK_VERSION" --recurse-submodules --shallow-submodules \
       https://github.com/spdk/spdk.git /spdk
 WORKDIR /spdk
+# Changes carried until SPDK has them: each must apply cleanly, or the build stops.
+COPY spdk-patches /spdk-patches
+RUN set -e; for p in /spdk-patches/*.patch; do [ -e "$p" ] || continue; echo "applying $p"; git apply "$p"; done
 RUN arch="$SPDK_ARCH"; \
     if [ -z "$arch" ]; then \
       case "$(uname -m)" in \

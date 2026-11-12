@@ -8,6 +8,7 @@
 #   KUBECONFIG=... test/bench-classes.sh CLASS [CLASS...]
 #
 # Settings: NODE, the node to run on (any, by default); SIZE (16Gi); RUNTIME, seconds per job (60); RAMP (10); ROUNDS (3);
+# DURABLE=1, to add durable writes (see JOBS);
 # OUT, where results go (./bench-<time>); NS, its namespace, made and removed here (nvweaver-bench); FIO_IMAGE.
 # It makes nothing outside that namespace, and the volumes go with it.
 set -u
@@ -23,7 +24,8 @@ OUT=${OUT:-./bench-$(date -u +%Y%m%dT%H%M%SZ)}
 # Alpine, with fio from its packages, on both architectures. Its version is recorded with the results.
 FIO_IMAGE=${FIO_IMAGE:-docker.io/library/alpine:3.22}
 
-# The jobs: name, rw, block size, queue depth, jobs. Queue depth 1 shows latency; deeper, what the storage can sustain.
+# The jobs: name, rw, block size, queue depth, jobs, and any more fio options. Queue depth 1 shows latency; deeper, what the
+# storage can sustain.
 JOBS=(
 	"lat-randread   randread  4k   1  1"
 	"lat-randwrite  randwrite 4k   1  1"
@@ -33,6 +35,16 @@ JOBS=(
 	"seq-read       read      128k 16 1"
 	"seq-write      write     128k 16 1"
 )
+# DURABLE=1 adds writes that must be durable when they complete, as databases' and journals' are, which the jobs above never
+# ask for: O_DSYNC writes, which Linux sends to an NVMe device as FUA writes, and a flush after every write (fsync).
+if [ -n "${DURABLE:-}" ]; then
+	JOBS+=(
+		"dsync-randwrite-qd1  randwrite 4k   1  1 --sync=dsync"
+		"dsync-randwrite      randwrite 4k   16 4 --sync=dsync"
+		"dsync-seq-write      write     128k 16 1 --sync=dsync"
+		"fsync-randwrite-qd1  randwrite 4k   1  1 --fsync=1"
+	)
+fi
 
 k() { kubectl -n "$NS" "$@"; }
 die() { echo "bench-classes: $*" >&2; exit 1; }
@@ -122,13 +134,14 @@ done
 # The rounds.
 for round in $(seq 1 "$ROUNDS"); do
 	for job in "${JOBS[@]}"; do
-		read -r name rw bs qd nj <<<"$job"
+		read -r name rw bs qd nj opts <<<"$job"
 		for c in "${CLASSES[@]}"; do
 			p=$(pod_of "$c")
 			log "round $round, $c, $name: start"
+			# shellcheck disable=SC2086 # opts is several options, or none.
 			k exec "$p" -- fio --name="$name" --filename=/dev/bench --rw="$rw" --rwmixread=70 --bs="$bs" --iodepth="$qd" \
 				--numjobs="$nj" --group_reporting --ioengine=libaio --direct=1 --time_based --runtime="$RUNTIME" \
-				--ramp_time="$RAMP" --randrepeat=0 --output-format=json --output="/tmp/$name.json" >/dev/null ||
+				--ramp_time="$RAMP" --randrepeat=0 $opts --output-format=json --output="/tmp/$name.json" >/dev/null ||
 				die "$c: fio $name failed"
 			k exec "$p" -- cat "/tmp/$name.json" >"$OUT/$(echo "$c" | tr '/' '-')-$name-$round.json"
 			log "round $round, $c, $name: end"

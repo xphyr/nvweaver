@@ -660,8 +660,10 @@ func (b *Backend) createBdevs(next *target.State, exists func(string) (bool, err
 			if size := fileBlockSize(ns.DevicePath); size != 0 {
 				params["block_size"] = size
 			}
-			if err := makeWritesDurable(ns.DevicePath); err != nil {
-				return fmt.Errorf("namespace %d of %s: %w", nsid, nqn, err)
+			if fileSync {
+				if err := makeWritesDurable(ns.DevicePath); err != nil {
+					return fmt.Errorf("namespace %d of %s: %w", nsid, nqn, err)
+				}
 			}
 			if err := b.call("bdev_aio_create", params, nil); err != nil {
 				return err
@@ -677,6 +679,10 @@ const (
 	fsIocSetFlags = 0x40086602
 	fsSyncFl      = 0x8
 )
+
+// fileSync is off only for the FUA experiment (TODO.md, decision 28): NVWEAVER_SPDK_FILE_SYNC=off leaves files' sync
+// attribute alone, which is unsafe on a power cut unless SPDK honours FUA. Not a supported setting.
+var fileSync = os.Getenv("NVWEAVER_SPDK_FILE_SYNC") != "off"
 
 // makeWritesDurable sets a file's sync attribute, as chattr +S does. SPDK tells hosts that it has a write cache,
 // but ignores FUA, and a filesystem such as XFS commits its log with a FUA write, then relies on it. On a block

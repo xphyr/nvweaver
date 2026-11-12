@@ -300,6 +300,13 @@ there, not as absolute numbers.
   an `fsync()` on the reactor thread, cheap today only because the attribute leaves nothing to flush. **Next:** a patch so
   that FUA writes are made durable, with flushes off the reactor, tested by the power-cut test here before the attribute
   can go. See `TODO.md`.
+- **Tried, 2026-11-12: a FUA write followed by a flush,** in the NVMe-oF layer (branch `fua-experiment`). Safe: 8 of 8 power
+  cuts clean without the attribute, where unpatched lost data 3 of 3. Plain writes as fast as with no attribute, durable 4K
+  writes as before, but durable 128K writes at QD16 6.3× slower, as each flush is a blocking `fsync()` on the one reactor.
+  **Rejected for that.** **To try next:** a second file descriptor opened `O_DSYNC`, for FUA writes only, still through
+  libaio, so they're made durable in parallel by the kernel as every write is today. It works on DSM's Linux 4.4, which lacks
+  per-write `RWF_DSYNC` in libaio (4.13). It needs a FUA flag through SPDK's bdev layer, and hosts' flushes off the reactor.
+  See "Honouring FUA on SPDK" in `docs/testing.md`.
 - **Still open: block devices on SPDK, including LVM volumes.** They have no such attribute, and FUA is ignored there too. Those
   writes do reach the device, and passed here, but QEMU's disks don't lose unflushed writes. A real drive with a volatile
   cache might lose them on a power cut. This is untested, and documented in the README.

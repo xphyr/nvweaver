@@ -366,10 +366,14 @@ tests.
 - [x] Benchmark DSM's iSCSI against nvweaver on the same box, on 2026-11-11 and 12: a hard-disk Synology (with and without
       an SSD cache), an all-flash one, and a Virtual DSM on it. See "SPDK on Synologies" in `docs/testing.md`
 - [ ] **Honour FUA on SPDK, so the sync attribute can go (decision 28).** It costs most of nvweaver's write performance on
-      real disks. A patch carried in `Containerfile.spdk`: FUA writes made durable, ideally with `RWF_DSYNC` per write where
-      the kernel has it (4.13+), and flushes off the reactor thread. It must pass the power-cut test in the lab VMs, 8 rounds
-      of 8, before the attribute goes. Offer it upstream. Measure on the Virtual DSM, whose before/after ratios at depth carry
-      over to bare metal (its single I/Os and durability don't: its host caches its writes)
+      real disks. It must pass the power-cut test in the lab VMs, 8 rounds of 8, before the attribute goes. Offer it upstream.
+      Measure on the Virtual DSM with `bench-classes.sh DURABLE=1`, whose before/after ratios at depth carry over to bare
+      metal (its single I/Os and durability don't: its host caches its writes)
+  - [x] First try, a flush after each FUA write (branch `fua-experiment`, 2026-11-12): safe, 8 of 8, but durable 128K writes
+        at QD16 6.3× slower, the flush being a blocking `fsync()` on the reactor. See `docs/testing.md`
+  - [ ] Next: FUA writes through a second, `O_DSYNC` file descriptor, asynchronously; a FUA flag through SPDK's bdev layer
+  - [ ] Hosts' flushes off the reactor thread, as the aio module's `fsync()` blocks every volume on that core
+  - [ ] Then replace `NVWEAVER_SPDK_FILE_SYNC`, the experiment's switch, with the image saying whether its SPDK honours FUA
 - [ ] Make btrfs reflink pools' files no-copy-on-write (`chattr +C`, before a file's first write): copy-on-write fragments
       them, halving sequential reads. Snapshots still work between such files; it gives up btrfs's data checksums for them,
       as DSM does for its own LUNs. Mixed files can't be reflinked on newer kernels, so existing pools need care. A decision

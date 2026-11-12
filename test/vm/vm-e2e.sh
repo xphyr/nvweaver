@@ -11,6 +11,7 @@
 #   podman build -t nvweaver:dev -f Containerfile .
 #   podman build -t nvweaver:spdk -f Containerfile.spdk .
 set -u
+# SERVICE_ENV adds options to the service's podman run, such as "-e NVWEAVER_SPDK_FILE_SYNC=off" for the FUA experiment.
 # TEST_TIMEOUT_SCALE lengthens the waits, for slow machines such as emulated VMs.
 SCALE=${TEST_TIMEOUT_SCALE:-1}
 
@@ -126,7 +127,7 @@ warnings() { t "curl -s $API/v1/system | jq -r '.warnings | join(\" \")'"; }
 start_service() { # BACKEND IMAGE
 	t "sudo podman rm -f nvweaver-vm >/dev/null 2>&1; sudo podman run -d --pull=never --name nvweaver-vm --privileged --network host --pid=host \
 		-v /lib/modules:/lib/modules:ro -v /dev:/dev -v nvweaver-vm-data:/var/lib/nvweaver \
-		-e NVWEAVER_BACKEND=$1 $2 >/dev/null"
+		-e NVWEAVER_BACKEND=$1 ${SERVICE_ENV:-} $2 >/dev/null"
 }
 
 backend_tests() { # BACKEND IMAGE [run args]
