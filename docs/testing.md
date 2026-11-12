@@ -1170,6 +1170,23 @@ reactor, so queued FUA writes are made durable one at a time, with the reactor i
 The next version should send FUA writes through a second `O_DSYNC` file descriptor, asynchronously, as all writes are made
 durable today: see decision 28.
 
+### Honouring FUA on SPDK: the second version (2026-11-12)
+
+`spdk-patches/0001-bdev-aio-make-FUA-writes-durable-with-O_DSYNC.patch`, in SPDK's aio module only: each file is opened a
+second time with `O_DSYNC`, and a write with FUA set (bit 30 of its NVMe CDW12, which SPDK's NVMe-oF target already passes
+to the bdev unchanged) goes through that descriptor, still asynchronously through libaio. It works on Linux 4.4.
+
+**Safe:** the same power-cut test, 8 of 8 clean, 192 checks, all 393 files whose `fsync` finished intact.
+
+**Fast:** on the same Virtual DSM, medians of three rounds, against 0.5.0 as shipped: plain writes with the full gain (4K
+QD1 304 → 3,807 IOPS, QD16×4 9,980 → 26,832, 128K sequential 318 → 706 MB/s) and **durable writes at the shipped speed**
+(O_DSYNC 4K QD1 305, QD16×4 9,980, 128K sequential 316 MB/s against 320; fsync after each write unchanged).
+
+**One caveat:** in the first two minutes or so after a new volume is filled, durable writes are slow (a fresh 4 GiB volume:
+919 IOPS at QD16×4 straight after the fill and a flush, 2,456 a minute later, 10,403 after two). A flush didn't help; time
+did. Likely btrfs's work after allocating much new space, which durable writes wait on; with the sync attribute, the fill
+was itself durable. Hosts' flushes remain a blocking `fsync()` on the reactor.
+
 ### Reading performance numbers
 
 Results are limited by the hardware available, so record which path a number used:
