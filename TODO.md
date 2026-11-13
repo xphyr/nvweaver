@@ -136,6 +136,10 @@ and CLI once, against the result.
       Decision 56
 - [x] Add `transport` to ports, accepting only `tcp` for now, and `capabilities.transports`, before the CLI and CSI driver are written against the API. See "Transports" in `docs/storage-api.md`
 - [ ] Later: creating pools from raw disks, behind an explicit confirmation
+- [ ] **Recovery after a power cut can leave an intent, and an orphaned thin LV, on the kernel target's LVM pool:** once in
+      11 rounds before v0.6.0, and in 0.5.0 too (`docs/testing.md`, "Before v0.6.0"). Recovery runs only at start, so
+      the orphan stays until the next one. Find the cause with `POWER_ONLY="nvmet lvm-thin N"`, which now prints recovery's
+      messages; if it's LVM still activating the pool, retry settling until the pool can be read, rather than only at start
 
 ## Test suite
 

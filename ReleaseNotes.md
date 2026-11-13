@@ -4,13 +4,34 @@ The major differences between versions. For every change, see the commit history
 
 ## Not yet released
 
+## v0.6.0
+
+Faster writes on SPDK, if you choose to run nvweaver's patch to it.
+
+### Upgrading
+
+- **Nothing changes unless you set `NVWEAVER_SPDK_DURABILITY`.** SPDK still runs as upstream builds it, with the sync
+  attribute on every volume file, as in 0.5.0.
+- **`GET /v1/system` has a new field,** `capabilities.durability`: `native` on the kernel target, `sync-attribute` or `fua`
+  on SPDK.
+
 ### Added
 
 - **SPDK can honour FUA, with nvweaver's patch, if you choose:** `NVWEAVER_SPDK_DURABILITY=fua`. Upstream SPDK ignores FUA, so
   by default every file is made to write synchronously, which is slow on real disks. The patch makes only the writes that
   hosts need durable synchronous: as safe in a power-cut test, and other writes 1.6 to 3.4 times faster on an all-flash
-  Synology. It isn't upstream SPDK, so it's off by default; the SPDK image carries both builds. Changing it is a restart.
-  `capabilities.durability` in `GET /v1/system` reports it. See decision 58.
+  Synology, where nvweaver then matched or beat DSM's iSCSI for deep random writes, mixed load and sequential I/O. It isn't
+  upstream SPDK, so it's off by default; the SPDK image carries both builds, and the patch is in
+  `/usr/share/licenses/nvweaver/spdk/patches/`. Changing it is a restart, which sets or clears the attribute on existing
+  files. The kernel target refuses the setting, as it honours FUA itself. See decision 58.
+
+### Known limits
+
+- **With `fua`, durable writes to a newly filled volume are slow until the host first flushes it,** 20 to 60 times slower in
+  one benchmark. A filesystem on the volume flushes often, so this mostly affects raw-block writers that never flush. Not
+  yet explained.
+- **The power-cut test has passed in `fua` mode on reflink pools (files), not yet on LVM pools.** On LVM pools SPDK writes
+  to a block device, where the sync attribute never applied, so `fua` should only make that safer; it isn't tested yet.
 
 ## v0.5.0
 

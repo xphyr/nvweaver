@@ -1052,6 +1052,23 @@ first time and found every module the notices list for it, and the Go runtime. I
 Go, failed there, as the tarball was built with Fedora's Go, which reports `go1.26.10-X:nodwarf5`, while the images used the Go
 container's `go1.26.10`. That's the check doing its job: the release builds the tarball with `setup-go` in CI, as for v0.3.0.
 
+### Before v0.6.0
+
+On 2026-11-13, with images built as 0.6.0 from the release branch, on x86-64 VMs:
+- `upgrade.sh` from 0.5.0's published images: 68 of 68, on both backends.
+- `run-all.sh`: the browser against real targets 93, kernel `e2e.sh` 351, SPDK `e2e.sh` 376, systemd 76, all passing;
+  `vm-e2e.sh` 1002 passed and **3 failed, in one round of the kernel target's power cut on an LVM pool:** after the
+  reboot one intent was left unsettled, with the thin LV it had made ("no intents are left", "nothing left that nothing
+  refers to", "LVM holds exactly what the service knows of"). The data the service had confirmed was all there, and the
+  host reconnected and its filesystem checked clean: the cost is one orphaned LV, reported as a pool warning, until the
+  next start settles it. The test removed the container before its log could be read, so the cause isn't known; a guess
+  is that LVM was still activating the thin pool after the reboot, so recovery's capacity check failed, and recovery
+  only runs at start. Then `POWER_ONLY="nvmet lvm-thin 10"`: 10 of 10 clean, 258 checks. Recovery and the LVM driver
+  haven't changed since 0.5.0, so 0.5.0 has it too: rare, about one in 11 rounds here. `vm-e2e.sh` now prints the
+  service's recovery messages when an intent is left, and finding it is in `TODO.md`.
+- The k3s lab on 1.37.2: `k3s-csi.sh test` 44, `groups` 14, `cbt` 13, and `csi-sanity` 75 of 75; on 1.31.14, `test` 44,
+  `groups` 14 and `csi-sanity` 75. All passing.
+
 ### Before v0.5.0
 
 On 2026-11-11, with images built with Go 1.26.11 from the release branch, on x86-64 VMs:

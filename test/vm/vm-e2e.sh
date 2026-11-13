@@ -964,7 +964,7 @@ flushes_of() { t "awk '{print \$16}' /sys/block/$1/stat"; } # Flush requests a d
 # QEMU's disks don't lose unflushed writes, as a real disk's cache can, so this also checks that a host's flush
 # reaches the disk. Without that, a pass here would say nothing about a real power cut.
 power_tests() { # BACKEND IMAGE POOL-TYPE
-	local backend=$1 image=$2 kind=$3 sub=$NQN:$1-$3-power dev out disk before after idle acked
+	local backend=$1 image=$2 kind=$3 sub=$NQN:$1-$3-power dev out disk before after idle acked left
 	section "$backend, $kind: losing power"
 	# A run in another durability mode proves nothing unless the service really used it.
 	case "${SERVICE_ENV:-}" in *NVWEAVER_SPDK_DURABILITY=*)
@@ -1036,7 +1036,11 @@ power_tests() { # BACKEND IMAGE POOL-TYPE
 		bad "the service restores its configuration" "$(t 'sudo podman logs nvweaver-vm 2>&1 | tail -8')"
 		return 1 # What follows would only repeat this failure.
 	fi
-	expect_eq "no intents are left" 0 "$(t "sudo ls \$(sudo podman volume inspect nvweaver-vm-data --format '{{.Mountpoint}}')/intents | wc -l")"
+	left=$(t "sudo ls \$(sudo podman volume inspect nvweaver-vm-data --format '{{.Mountpoint}}')/intents | wc -l")
+	# Recovery logs why it couldn't settle one, and the container's log is gone at the next start: show it now.
+	if [ "$left" = 0 ]; then ok "no intents are left"; else
+		bad "no intents are left" "$left left; the service says: $(t "sudo podman logs nvweaver-vm 2>&1 | grep -iE 'interrupted|intent|lvm' | tail -5")"
+	fi
 	out=$(while read -r type name; do
 		case "$type" in
 		v) code=$(t "curl -s -o /dev/null -w '%{http_code}' $API/v1/volumes/$name") ;;
