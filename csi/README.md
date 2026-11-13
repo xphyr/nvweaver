@@ -116,7 +116,7 @@ There are two ways, which install the same things: the manifests in [`deploy/`](
 chart in [`deploy/helm/nvweaver-csi`](deploy/helm/nvweaver-csi), which does those steps in one, from values: see
 [Installing with Helm](#installing-with-helm). Use one or the other on a cluster, not both.
 
-The image is published for amd64 and arm64 as `ghcr.io/xphyr/nvweaver-csi`, tagged with each release, such as `0.5.0`. To build
+The image is published for amd64 and arm64 as `ghcr.io/xphyr/nvweaver-csi`, tagged with each release, such as `0.6.0`. To build
 your own instead, from the repository's root, push it to a registry the nodes can pull from:
 
 ```sh
@@ -141,7 +141,7 @@ and dashes, that starts every volume, snapshot and subsystem name the driver mak
 Use the scoped token's name:
 
 ```sh
-sed -e 's#IMAGE#ghcr.io/xphyr/nvweaver-csi:0.5.0#' -e 's#CLUSTER#prod#' csi/deploy/nvweaver-csi.yaml | kubectl apply -f -
+sed -e 's#IMAGE#ghcr.io/xphyr/nvweaver-csi:0.6.0#' -e 's#CLUSTER#prod#' csi/deploy/nvweaver-csi.yaml | kubectl apply -f -
 kubectl -n nvweaver-csi rollout status deployment/nvweaver-csi-controller
 kubectl -n nvweaver-csi rollout status daemonset/nvweaver-csi-node
 ```

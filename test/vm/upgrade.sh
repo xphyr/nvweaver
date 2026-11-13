@@ -4,12 +4,12 @@
 # same, and what's new must work on it. Run before each release, as docs/releasing.md says.
 #
 # Uses the lab VMs (lab.sh), started and deleted here. Build this version's images first ("make images"). PREV is the
-# previous release (default 0.4.0), whose images are pulled from ghcr.io. KEEP_VMS=1 leaves the VMs up.
+# previous release (default 0.5.0), whose images are pulled from ghcr.io. KEEP_VMS=1 leaves the VMs up.
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 LAB=$HERE/lab.sh
-PREV=${PREV:-0.4.0}
+PREV=${PREV:-0.5.0}
 API=http://127.0.0.1:8420
 TARGET_IP=10.99.0.1
 SUB=nqn.2026-11.net.xphyr.upgrade:s1
