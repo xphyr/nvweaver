@@ -35,7 +35,7 @@ add_components() { # FILE COMPONENTS
 			| .packages += [{
 				name: $name, SPDXID: $id, versionInfo: $version, downloadLocation: ("git+" + $url + "@" + $commit),
 				filesAnalyzed: false, licenseConcluded: "NOASSERTION", licenseDeclared: "NOASSERTION",
-				sourceInfo: ("Compiled into /usr/local/bin/nvmf_tgt, from commit " + $commit),
+				sourceInfo: ("Compiled into /usr/local/bin/nvmf_tgt and nvmf_tgt-fua (with spdk-patches/), from commit " + $commit),
 				externalRefs: [{ referenceCategory: "PACKAGE-MANAGER", referenceType: "purl", referenceLocator: $purl }]
 			}]
 			| .relationships += [{ spdxElementId: .documentDescribes[0], relatedSpdxElement: $id, relationshipType: "CONTAINS" }]

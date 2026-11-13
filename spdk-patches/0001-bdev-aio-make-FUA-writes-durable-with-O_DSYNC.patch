@@ -1,0 +1,129 @@
+diff --git a/module/bdev/aio/bdev_aio.c b/module/bdev/aio/bdev_aio.c
+index 23a0dc6..969960f 100644
+--- a/module/bdev/aio/bdev_aio.c
++++ b/module/bdev/aio/bdev_aio.c
+@@ -90,6 +90,9 @@ struct file_disk {
+ 	struct spdk_bdev	disk;
+ 	char			*filename;
+ 	int			fd;
++	/* The same file opened with O_DSYNC, for writes with Force Unit Access: the kernel makes each durable before it
++	 * completes, still asynchronously. Other writes use fd, and reach stable storage on a flush. -1 if read-only. */
++	int			fd_dsync;
+ 	bool			use_nowait;
+ 	TAILQ_ENTRY(file_disk)  link;
+ 	bool			block_size_override;
+@@ -148,6 +151,11 @@ bdev_aio_close(struct file_disk *disk)
+ {
+ 	int rc;
+ 
++	if (disk->fd_dsync != -1) {
++		close(disk->fd_dsync);
++		disk->fd_dsync = -1;
++	}
++
+ 	if (disk->fd == -1) {
+ 		return 0;
+ 	}
+@@ -168,6 +176,7 @@ bdev_aio_open(struct file_disk *disk, bool nowait)
+ {
+ 	int fd;
+ 	int io_flag = disk->readonly ? O_RDONLY : O_RDWR;
++	int direct = O_DIRECT;
+ #ifdef RWF_NOWAIT
+ 	struct stat st;
+ #endif
+@@ -175,6 +184,7 @@ bdev_aio_open(struct file_disk *disk, bool nowait)
+ 	fd = open(disk->filename, io_flag | O_DIRECT);
+ 	if (fd < 0) {
+ 		/* Try without O_DIRECT for non-disk files */
++		direct = 0;
+ 		fd = open(disk->filename, io_flag);
+ 		if (fd < 0) {
+ 			AIO_FDISK_ERRLOG(disk, "open() failed, rc %d: %s\n", fd, spdk_strerror(errno));
+@@ -184,6 +194,15 @@ bdev_aio_open(struct file_disk *disk, bool nowait)
+ 	}
+ 
+ 	disk->fd = fd;
++	disk->fd_dsync = -1;
++	if (!disk->readonly) {
++		disk->fd_dsync = open(disk->filename, io_flag | direct | O_DSYNC);
++		if (disk->fd_dsync < 0) {
++			AIO_FDISK_ERRLOG(disk, "open() with O_DSYNC failed: %s\n", spdk_strerror(errno));
++			disk->fd_dsync = -1;
++			goto err;
++		}
++	}
+ 
+ 	if (nowait) {
+ #ifdef RWF_NOWAIT
+@@ -213,7 +232,7 @@ err:
+ 
+ #ifdef __FreeBSD__
+ static int
+-bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk,
++bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk, int fd,
+ 		   struct spdk_io_channel *ch, struct bdev_aio_task *aio_task,
+ 		   struct iovec *iov, int iovcnt, uint64_t nbytes, uint64_t offset)
+ {
+@@ -222,7 +241,7 @@ bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk,
+ 	int rc;
+ 
+ 	memset(aiocb, 0, sizeof(struct aiocb));
+-	aiocb->aio_fildes = fdisk->fd;
++	aiocb->aio_fildes = fd;
+ 	aiocb->aio_iov = iov;
+ 	aiocb->aio_iovcnt = iovcnt;
+ 	aiocb->aio_offset = offset;
+@@ -247,7 +266,7 @@ bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk,
+ }
+ #else
+ static int
+-bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk,
++bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk, int fd,
+ 		   struct spdk_io_channel *ch, struct bdev_aio_task *aio_task,
+ 		   struct iovec *iov, int iovcnt, uint64_t nbytes, uint64_t offset)
+ {
+@@ -255,9 +274,9 @@ bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk,
+ 	struct bdev_aio_io_channel *aio_ch = spdk_io_channel_get_ctx(ch);
+ 
+ 	if (type == SPDK_BDEV_IO_TYPE_READ) {
+-		io_prep_preadv(iocb, fdisk->fd, iov, iovcnt, offset);
++		io_prep_preadv(iocb, fd, iov, iovcnt, offset);
+ 	} else {
+-		io_prep_pwritev(iocb, fdisk->fd, iov, iovcnt, offset);
++		io_prep_pwritev(iocb, fd, iov, iovcnt, offset);
+ 	}
+ 
+ 	if (aio_ch->group_ch->efd >= 0) {
+@@ -282,8 +301,14 @@ bdev_aio_rw(enum spdk_bdev_io_type type, struct file_disk *fdisk,
+ 	    struct iovec *iov, int iovcnt, uint64_t nbytes, uint64_t offset)
+ {
+ 	struct bdev_aio_io_channel *aio_ch = spdk_io_channel_get_ctx(ch);
++	int fd = fdisk->fd;
+ 	int rc;
+ 
++	if (type == SPDK_BDEV_IO_TYPE_WRITE && fdisk->fd_dsync != -1 &&
++	    (spdk_bdev_io_from_ctx(aio_task)->u.bdev.nvme_cdw12.raw & (1u << 30))) {
++		fd = fdisk->fd_dsync;
++	}
++
+ 	if (type == SPDK_BDEV_IO_TYPE_READ) {
+ 		AIO_FDISK_DEBUGLOG(fdisk, "read %d iovs size %lu to off: %#lx\n",
+ 				   iovcnt, nbytes, offset);
+@@ -292,7 +317,7 @@ bdev_aio_rw(enum spdk_bdev_io_type type, struct file_disk *fdisk,
+ 				   iovcnt, nbytes, offset);
+ 	}
+ 
+-	rc = bdev_aio_submit_io(type, fdisk, ch, aio_task, iov, iovcnt, nbytes, offset);
++	rc = bdev_aio_submit_io(type, fdisk, fd, ch, aio_task, iov, iovcnt, nbytes, offset);
+ 	if (spdk_unlikely(rc < 0)) {
+ 		if (rc == -EAGAIN) {
+ 			spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_NOMEM);
+@@ -1023,6 +1048,7 @@ create_aio_bdev(const char *name, const char *filename, uint32_t block_size, boo
+ 	fdisk->readonly = readonly;
+ 	fdisk->fallocate = fallocate;
+ 	fdisk->fd = -1;
++	fdisk->fd_dsync = -1;
+ 
+ 	fdisk->filename = strdup(filename);
+ 	if (!fdisk->filename) {

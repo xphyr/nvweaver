@@ -37,7 +37,15 @@ RUN arch="$SPDK_ARCH"; \
       --without-ocf --without-rdma --without-fio --without-xnvme --without-vfio-user \
       --without-idxd --without-rbd --without-iscsi-initiator --without-sma --without-avahi \
     && make -j"$(nproc)" \
-    && strip build/bin/nvmf_tgt
+    && strip build/bin/nvmf_tgt \
+    && mkdir /out && cp build/bin/nvmf_tgt /out/nvmf_tgt
+# nvmf_tgt-fua: the same, with nvweaver's changes, which upstream SPDK doesn't have (decision 58). Each must apply
+# cleanly, or the build stops. Only what they touch is rebuilt. NVWEAVER_SPDK_DURABILITY=fua chooses it.
+COPY spdk-patches /spdk-patches
+RUN set -e; n=0; for p in /spdk-patches/*.patch; do echo "applying $p"; git apply "$p"; n=$((n + 1)); done; \
+    [ "$n" -gt 0 ]; \
+    make -j"$(nproc)" && strip build/bin/nvmf_tgt && cp build/bin/nvmf_tgt /out/nvmf_tgt-fua; \
+    ! cmp -s /out/nvmf_tgt /out/nvmf_tgt-fua
 # What's compiled into nvmf_tgt, for the SBOM, as a scanner can't see inside it.
 RUN set -e; \
     row() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$(git -C "$3" rev-parse HEAD)" "$(git -C "$3" remote get-url origin)"; }; \
@@ -52,10 +60,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       kmod libaio1t64 libnuma1 libssl3t64 libuuid1 openssl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /nvweaverd /nvweaver /usr/local/bin/
-COPY --from=spdk /spdk/build/bin/nvmf_tgt /usr/local/bin/nvmf_tgt
+COPY --from=spdk /out/nvmf_tgt /out/nvmf_tgt-fua /usr/local/bin/
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/licenses/nvweaver/
 COPY --from=build /usr/local/go/LICENSE /usr/local/go/PATENTS /usr/share/licenses/nvweaver/go/
 COPY --from=spdk /spdk/LICENSE /spdk/licenses/ /usr/share/licenses/nvweaver/spdk/
+# nvmf_tgt-fua is SPDK modified by these.
+COPY --from=spdk /spdk-patches/ /usr/share/licenses/nvweaver/spdk/patches/
 COPY --from=spdk /spdk/dpdk/license/ /usr/share/licenses/nvweaver/dpdk/
 COPY --from=spdk /spdk/isa-l/LICENSE /usr/share/licenses/nvweaver/isa-l/
 COPY --from=spdk /spdk/spdk-components.tsv /usr/share/licenses/nvweaver/

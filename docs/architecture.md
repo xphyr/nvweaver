@@ -124,6 +124,10 @@ pool holds one metadata snapshot at a time. See decision 50.
 `NVWEAVER_BACKEND=auto` tries the kernel, and falls back to SPDK only if `nvmf_tgt` is on
 the `PATH`.
 
+The SPDK image has two builds of SPDK: `nvmf_tgt` as upstream ships it, and `nvmf_tgt-fua`, with the patches in
+`spdk-patches/`, which honour FUA. `NVWEAVER_SPDK_DURABILITY` chooses which the service starts, and so whether files get
+the sync attribute: see decisions 28 and 58.
+
 ## Known scale limits
 
 Each change still copies the state and rewrites the state file, so the kernel target's time for a change grows slowly: 8 ms at

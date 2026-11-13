@@ -11,6 +11,7 @@
 #   podman build -t nvweaver:dev -f Containerfile .
 #   podman build -t nvweaver:spdk -f Containerfile.spdk .
 set -u
+# SERVICE_ENV adds options to the service's podman run, such as "-e NVWEAVER_SPDK_DURABILITY=fua" (decision 58).
 # TEST_TIMEOUT_SCALE lengthens the waits, for slow machines such as emulated VMs.
 SCALE=${TEST_TIMEOUT_SCALE:-1}
 
@@ -126,7 +127,7 @@ warnings() { t "curl -s $API/v1/system | jq -r '.warnings | join(\" \")'"; }
 start_service() { # BACKEND IMAGE
 	t "sudo podman rm -f nvweaver-vm >/dev/null 2>&1; sudo podman run -d --pull=never --name nvweaver-vm --privileged --network host --pid=host \
 		-v /lib/modules:/lib/modules:ro -v /dev:/dev -v nvweaver-vm-data:/var/lib/nvweaver \
-		-e NVWEAVER_BACKEND=$1 $2 >/dev/null"
+		-e NVWEAVER_BACKEND=$1 ${SERVICE_ENV:-} $2 >/dev/null"
 }
 
 backend_tests() { # BACKEND IMAGE [run args]
@@ -965,6 +966,13 @@ flushes_of() { t "awk '{print \$16}' /sys/block/$1/stat"; } # Flush requests a d
 power_tests() { # BACKEND IMAGE POOL-TYPE
 	local backend=$1 image=$2 kind=$3 sub=$NQN:$1-$3-power dev out disk before after idle acked
 	section "$backend, $kind: losing power"
+	# A run in another durability mode proves nothing unless the service really used it.
+	case "${SERVICE_ENV:-}" in *NVWEAVER_SPDK_DURABILITY=*)
+		local want=${SERVICE_ENV##*NVWEAVER_SPDK_DURABILITY=}
+		want=${want%% *}
+		expect_eq "the service makes writes durable as asked ($want)" "$want" "$(t "curl -s $API/v1/system | jq -r .capabilities.durability")"
+		;;
+	esac
 	if [ "$kind" = reflink ]; then
 		t "sudo podman exec nvweaver-vm mkdir -p /var/lib/nvweaver/power-pool"
 		api "adopt a pool" 201 POST /v1/pools '{"name":"power","type":"reflink","path":"/var/lib/nvweaver/power-pool"}'

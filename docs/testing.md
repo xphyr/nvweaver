@@ -1069,7 +1069,8 @@ On 2026-11-11, with images built with Go 1.26.11 from the release branch, on x86
 **CI's end-to-end job couldn't install QEMU** from about 14:00 UTC that day: `azure.archive.ubuntu.com`, the runners' first
 Ubuntu mirror, didn't resolve, nor from the user's own network, while other jobs' installs worked. It's a CNAME to an Azure
 Traffic Manager profile, which answers by region. `.github/apt-install.sh` now falls back to `archive.ubuntu.com` when it
-doesn't resolve. Not yet run in CI when this was written.
+doesn't resolve. PR 24's CI and the v0.5.0 release run both passed with it, but the mirror resolved again by then, so
+neither took the fallback: it has never run for real (see "Not tested").
 
 ## Not tested
 
@@ -1088,6 +1089,7 @@ Not tested for other reasons:
 - Scale. Nothing has been measured beyond a handful of objects
 - Moving `latest` to a multi-arch list on GitHub, which only a final release does. It passed against a local registry, on the
   runners' Podman 4.9
+- `.github/apt-install.sh`'s fallback to `archive.ubuntu.com`, as the runners' mirror resolved again before it ran
 
 ## Benchmarks
 
@@ -1108,6 +1110,104 @@ that the target isn't the bottleneck there, and little else. Raw loopback TCP on
 The control plane used about 8 MB, and at most 1 CPU tick across all NVMe/TCP tests. SPDK
 used one core, and the kernel used all of them. Kernel CPU use wasn't measured, so these
 don't show which uses less.
+
+### SPDK on Synologies, against DSM's own iSCSI (2026-11-11 and 12)
+
+`test/bench-classes.sh` from an Arm OpenShift node over a 10 Gb storage network with jumbo frames, to nvweaver 0.5.0 (SPDK, a
+reflink pool, `dist/synology/`) and to DSM's iSCSI (Synology's CSI driver) on the same box, while `test/synology-capture.sh`
+recorded the box. 16 GiB raw block volumes, filled first; seven fio jobs, 60 s each, three rounds alternating the classes;
+medians. Two boxes, both DSM 7.4.1 on Linux 4.4: a hard-disk one (8 disks in RAID 10, 32 GB, later with an NVMe read-write
+cache) and an all-flash one (11 SATA SSDs in RAID F1, 32 GB), and a Virtual DSM on the all-flash one. Eight runs in all.
+
+| 4K, QD16×4 unless said | HDD: iSCSI | HDD: nvweaver as shipped | Flash: iSCSI | Flash: as shipped | Flash: sync attribute off |
+|---|---|---|---|---|---|
+| Random read, QD1 (IOPS) | 6,448 | 84 | 4,502 | 955 | 949 |
+| Random write, QD1 (IOPS) | 6,182 | 19 | 6,205 | 358 | 1,196 |
+| Random read (IOPS) | 46,088 | 1,377 | 42,584 | 61,060 | 58,100 |
+| Random write (IOPS) | 26,791 | 78 | 36,671 | 14,452 | 38,985 |
+| 70/30 (IOPS) | 40,580 | 221 | 38,711 | 30,495 | 46,084 |
+| 128K sequential read (MB/s) | 555 | 199 | 638 | 1,028 | 1,041 |
+| 128K sequential write (MB/s) | 330 | 19 | 720 | 320 | 722 |
+
+What made the differences, each isolated by a run that changed one thing:
+
+- **DSM's iSCSI reads come from RAM.** On the hard-disk box, 8,400 reads a second at QD1 caused 31 on the disks; nvweaver,
+  with SPDK's `O_DIRECT`, reaches the disks one for one. Most of the hard-disk gap on reads is that.
+- **The sync attribute (decision 28) costs most of the write gap,** and more than a flush: on btrfs over hard disks, each
+  synchronous 4K write caused 17-89 writes on the disks (btrfs's log and tree commits, doubled by RAID 10), against 1.2-5
+  without it. Clearing it: sequential write 18 → 269 MB/s, QD1 writes 24 → 963 IOPS on hard disks; on flash, deep random
+  writes 14,452 → 38,985 and sequential writes 320 → 722 MB/s. **On flash, with it cleared, nvweaver matched or beat iSCSI
+  on every job at depth and on sequential I/O** (sequential reads at the 10 Gb link's limit). See decision 28.
+- **Copy-on-write pool files fragment under random writes:** sequential reads 199 → 415 MB/s with the pool folder set
+  `chattr +C` before its files were made. DSM makes its own LUN files that way. Reflink still works between such files
+  (checked on a Virtual DSM, Linux 4.4).
+- **An SSD read-write cache** (hard-disk box) made the forced flushes cheap: QD1 writes 24 → 540 IOPS with the attribute on.
+  It never takes sequential I/O, and while it writes back to the disks, sequential I/O suffers, nvweaver's reads most.
+- **iSCSI still leads on single I/Os** (about 150 µs writes, 210 µs reads on flash), from DSM's page cache. nvweaver's QD1
+  reads took about 1 ms on bare flash but 590 µs in the Virtual DSM on the same SSDs, both reaching the SSDs one for one: the
+  bare box's read path has about 0.45 ms more, not explained yet.
+- **A Virtual DSM gets about 70% of its host at depth** (67-84%), with or without the sync attribute, so before/after ratios
+  there carry over. Its single writes are faster than bare metal's: the host caches the virtual disk's writes (fewer reach
+  the SSDs than the guest makes), so a power-cut test there would test the hypervisor's cache mode.
+- Neither box was CPU-bound (at most 61% busy); SPDK's one reactor was at 85% of a core in the Virtual DSM at its deepest.
+
+### Honouring FUA on SPDK: the first experiment (2026-11-12)
+
+On branch `fua-experiment`: `spdk-patches/0001-nvmf-make-FUA-writes-durable-with-a-flush.patch`, carried in
+`Containerfile.spdk`, follows each FUA write with a flush of its blocks before answering the host, and
+`NVWEAVER_SPDK_FILE_SYNC=off` (experimental) leaves the sync attribute off (decision 28).
+
+**Safe.** `vm-e2e.sh` with `POWER_ONLY="spdk reflink 8"` and `SERVICE_ENV="-e NVWEAVER_SPDK_FILE_SYNC=off"`: unpatched, 3
+rounds of 3 corrupted the host's XFS (it wouldn't mount, and every file whose `fsync` had finished was lost), so the test
+still catches this; patched, **8 of 8 clean, 192 checks, all 410 such files intact**. The target's disk took 86-88 flushes
+for 20 host `fsync`s, against 46 unpatched: each FUA write now flushes.
+
+**Not yet fast enough.** On a Virtual DSM (`bench-classes.sh` with `DURABLE=1`, nvweaver only, medians of three rounds),
+against 0.5.0 as shipped: plain writes as fast as with no attribute (4K QD1 304 → 3,742 IOPS, QD16×4 9,980 → 27,198,
+128K sequential 318 → 764 MB/s); durable 4K writes, O_DSYNC and fsync, unchanged (about 300 IOPS at QD1, 10,000 at QD16×4);
+but **O_DSYNC 128K sequential writes at QD16 fell from 320 to 50 MB/s.** SPDK's aio flush is a blocking `fsync()` on its one
+reactor, so queued FUA writes are made durable one at a time, with the reactor idle meanwhile (16% of a CPU, against 46%).
+The next version should send FUA writes through a second `O_DSYNC` file descriptor, asynchronously, as all writes are made
+durable today: see decision 28.
+
+### Honouring FUA on SPDK: the second version (2026-11-12)
+
+`spdk-patches/0001-bdev-aio-make-FUA-writes-durable-with-O_DSYNC.patch`, in SPDK's aio module only: each file is opened a
+second time with `O_DSYNC`, and a write with FUA set (bit 30 of its NVMe CDW12, which SPDK's NVMe-oF target already passes
+to the bdev unchanged) goes through that descriptor, still asynchronously through libaio. It works on Linux 4.4.
+
+**Safe:** the same power-cut test, 8 of 8 clean, 192 checks, all 393 files whose `fsync` finished intact.
+
+**Fast:** on the same Virtual DSM, medians of three rounds, against 0.5.0 as shipped: plain writes with the full gain (4K
+QD1 304 → 3,807 IOPS, QD16×4 9,980 → 26,832, 128K sequential 318 → 706 MB/s) and **durable writes at the shipped speed**
+(O_DSYNC 4K QD1 305, QD16×4 9,980, 128K sequential 316 MB/s against 320; fsync after each write unchanged).
+
+**On bare metal too:** the all-flash Synology, against 0.5.0 as shipped, medians of three rounds: 4K writes QD1 354 →
+1,209 IOPS, QD16×4 14,081 → 38,735, 70/30 28,550 → 46,445, 128K sequential 309 → 679 MB/s; durable writes the same (O_DSYNC
+4K QD1 350/356, QD16×4 14,034/14,035, 128K 296/303 MB/s). With power-cut safety kept, nvweaver then matched or beat DSM's
+iSCSI on that box for deep random writes, mixed load and sequential I/O.
+
+**One caveat, on both:** durable writes are slow on a newly filled volume until the host's first flushes. Round 1's, about 8
+minutes after the fill, were 20-60× slower than as shipped at QD16×4; rounds 2 and 3, after the `fsync` job's flushes,
+matched it. On a fresh 4 GiB volume, a flush straight after the fill didn't help, but one after more writes did. Not yet
+explained; a guess is that newly allocated space makes btrfs log the whole file on every `O_DSYNC` write until a full
+`fsync` clears it, which the sync attribute does with the fill's first write. A filesystem on the volume flushes
+constantly; a raw-block writer that never flushes would see it. Hosts' flushes remain a blocking `fsync()` on the reactor.
+
+### The user's choice: `NVWEAVER_SPDK_DURABILITY` (2026-11-13)
+
+Decision 58: the SPDK image carries upstream's `nvmf_tgt` and the patched `nvmf_tgt-fua`, and the setting picks one. Run in
+a fresh lab VM, with images built from this change:
+
+- `e2e.sh`: kernel target 351 passed, SPDK 376, and SPDK with `SPDK_DURABILITY=fua` 376, none failed; nothing left behind.
+  Its new checks: the `durability` capability, the sync attribute set or cleared on an existing volume file when the mode
+  changes across a restart (both ways), an unknown mode refused, the setting refused on the kernel target, and the
+  patched binary and its patch in the image. The two binaries differ (`cmp`).
+- The power-cut test (`POWER_ONLY="spdk reflink 8"`, `SERVICE_ENV="-e NVWEAVER_SPDK_DURABILITY=fua"`): 8 of 8 clean, 192
+  checks. That run couldn't show which mode the service was in, so `vm-e2e.sh` now checks the capability against
+  `SERVICE_ENV` at the start of each round; a 3-round rerun passed it every round (80 checks).
+
+Not yet run in `fua` mode: the power-cut test on a block device (in `TODO.md`).
 
 ### Reading performance numbers
 
@@ -1147,6 +1247,11 @@ Things that looked like one problem and were another:
   from the `openssl` package.
 - **`bdev_aio_create` returning `Invalid argument`:** SPDK detects block size with an ioctl
   that fails on regular files, so files need an explicit `block_size`.
+- **A Synology's iSCSI far ahead of nvweaver on reads:** looked like the protocol. Its reads came from DSM's RAM, as the
+  box's disk counters showed; nvweaver's `O_DIRECT` reads reached the disks. Compare what reaches the disks, not only fio.
+- **A Virtual DSM faster than the box it runs on, for single writes:** the host was caching the guest's writes.
+- **A Kubernetes node Ready, and its pods Running, just after the cluster was powered on:** the API served the state from
+  before the shutdown for about a minute; the node then went Ready=False. Wait for containers started since the boot.
 
 ## Escaped a scoped run
 
@@ -1188,6 +1293,11 @@ Checks that passed while proving nothing. Watch for these patterns:
 
 ## Test pitfalls
 
+- **A pod on a class with `Immediate` binding gets a passing `FailedScheduling`,** "unbound immediate PersistentVolumeClaims",
+  until its volume is made. `bench-classes.sh` took it for a failure; it now ignores that one message. A real failure still
+  shows as `ProvisioningFailed` on the claim.
+- **`pkill -f` matches the command that runs it,** when that's a shell over SSH whose text contains the pattern: it killed the
+  session. Stop background processes by the PID they recorded.
 - **Stopping k3s on a node leaves its containers running.** A test that then deletes the node leaves any leader that was
   there renewing its lease, so its replacement never takes over. Drain the node first.
 - **A VolumeGroupSnapshot that nothing answers:** external-snapshotter 8.7.0's manifest runs snapshot-controller 8.6.0, which

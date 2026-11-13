@@ -2,6 +2,16 @@
 
 The major differences between versions. For every change, see the commit history.
 
+## Not yet released
+
+### Added
+
+- **SPDK can honour FUA, with nvweaver's patch, if you choose:** `NVWEAVER_SPDK_DURABILITY=fua`. Upstream SPDK ignores FUA, so
+  by default every file is made to write synchronously, which is slow on real disks. The patch makes only the writes that
+  hosts need durable synchronous: as safe in a power-cut test, and other writes 1.6 to 3.4 times faster on an all-flash
+  Synology. It isn't upstream SPDK, so it's off by default; the SPDK image carries both builds. Changing it is a restart.
+  `capabilities.durability` in `GET /v1/system` reports it. See decision 58.
+
 ## v0.5.0
 
 Snapshot groups, changed block tracking for backups, a Synology setup, and a CSI driver that cleans up after nodes that leave,

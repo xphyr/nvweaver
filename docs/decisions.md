@@ -291,6 +291,28 @@ there, not as absolute numbers.
 - **Rejected:** patching SPDK to honour FUA, which is the proper fix but needs carrying a patch, for now. It's worth reporting
   upstream. Reporting no write cache to hosts, as they'd then send no flushes at all. An option to turn this off, until
   someone needs it: a test lab can tolerate slow writes better than a corrupted filesystem that looks like a client's bug.
+- **Revisited, 2026-11-12: the cost on real disks is far higher, and FUA is worth honouring.** Benchmarks on two Synologies
+  (`docs/testing.md`, "SPDK on Synologies") cleared the attribute in one run each: on hard disks, sequential writes rose
+  from 18 to 269 MB/s and QD1 writes from 24 to 963 IOPS, as each synchronous 4K write had set off 17-89 writes on the disks
+  through btrfs's log; on flash, deep random writes rose from 14,452 to 38,985 IOPS, and nvweaver then matched or beat DSM's
+  iSCSI on every job at depth. SPDK v26.09 and its master branch still don't read FUA: `lib/nvmf` passes no FUA to the
+  block-device layer, which has no field for it, and the aio module's only per-write flag is `RWF_NOWAIT`. Its flushes are
+  an `fsync()` on the reactor thread, cheap today only because the attribute leaves nothing to flush. **Next:** a patch so
+  that FUA writes are made durable, with flushes off the reactor, tested by the power-cut test here before the attribute
+  can go. See `TODO.md`.
+- **Tried, 2026-11-12: a FUA write followed by a flush,** in the NVMe-oF layer (branch `fua-experiment`). Safe: 8 of 8 power
+  cuts clean without the attribute, where unpatched lost data 3 of 3. Plain writes as fast as with no attribute, durable 4K
+  writes as before, but durable 128K writes at QD16 6.3× slower, as each flush is a blocking `fsync()` on the one reactor.
+  **Rejected for that.** **To try next:** a second file descriptor opened `O_DSYNC`, for FUA writes only, still through
+  libaio, so they're made durable in parallel by the kernel as every write is today. It works on DSM's Linux 4.4, which lacks
+  per-write `RWF_DSYNC` in libaio (4.13). It needs a FUA flag through SPDK's bdev layer, and hosts' flushes off the reactor.
+  See "Honouring FUA on SPDK" in `docs/testing.md`.
+- **Tried, 2026-11-12, and it works: FUA writes through a second, `O_DSYNC` descriptor,** a patch to SPDK's aio module
+  alone, as SPDK's NVMe-oF target already passes the command's CDW12, FUA included, to the bdev. 8 of 8 power cuts clean;
+  on a Virtual DSM, plain writes 2.2-12× faster than with the attribute (its host caches writes), durable writes at the same
+  speed. **Measured on bare metal** (an all-flash Synology): plain writes 1.6-3.4× faster, durable writes the same. Known
+  caveats: durable writes are slow on a newly filled volume until the host's first flushes, and hosts' flushes still block
+  the reactor. **Made the user's choice, with the attribute still the default: decision 58.**
 - **Still open: block devices on SPDK, including LVM volumes.** They have no such attribute, and FUA is ignored there too. Those
   writes do reach the device, and passed here, but QEMU's disks don't lose unflushed writes. A real drive with a volatile
   cache might lose them on a power cut. This is untested, and documented in the README.
@@ -801,3 +823,29 @@ VolumeGroupSnapshot. Storage-level, so both targets and both pool types get it.
   run Kubernetes: the user's choice.
 - **Kept:** the kernel target, LVM and systemd for Linux hosts that have them. Whether SPDK becomes the default
   everywhere is still to decide.
+
+## 58. SPDK honours FUA with a patch, chosen by the user
+
+- **The problem:** decision 28's sync attribute makes every write to a file synchronous, because upstream SPDK ignores FUA.
+  On real disks that cost most of SPDK's write performance (`docs/testing.md`, "SPDK on Synologies"): each synchronous write
+  on btrfs set off 17-89 writes on hard disks, and on flash, writes ran at 41-44% of DSM's iSCSI.
+- **Chosen: a patch to SPDK's aio module, in `spdk-patches/`.** Each file or device is opened a second time with `O_DSYNC`,
+  and a write with FUA set (bit 30 of its NVMe CDW12, which SPDK's NVMe-oF target already passes to the bdev unchanged) goes
+  through that descriptor, still asynchronously through libaio. Only writes that hosts need durable are then synchronous, as
+  with a real drive. It works on Linux 4.4 (DSM), where libaio has no per-write `RWF_DSYNC`. Safe: the power-cut test passed
+  8 rounds of 8 with no sync attribute, where unpatched SPDK corrupted 3 of 3. On an all-flash Synology, other writes were
+  1.6-3.4× faster and durable writes as fast as before; nvweaver then matched or beat DSM's iSCSI there at depth.
+- **Chosen: the user decides, as it isn't upstream SPDK.** The SPDK image carries both builds: `nvmf_tgt`, as upstream ships
+  it, and `nvmf_tgt-fua`, with the patches. `NVWEAVER_SPDK_DURABILITY` picks one: `sync-attribute` (the default, decision 28)
+  or `fua`. nvweaver sets or clears the attribute on existing files to match, as each start creates every bdev afresh, so
+  changing it is a restart. `capabilities.durability` reports it (`native` on the kernel target), and the setting is refused
+  with the kernel target, which honours FUA itself, rather than ignored. The second build costs little: it rebuilds only
+  what the patches touch, and the build fails if it comes out the same as the first.
+- **Rejected: a flush after each FUA write,** in the NVMe-oF layer, which was tried first: safe, but durable 128K writes at
+  QD16 were 6.3× slower, as SPDK's aio flush is a blocking `fsync()` on its one reactor. **Rejected: the patched build
+  only,** as some users won't run code that upstream doesn't have. **Rejected: a runtime switch inside one patched build,**
+  for the same reason: the default must be upstream's code.
+- **Caveats:** on a newly filled volume, durable writes are slow until the host's first flushes, not yet explained (a guess:
+  btrfs logging the whole file until a full `fsync`). Hosts' flushes are still a blocking `fsync()` on the reactor. Block
+  devices should get FUA honoured too, untested by a power cut.
+- **To make `fua` the default:** the patch upstream, or long use without a problem, and the caveat above understood.
