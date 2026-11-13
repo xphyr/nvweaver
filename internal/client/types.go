@@ -18,6 +18,7 @@ type Capabilities struct {
 	IdentifiesConnectedHosts bool     `json:"identifies_connected_hosts"`
 	ListsAllConnections      bool     `json:"lists_all_connections"`
 	SnapshotGroups           bool     `json:"snapshot_groups"`
+	Durability               string   `json:"durability"`
 	Transports               []string `json:"transports"`
 }
 

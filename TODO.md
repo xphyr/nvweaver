@@ -375,15 +375,16 @@ tests.
         already reaches it): safe, 8 of 8; plain writes with the full gain, durable writes at the shipped speed. See
         `docs/testing.md`
   - [x] Measure it on bare metal: the all-flash Synology, 2026-11-12: plain writes 1.6-3.4× faster, durable the same
-  - [ ] Let the user choose (they asked, 2026-11-12, as the patch isn't upstream): both SPDK binaries in the SPDK image,
-        upstream's and the patched one, and a setting between the sync attribute (upstream, the default) and FUA (patched,
-        no attribute). nvweaver sets or clears the attribute on existing files to match, at start. Reported under
-        `capabilities`; refused on the kernel target, which honours FUA anyway. Spec first, a decision, tests in both modes
+  - [x] Let the user choose (2026-11-13, decision 58): `NVWEAVER_SPDK_DURABILITY=fua` runs the patched `nvmf_tgt-fua`,
+        shipped beside upstream's in the SPDK image; the default stays the sync attribute. Reported under `capabilities`,
+        refused on the kernel target. `e2e.sh` in both modes and the power-cut test in `fua` mode pass
   - [ ] Offer the patch to SPDK upstream
   - [ ] Find why durable writes are slow on a newly filled volume until the host's first flushes (btrfs's full-sync mark?),
         and whether the patch can clear it, such as with one full `fsync` before the first FUA write after new allocations
   - [ ] Hosts' flushes off the reactor thread, as the aio module's `fsync()` blocks every volume on that core
-  - [ ] Then replace `NVWEAVER_SPDK_FILE_SYNC`, the experiment's switch, with the image saying whether its SPDK honours FUA
+  - [ ] The power-cut test on a block device (an LVM pool) with `NVWEAVER_SPDK_DURABILITY=fua`, which should get FUA
+        honoured too, for decision 28's open question
+  - [ ] Make `fua` the default once the patch is upstream, or after long use without a problem (decision 58)
 - [ ] Make btrfs reflink pools' files no-copy-on-write (`chattr +C`, before a file's first write): copy-on-write fragments
       them, halving sequential reads. Snapshots still work between such files; it gives up btrfs's data checksums for them,
       as DSM does for its own LUNs. Mixed files can't be reflinked on newer kernels, so existing pools need care. A decision

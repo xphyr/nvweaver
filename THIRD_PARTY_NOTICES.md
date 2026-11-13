@@ -7,7 +7,7 @@ own licenses, and those notices are included where the code is:
 |---|---|---|---|
 | Go runtime and standard library | `nvweaverd`, in every image and native build, and `nvweaver-csi` | BSD-3-Clause, with a patent grant | `go/` |
 | [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) (`bcrypt`, `blowfish`) | `nvweaverd` and `nvweaver`, in the service's images and native build. Its source is in `vendor/` | BSD-3-Clause, with a patent grant | `vendor/golang.org/x/crypto/LICENSE`, in this repository |
-| [SPDK](https://spdk.io) | `nvmf_tgt`, in the SPDK image | BSD-3-Clause | `spdk/` |
+| [SPDK](https://spdk.io) | `nvmf_tgt`, in the SPDK image; also `nvmf_tgt-fua`, modified by nvweaver's patches in `spdk-patches/` | BSD-3-Clause | `spdk/`, with the patches in `spdk/patches/` |
 | [DPDK](https://www.dpdk.org) | `nvmf_tgt`, in the SPDK image | BSD-3-Clause; some files have other permissive licenses, as described in its `README` | `dpdk/` |
 | [ISA-L](https://github.com/intel/isa-l) | `nvmf_tgt`, in the SPDK image | BSD-3-Clause | `isa-l/` |
 | [google.golang.org/grpc](https://pkg.go.dev/google.golang.org/grpc) | `nvweaver-csi`, in the CSI driver image | Apache-2.0, with a `NOTICE` | `vendor/google.golang.org/grpc/` |

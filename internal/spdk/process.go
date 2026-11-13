@@ -33,6 +33,9 @@ type Options struct {
 	// Polling makes the target poll continuously, for lower latency at the cost
 	// of a core. Otherwise it sleeps until there is work.
 	Polling bool
+	// Durability is target.DurabilityFUA when Binary is nvmf_tgt with nvweaver's patch, which makes FUA writes
+	// durable itself; otherwise files get the sync attribute. See decision 58.
+	Durability string
 }
 
 // Args returns the nvmf_tgt command line for the given RPC socket.
@@ -92,7 +95,7 @@ func Start(o Options, log *slog.Logger) (*Backend, error) {
 		close(done)
 	}()
 	p := &process{cmd: cmd, runDir: runDir}
-	b := &Backend{proc: p, keyDir: runDir, probe: probeListen, done: done}
+	b := &Backend{proc: p, keyDir: runDir, probe: probeListen, done: done, durability: o.Durability}
 	if err := b.initialise(socket, done); err != nil {
 		b.Close()
 		return nil, err

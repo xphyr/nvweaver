@@ -480,30 +480,59 @@ func TestLiveChecksDontFetchEverything(t *testing.T) {
 	}
 }
 
-func TestMakeWritesDurable(t *testing.T) {
+func TestSetSyncAttribute(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "volume")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	var flags int64
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fsIocGetFlags, uintptr(unsafe.Pointer(&flags))); errno != 0 {
+	flags := func() int64 {
+		var v int64
+		if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fsIocGetFlags, uintptr(unsafe.Pointer(&v))); errno != 0 {
+			t.Fatal(errno)
+		}
+		return v
+	}
+	var v int64
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fsIocGetFlags, uintptr(unsafe.Pointer(&v))); errno != 0 {
 		t.Skip("this filesystem has no attributes; the end-to-end suites cover it")
 	}
-	if err := makeWritesDurable(f.Name()); err != nil {
+	if err := setSyncAttribute(f.Name(), true); err != nil {
 		t.Skipf("this filesystem won't set it, which is refused: %v", err)
 	}
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fsIocGetFlags, uintptr(unsafe.Pointer(&flags))); errno != 0 {
-		t.Fatal(errno)
+	if flags()&fsSyncFl == 0 {
+		t.Errorf("after setting it, flags = %#x", flags())
 	}
-	if flags&fsSyncFl == 0 {
-		t.Errorf("flags = %#x", flags)
-	}
-	if err := makeWritesDurable(f.Name()); err != nil {
+	if err := setSyncAttribute(f.Name(), true); err != nil {
 		t.Errorf("setting it twice: %v", err)
 	}
-	if err := makeWritesDurable("/nonexistent"); err != nil {
-		t.Errorf("a missing path is for SPDK to report: %v", err)
+	// What a switch to FUA does to existing files.
+	if err := setSyncAttribute(f.Name(), false); err != nil {
+		t.Fatalf("clearing it: %v", err)
+	}
+	if flags()&fsSyncFl != 0 {
+		t.Errorf("after clearing it, flags = %#x", flags())
+	}
+	if err := setSyncAttribute(f.Name(), false); err != nil {
+		t.Errorf("clearing it twice: %v", err)
+	}
+	for _, on := range []bool{true, false} {
+		if err := setSyncAttribute("/nonexistent", on); err != nil {
+			t.Errorf("a missing path is for SPDK to report: %v", err)
+		}
+	}
+}
+
+// The capability says which nvmf_tgt is running; with none said, it's the safe one.
+func TestDurabilityCapability(t *testing.T) {
+	for give, want := range map[string]string{
+		"":                             target.DurabilitySyncAttribute,
+		target.DurabilitySyncAttribute: target.DurabilitySyncAttribute,
+		target.DurabilityFUA:           target.DurabilityFUA,
+	} {
+		if got := (&Backend{durability: give}).Capabilities().Durability; got != want {
+			t.Errorf("durability %q: capability %q, want %q", give, got, want)
+		}
 	}
 }
 

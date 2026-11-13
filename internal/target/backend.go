@@ -23,9 +23,23 @@ type Capabilities struct {
 	ListsAllConnections bool `json:"lists_all_connections"`
 	// SnapshotGroups can pause hosts' I/O with ANA, for snapshot groups consistent across volumes. See decision 56.
 	SnapshotGroups bool `json:"snapshot_groups"`
+	// Durability is how writes a host needs durable reach stable storage: one of the Durability constants. See decision 58.
+	Durability string `json:"durability"`
 	// Transports lists the NVMe transports a port can use.
 	Transports []string `json:"transports"`
 }
+
+// How writes that a host needs durable, FUA writes and those before a flush, reach stable storage. See decision 58.
+const (
+	// DurabilityNative is the kernel's target, which honours FUA and flushes itself.
+	DurabilityNative = "native"
+	// DurabilitySyncAttribute is SPDK as upstream ships it, which ignores FUA: every file-backed namespace gets the
+	// sync attribute, so every write to it is durable before it completes. The SPDK default.
+	DurabilitySyncAttribute = "sync-attribute"
+	// DurabilityFUA is SPDK with nvweaver's patch, which makes FUA writes durable through an O_DSYNC descriptor, with
+	// no sync attribute.
+	DurabilityFUA = "fua"
+)
 
 // LiveChecker reports whether a namespace is really being served.
 type LiveChecker func(nqn string, nsid uint32) bool
@@ -74,6 +88,7 @@ func (t *Target) Capabilities() Capabilities {
 		WildcardListen:      true,
 		ListsAllConnections: true,
 		SnapshotGroups:      true,
+		Durability:          DurabilityNative,
 		Transports:          []string{TransportTCP},
 	}
 }

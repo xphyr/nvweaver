@@ -48,14 +48,25 @@ type Backend struct {
 	// probe reports why an address could not be listened on, if it couldn't.
 	probe func(address string) error
 	done  chan struct{}
+	// durability is target.DurabilitySyncAttribute, or target.DurabilityFUA for nvmf_tgt with nvweaver's patch. Empty
+	// means the first, which is always safe. See decision 58.
+	durability string
 }
+
+// fua says whether this nvmf_tgt makes FUA writes durable itself, so that files need no sync attribute.
+func (b *Backend) fua() bool { return b.durability == target.DurabilityFUA }
 
 // Name implements target.Backend.
 func (b *Backend) Name() string { return "spdk" }
 
 // Capabilities implements target.Backend.
 func (b *Backend) Capabilities() target.Capabilities {
-	return target.Capabilities{IdentifiesConnectedHosts: true, SnapshotGroups: true, Transports: []string{target.TransportTCP}}
+	durability := target.DurabilitySyncAttribute
+	if b.fua() {
+		durability = target.DurabilityFUA
+	}
+	return target.Capabilities{IdentifiesConnectedHosts: true, SnapshotGroups: true, Durability: durability,
+		Transports: []string{target.TransportTCP}}
 }
 
 // aioPerNamespace is how much of fs.aio-max-nr each namespace uses, on each core.
@@ -660,10 +671,9 @@ func (b *Backend) createBdevs(next *target.State, exists func(string) (bool, err
 			if size := fileBlockSize(ns.DevicePath); size != 0 {
 				params["block_size"] = size
 			}
-			if fileSync {
-				if err := makeWritesDurable(ns.DevicePath); err != nil {
-					return fmt.Errorf("namespace %d of %s: %w", nsid, nqn, err)
-				}
+			// Each start creates every bdev afresh, so changing the setting changes existing files too.
+			if err := setSyncAttribute(ns.DevicePath, !b.fua()); err != nil {
+				return fmt.Errorf("namespace %d of %s: %w", nsid, nqn, err)
 			}
 			if err := b.call("bdev_aio_create", params, nil); err != nil {
 				return err
@@ -680,16 +690,13 @@ const (
 	fsSyncFl      = 0x8
 )
 
-// fileSync is off only for the FUA experiment (TODO.md, decision 28): NVWEAVER_SPDK_FILE_SYNC=off leaves files' sync
-// attribute alone, which is unsafe on a power cut unless SPDK honours FUA. Not a supported setting.
-var fileSync = os.Getenv("NVWEAVER_SPDK_FILE_SYNC") != "off"
-
-// makeWritesDurable sets a file's sync attribute, as chattr +S does. SPDK tells hosts that it has a write cache,
-// but ignores FUA, and a filesystem such as XFS commits its log with a FUA write, then relies on it. On a block
-// device those writes reach the device, but in a file, its new blocks stay in the page cache and the
-// filesystem's journal until the next flush. So a power cut corrupted hosts' filesystems. With this, the kernel
-// treats each write as O_DSYNC. A block device has no such attribute, and is left as it is.
-func makeWritesDurable(path string) error {
+// setSyncAttribute sets or clears a file's sync attribute, as chattr +S and -S do. Upstream SPDK tells hosts that it has
+// a write cache, but ignores FUA, and a filesystem such as XFS commits its log with a FUA write, then relies on it. On a
+// block device those writes reach the device, but in a file, its new blocks stay in the page cache and the filesystem's
+// journal until the next flush. So a power cut corrupted hosts' filesystems. With the attribute, the kernel treats each
+// write as O_DSYNC (decision 28). nvmf_tgt with nvweaver's patch makes FUA writes durable itself, so it's cleared there,
+// as it makes every other write slow too (decision 58). A block device has no such attribute, and is left as it is.
+func setSyncAttribute(path string, on bool) error {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return nil // Anything wrong with the path is for SPDK to report.
@@ -701,14 +708,20 @@ func makeWritesDurable(path string) error {
 	defer f.Close()
 	var flags int64
 	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fsIocGetFlags, uintptr(unsafe.Pointer(&flags))); errno != 0 {
+		if !on {
+			return nil // No attribute to clear.
+		}
 		return fmt.Errorf("can't make %s safe from a power cut: this filesystem has no sync attribute: %w", path, errno)
 	}
-	if flags&fsSyncFl != 0 {
+	if (flags&fsSyncFl != 0) == on {
 		return nil
 	}
-	flags |= fsSyncFl
+	flags ^= fsSyncFl
 	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fsIocSetFlags, uintptr(unsafe.Pointer(&flags))); errno != 0 {
-		return fmt.Errorf("can't make %s safe from a power cut: %w", path, errno)
+		if on {
+			return fmt.Errorf("can't make %s safe from a power cut: %w", path, errno)
+		}
+		return fmt.Errorf("can't clear the sync attribute of %s, which makes every write slow: %w", path, errno)
 	}
 	return nil
 }

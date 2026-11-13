@@ -28,6 +28,8 @@ services:
       # SPDK's memory, in MB, which it takes at start, and the CPU it runs on, such as [3]. The last one allowed by default.
       NVWEAVER_SPDK_MEM_MB: ${NVWEAVER_SPDK_MEM_MB:-1024}
       NVWEAVER_SPDK_CORES: ${NVWEAVER_SPDK_CORES:-}
+      # sync-attribute (upstream SPDK, the default) or fua (SPDK with nvweaver's patch, faster writes). See .env.example.
+      NVWEAVER_SPDK_DURABILITY: ${NVWEAVER_SPDK_DURABILITY:-}
     volumes:
       # The state, and the pool's files: keep it on a btrfs volume, for reflink.
       - ./data:/var/lib/nvweaver

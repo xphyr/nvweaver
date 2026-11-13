@@ -17,6 +17,9 @@ SCALE=${TEST_TIMEOUT_SCALE:-1}
 
 ENGINE=${ENGINE:-sudo podman}
 BACKEND=${BACKEND:-nvmet}
+# SPDK_DURABILITY=fua runs the SPDK backend with nvweaver's patched nvmf_tgt (decision 58); empty is the default, upstream's.
+SPDK_DURABILITY=${SPDK_DURABILITY:-}
+DURABILITY_NOW=$SPDK_DURABILITY
 case "$BACKEND" in
 nvmet) IMAGE=${IMAGE:-nvweaver:dev}; CONTAINERFILE=Containerfile ;;
 spdk) IMAGE=${IMAGE:-nvweaver:spdk}; CONTAINERFILE=Containerfile.spdk ;;
@@ -124,7 +127,7 @@ start_target() { # [keep-on-exit]
 	$ENGINE run -d --name "$TGT" --privileged --network host \
 		-v /lib/modules:/lib/modules:ro -v /dev:/dev -v "$VOL:/var/lib/nvweaver" \
 		-e NVWEAVER_LISTEN=127.0.0.1:18420 -e NVWEAVER_KEEP_ON_EXIT="${1:-false}" \
-		-e NVWEAVER_BACKEND="$BACKEND" \
+		-e NVWEAVER_BACKEND="$BACKEND" ${DURABILITY_NOW:+-e NVWEAVER_SPDK_DURABILITY=$DURABILITY_NOW} \
 		"$IMAGE" >/dev/null || return 1
 	for _ in $(seq 1 $((40 * SCALE))); do
 		[ "$(ini "curl -s -o /dev/null -w '%{http_code}' $API/healthz")" = 200 ] && return 0
@@ -157,10 +160,11 @@ if [ -z "${SKIP_BUILD:-}" ]; then
 fi
 $ENGINE rm -f "$TGT" "$INI" >/dev/null 2>&1
 $ENGINE volume rm -f "$VOL" >/dev/null 2>&1
+# The target's data, read-only, to see its files' attributes.
 $ENGINE run -d --name "$INI" --privileged --network host -v /lib/modules:/lib/modules:ro -v /dev:/dev \
-	docker.io/library/alpine:3.22 sleep infinity >/dev/null || exit 1
+	-v "$VOL:/target-data:ro" docker.io/library/alpine:3.22 sleep infinity >/dev/null || exit 1
 trap cleanup EXIT
-ini "apk add -q --no-progress nvme-cli curl jq util-linux kmod coreutils busybox-extras iproute2-ss openssl" || exit 1
+ini "apk add -q --no-progress nvme-cli curl jq util-linux kmod coreutils busybox-extras iproute2-ss openssl e2fsprogs-extra" || exit 1
 ini "modprobe nvme-tcp" || exit 1
 
 section "Startup"
@@ -192,6 +196,41 @@ api "create host1" 201 POST /v1/hosts "{\"nqn\":\"$H1\"}"
 api "create host2" 201 POST /v1/hosts "{\"nqn\":\"$H2\"}"
 api "subsystem backed by a file" 201 POST /v1/subsystems "{\"nqn\":\"$SA\",\"allowed_hosts\":[\"$H1\"],\"ports\":[1]}"
 api "managed volume namespace" 201 POST "/v1/subsystems/$SA/namespaces" '{"nsid":1,"file":{"name":"a.img","size_bytes":67108864}}'
+
+section "Durability: FUA, or the sync attribute (decision 58)"
+# sync_attr: whether a.img has the sync attribute, as lsattr shows it in its third column.
+sync_attr() { ini "lsattr /target-data/volumes/a.img" | awk '{print (substr($1, 3, 1) == "S") ? "on" : "off"}'; }
+# A setting that can't apply is refused, never ignored: start another container that must fail, and say why.
+refused() { # NAME BACKEND VALUE IMAGE WANT
+	local out
+	$ENGINE rm -f nvweaver-e2e-refuse >/dev/null 2>&1
+	$ENGINE run --name nvweaver-e2e-refuse -e NVWEAVER_LISTEN=127.0.0.1:18499 -e NVWEAVER_BACKEND="$2" \
+		-e NVWEAVER_SPDK_DURABILITY="$3" "$4" >/dev/null 2>&1 && { bad "$1" "it started"; return; }
+	out=$($ENGINE logs nvweaver-e2e-refuse 2>&1)
+	$ENGINE rm -f nvweaver-e2e-refuse >/dev/null 2>&1
+	expect_has "$1" "$5" "$out"
+}
+api "system says how writes are made durable" 200 GET /v1/system
+if [ "$BACKEND" = spdk ]; then
+	want=${SPDK_DURABILITY:-sync-attribute}
+	expect_eq "SPDK reports its mode" "$want" "$(ini "jq -r .capabilities.durability /tmp/body")"
+	expect_eq "and the file has the sync attribute only without the patch" "$([ "$want" = fua ] && echo off || echo on)" "$(sync_attr)"
+	# Switching mode is a restart, which sets or clears the attribute on existing files.
+	other=fua; [ "$want" = fua ] && other=sync-attribute
+	for DURABILITY_NOW in "$other" "$want"; do
+		start_target false || bad "restart with NVWEAVER_SPDK_DURABILITY=$DURABILITY_NOW"
+		api "system, with $DURABILITY_NOW" 200 GET /v1/system
+		expect_eq "reports $DURABILITY_NOW" "$DURABILITY_NOW" "$(ini "jq -r .capabilities.durability /tmp/body")"
+		expect_eq "and the file's sync attribute follows" "$([ "$DURABILITY_NOW" = fua ] && echo off || echo on)" "$(sync_attr)"
+	done
+	DURABILITY_NOW=$SPDK_DURABILITY
+	refused "a mode that doesn't exist is refused" spdk bogus "$IMAGE" "must be sync-attribute"
+	expect_has "the patched nvmf_tgt is in the image" "nvmf_tgt-fua" "$($ENGINE exec "$TGT" sh -c 'ls /usr/local/bin')"
+	expect_has "with the patches, beside SPDK's license" ".patch" "$($ENGINE exec "$TGT" sh -c 'ls /usr/share/licenses/nvweaver/spdk/patches')"
+else
+	expect_eq "the kernel's target honours FUA itself" native "$(ini "jq -r .capabilities.durability /tmp/body")"
+	refused "so the setting is refused there, not ignored" nvmet fua "$IMAGE" "applies only to the SPDK backend"
+fi
 api "list subsystems" 200 GET /v1/subsystems
 expect_has "list includes the subsystem" "$SA" "$BODY"
 

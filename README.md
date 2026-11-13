@@ -255,6 +255,7 @@ Behaviour worth knowing:
 | `NVWEAVER_SPDK_MEM_MB` | `1024` | Memory SPDK may reserve for buffers. 256 is too little. |
 | `NVWEAVER_SPDK_HUGEPAGES` | `false` | Use hugepages already reserved on the host. |
 | `NVWEAVER_SPDK_POLLING` | `false` | Poll continuously: lower latency, but each SPDK core runs at 100% even when idle. |
+| `NVWEAVER_SPDK_DURABILITY` | `sync-attribute` | How writes that hosts need durable are made so. `sync-attribute`: SPDK as upstream ships it, with every file made to write synchronously, which is slow. `fua`: SPDK with nvweaver's patch, which isn't upstream: only writes that ask for it are synchronous, so the rest were 1.6 to 3.4 times faster on an all-flash Synology. See [Known limits](#known-limits) and decision 58. Refused with the kernel target. |
 
 **Making a token** for `NVWEAVER_API_TOKEN`: any long random string will do, and a hex one needs no quoting anywhere:
 
@@ -443,11 +444,18 @@ create NVMe devices on the host, then remove them. Set `ENGINE=podman` to use Po
 - **On the kernel target, discovery fails for a host allowed on more than about 4,095 subsystems on one port.** This is the kernel's limit,
   and nothing about it is reported to nvweaver. Connecting by NQN still works. SPDK isn't affected.
 - **Under load, the API can answer `503` with `Retry-After`.** Nothing has changed when it does, so send the request again.
-- **SPDK ignores FUA, so its power-cut safety varies by what backs a namespace.** Files are set to write synchronously, which made
-  a power cut safe in testing, but small writes are several times slower. On a filesystem that can't do this, adding the
-  namespace is refused. Block devices, including LVM volumes, can't be set this way: writes reach the device, but a drive
-  with a volatile cache might lose them in a power cut, which we haven't been able to test. For the strongest guarantee, use
-  the kernel target.
+- **Upstream SPDK ignores FUA, so by default its power-cut safety varies by what backs a namespace.** Files are set to write
+  synchronously, which made a power cut safe in testing, but every write pays for it: on real disks, writes were 2 to 14 times
+  slower. On a filesystem that can't do this, adding the namespace is refused. Block devices, including LVM volumes, can't be
+  set this way: writes reach the device, but a drive with a volatile cache might lose them in a power cut, which we haven't
+  been able to test. For the strongest guarantee, use the kernel target.
+- **`NVWEAVER_SPDK_DURABILITY=fua` runs SPDK with nvweaver's patch, which honours FUA,** in `spdk-patches/`, and the SPDK image
+  carries both builds. Only writes that hosts need durable are then made so, through a second descriptor opened `O_DSYNC`, and
+  files lose the sync attribute: a power cut was as safe in testing (8 rounds of 8), and other writes were 1.6 to 3.4 times
+  faster on an all-flash Synology. It isn't upstream SPDK, so it's off by default; the patch is offered to SPDK. Block devices
+  should get FUA honoured this way too, which isn't tested yet. One caveat: on a newly filled volume, durable writes are slow
+  until the host first flushes, which a filesystem on it does constantly. Changing the setting is a restart, which sets or
+  clears the attribute on existing files. `capabilities.durability` in `GET /v1/system` says which is running.
 - **arm64 has less testing than x86-64.** `e2e.sh` runs on real Arm CI runners on both targets, but the suites with a separate
   initiator and with disks run only by hand, under emulation. Its performance and scale aren't measured, and the 16K-page kernel of
   a Raspberry Pi 5 is untested. Raspberry Pi OS's kernel has no NVMe/TCP target, so only SPDK can run there.

@@ -1194,6 +1194,21 @@ explained; a guess is that newly allocated space makes btrfs log the whole file 
 `fsync` clears it, which the sync attribute does with the fill's first write. A filesystem on the volume flushes
 constantly; a raw-block writer that never flushes would see it. Hosts' flushes remain a blocking `fsync()` on the reactor.
 
+### The user's choice: `NVWEAVER_SPDK_DURABILITY` (2026-11-13)
+
+Decision 58: the SPDK image carries upstream's `nvmf_tgt` and the patched `nvmf_tgt-fua`, and the setting picks one. Run in
+a fresh lab VM, with images built from this change:
+
+- `e2e.sh`: kernel target 351 passed, SPDK 376, and SPDK with `SPDK_DURABILITY=fua` 376, none failed; nothing left behind.
+  Its new checks: the `durability` capability, the sync attribute set or cleared on an existing volume file when the mode
+  changes across a restart (both ways), an unknown mode refused, the setting refused on the kernel target, and the
+  patched binary and its patch in the image. The two binaries differ (`cmp`).
+- The power-cut test (`POWER_ONLY="spdk reflink 8"`, `SERVICE_ENV="-e NVWEAVER_SPDK_DURABILITY=fua"`): 8 of 8 clean, 192
+  checks. That run couldn't show which mode the service was in, so `vm-e2e.sh` now checks the capability against
+  `SERVICE_ENV` at the start of each round; a 3-round rerun passed it every round (80 checks).
+
+Not yet run in `fua` mode: the power-cut test on a block device (in `TODO.md`).
+
 ### Reading performance numbers
 
 Results are limited by the hardware available, so record which path a number used:

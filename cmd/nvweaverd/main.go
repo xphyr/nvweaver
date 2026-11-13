@@ -213,14 +213,31 @@ func selectBackend(log *slog.Logger) (target.Backend, error) {
 		}
 		return &target.Target{FS: target.OSConfigFS{}, Root: filepath.Join(configfsMount, "nvmet")}, nil
 	}
+	// NVWEAVER_SPDK_DURABILITY means nothing to the kernel's target, which honours FUA itself, so it's refused there
+	// rather than ignored (decision 58).
+	// Empty is unset, as Compose passes the variables it names whether or not they're set.
+	durability := os.Getenv("NVWEAVER_SPDK_DURABILITY")
+	refuseForKernel := func() error {
+		if durability != "" {
+			return fmt.Errorf("NVWEAVER_SPDK_DURABILITY=%s applies only to the SPDK backend, but the kernel's target "+
+				"would run, which honours FUA itself: remove it, or set NVWEAVER_BACKEND=spdk", durability)
+		}
+		return nil
+	}
 	switch choice := env("NVWEAVER_BACKEND", "auto"); choice {
 	case "nvmet":
+		if err := refuseForKernel(); err != nil {
+			return nil, err
+		}
 		return kernel()
 	case "spdk":
 		return startSPDK(log)
 	case "auto":
 		b, err := kernel()
 		if err == nil {
+			if err := refuseForKernel(); err != nil {
+				return nil, err
+			}
 			return b, nil
 		}
 		if _, lookErr := exec.LookPath(spdkBinary); lookErr != nil {
@@ -233,23 +250,45 @@ func selectBackend(log *slog.Logger) (target.Backend, error) {
 	}
 }
 
-const spdkBinary = "nvmf_tgt"
+const (
+	spdkBinary = "nvmf_tgt"
+	// spdkFUABinary is nvmf_tgt built with spdk-patches/, which makes FUA writes durable. See decision 58.
+	spdkFUABinary = "nvmf_tgt-fua"
+)
 
 func startSPDK(log *slog.Logger) (target.Backend, error) {
-	bin, err := exec.LookPath(spdkBinary)
+	durability := os.Getenv("NVWEAVER_SPDK_DURABILITY")
+	if durability == "" {
+		durability = target.DurabilitySyncAttribute
+	}
+	name := spdkBinary
+	switch durability {
+	case target.DurabilitySyncAttribute:
+	case target.DurabilityFUA:
+		name = spdkFUABinary
+	default:
+		return nil, fmt.Errorf("NVWEAVER_SPDK_DURABILITY %q must be %s (SPDK as upstream ships it, the default) or %s "+
+			"(SPDK with nvweaver's patch for FUA)", durability, target.DurabilitySyncAttribute, target.DurabilityFUA)
+	}
+	bin, err := exec.LookPath(name)
 	if err != nil {
-		return nil, fmt.Errorf("the SPDK backend needs %s, which is in the image built from Containerfile.spdk: %w", spdkBinary, err)
+		return nil, fmt.Errorf("the SPDK backend needs %s, which is in the image built from Containerfile.spdk: %w", name, err)
+	}
+	if durability == target.DurabilityFUA {
+		log.Info("SPDK with nvweaver's patch for FUA, which isn't in upstream SPDK: files get no sync attribute",
+			"binary", bin, "durability", durability)
 	}
 	mem, err := strconv.Atoi(env("NVWEAVER_SPDK_MEM_MB", "1024"))
 	if err != nil || mem <= 0 {
 		return nil, fmt.Errorf("NVWEAVER_SPDK_MEM_MB must be a positive number of megabytes")
 	}
 	return spdk.Start(spdk.Options{
-		Binary:    bin,
-		Cores:     env("NVWEAVER_SPDK_CORES", ""),
-		MemoryMB:  mem,
-		Hugepages: env("NVWEAVER_SPDK_HUGEPAGES", "false") == "true",
-		Polling:   env("NVWEAVER_SPDK_POLLING", "false") == "true",
+		Binary:     bin,
+		Cores:      env("NVWEAVER_SPDK_CORES", ""),
+		MemoryMB:   mem,
+		Hugepages:  env("NVWEAVER_SPDK_HUGEPAGES", "false") == "true",
+		Polling:    env("NVWEAVER_SPDK_POLLING", "false") == "true",
+		Durability: durability,
 	}, log)
 }
 

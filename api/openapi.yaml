@@ -1954,6 +1954,7 @@ components:
         - identifies_connected_hosts
         - lists_all_connections
         - snapshot_groups
+        - durability
         - transports
       properties:
         passthrough:
@@ -1983,6 +1984,16 @@ components:
         snapshot_groups:
           type: boolean
           description: Can pause hosts' I/O with ANA, for snapshot groups that are consistent across volumes.
+        durability:
+          type: string
+          enum: [native, sync-attribute, fua]
+          description: |
+            How a write that a host needs to be durable, a FUA write or one before a flush, reaches stable storage.
+            `native`: the kernel's target honours FUA and flushes itself. `sync-attribute`: SPDK as upstream ships it,
+            which ignores FUA, so every file-backed namespace has the sync attribute, and every write to it is durable
+            before it completes, which is slow on real disks. `fua`: SPDK with nvweaver's patch, which makes only FUA
+            writes durable, through a second descriptor opened with `O_DSYNC`; chosen with
+            `NVWEAVER_SPDK_DURABILITY=fua`. See decision 58.
         transports:
           type: array
           description: The NVMe transports that a port can use.
