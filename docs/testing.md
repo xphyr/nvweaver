@@ -1182,10 +1182,17 @@ to the bdev unchanged) goes through that descriptor, still asynchronously throug
 QD1 304 → 3,807 IOPS, QD16×4 9,980 → 26,832, 128K sequential 318 → 706 MB/s) and **durable writes at the shipped speed**
 (O_DSYNC 4K QD1 305, QD16×4 9,980, 128K sequential 316 MB/s against 320; fsync after each write unchanged).
 
-**One caveat:** in the first two minutes or so after a new volume is filled, durable writes are slow (a fresh 4 GiB volume:
-919 IOPS at QD16×4 straight after the fill and a flush, 2,456 a minute later, 10,403 after two). A flush didn't help; time
-did. Likely btrfs's work after allocating much new space, which durable writes wait on; with the sync attribute, the fill
-was itself durable. Hosts' flushes remain a blocking `fsync()` on the reactor.
+**On bare metal too:** the all-flash Synology, against 0.5.0 as shipped, medians of three rounds: 4K writes QD1 354 →
+1,209 IOPS, QD16×4 14,081 → 38,735, 70/30 28,550 → 46,445, 128K sequential 309 → 679 MB/s; durable writes the same (O_DSYNC
+4K QD1 350/356, QD16×4 14,034/14,035, 128K 296/303 MB/s). With power-cut safety kept, nvweaver then matched or beat DSM's
+iSCSI on that box for deep random writes, mixed load and sequential I/O.
+
+**One caveat, on both:** durable writes are slow on a newly filled volume until the host's first flushes. Round 1's, about 8
+minutes after the fill, were 20-60× slower than as shipped at QD16×4; rounds 2 and 3, after the `fsync` job's flushes,
+matched it. On a fresh 4 GiB volume, a flush straight after the fill didn't help, but one after more writes did. Not yet
+explained; a guess is that newly allocated space makes btrfs log the whole file on every `O_DSYNC` write until a full
+`fsync` clears it, which the sync attribute does with the fill's first write. A filesystem on the volume flushes
+constantly; a raw-block writer that never flushes would see it. Hosts' flushes remain a blocking `fsync()` on the reactor.
 
 ### Reading performance numbers
 

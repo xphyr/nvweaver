@@ -311,8 +311,9 @@ there, not as absolute numbers.
   alone, as SPDK's NVMe-oF target already passes the command's CDW12, FUA included, to the bdev. 8 of 8 power cuts clean;
   on a Virtual DSM, plain writes 2.2-12× faster than with the attribute, durable writes at the same speed. **The candidate**
   to replace the attribute, once: it's offered upstream; the attribute's removal is tied to the image's SPDK having it,
-  rather than to `NVWEAVER_SPDK_FILE_SYNC`; and it's measured on bare metal. Known caveats: durable writes are slow for
-  about two minutes after a new volume is bulk-filled, and hosts' flushes still block the reactor.
+  rather than to `NVWEAVER_SPDK_FILE_SYNC`. **Measured on bare metal** (an all-flash Synology): plain writes 1.6-3.4×
+  faster, durable writes the same. Known caveats: durable writes are slow on a newly filled volume until the host's first
+  flushes, and hosts' flushes still block the reactor. **Next: make it the user's choice,** as it isn't upstream SPDK.
 - **Still open: block devices on SPDK, including LVM volumes.** They have no such attribute, and FUA is ignored there too. Those
   writes do reach the device, and passed here, but QEMU's disks don't lose unflushed writes. A real drive with a volatile
   cache might lose them on a power cut. This is untested, and documented in the README.

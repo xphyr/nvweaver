@@ -374,9 +374,14 @@ tests.
   - [x] Second try, FUA writes through a second, `O_DSYNC` descriptor in the aio module (no bdev change needed: CDW12
         already reaches it): safe, 8 of 8; plain writes with the full gain, durable writes at the shipped speed. See
         `docs/testing.md`
-  - [ ] Measure it on bare metal: the all-flash Synology, as flash runs A and B, with `DURABLE=1`
+  - [x] Measure it on bare metal: the all-flash Synology, 2026-11-12: plain writes 1.6-3.4× faster, durable the same
+  - [ ] Let the user choose (they asked, 2026-11-12, as the patch isn't upstream): both SPDK binaries in the SPDK image,
+        upstream's and the patched one, and a setting between the sync attribute (upstream, the default) and FUA (patched,
+        no attribute). nvweaver sets or clears the attribute on existing files to match, at start. Reported under
+        `capabilities`; refused on the kernel target, which honours FUA anyway. Spec first, a decision, tests in both modes
   - [ ] Offer the patch to SPDK upstream
-  - [ ] Find what slows durable writes for about two minutes after a new volume is bulk-filled (btrfs's transaction work?)
+  - [ ] Find why durable writes are slow on a newly filled volume until the host's first flushes (btrfs's full-sync mark?),
+        and whether the patch can clear it, such as with one full `fsync` before the first FUA write after new allocations
   - [ ] Hosts' flushes off the reactor thread, as the aio module's `fsync()` blocks every volume on that core
   - [ ] Then replace `NVWEAVER_SPDK_FILE_SYNC`, the experiment's switch, with the image saying whether its SPDK honours FUA
 - [ ] Make btrfs reflink pools' files no-copy-on-write (`chattr +C`, before a file's first write): copy-on-write fragments
